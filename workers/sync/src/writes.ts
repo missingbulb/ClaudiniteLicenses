@@ -1,8 +1,10 @@
-// The writes queue's consumer: the seat, usage and overuse records the key Worker queues, written
-// in message order as one D1 batch per delivery. Every statement is idempotent, so a redelivered
-// message changes nothing. A batch from the dead-letter queue is logged and stamped, never written,
-// so a lost seat record is seen rather than silent.
+// The writes queue's consumer: the seat, usage and overuse records and the incidents the key Worker
+// queues, written in message order as one D1 batch per delivery. Every seat statement is idempotent,
+// so a redelivered message changes nothing there; a redelivered incident is one more row, which only
+// errs toward an alert. A batch from the dead-letter queue is logged, stamped and counted as
+// incidents, never written, so a lost seat record is seen rather than silent.
 import { GRACE_SPENT_S, isWriteMessage, licenseeOf, SEAT_WINDOW_S, type WriteMessage } from "../../../packages/licensing/src/index.ts";
+import { insertIncident } from "./incidents.ts";
 import { stamp } from "./repos.ts";
 
 export const WRITES_QUEUE = "claudinite-licenses-writes";
@@ -39,17 +41,21 @@ function statementsFor(db: D1Database, m: WriteMessage): D1PreparedStatement[] {
         .bind(m.owner_id, m.at, m.at + GRACE_SPENT_S),
     ];
   }
-  return [db.prepare("UPDATE overuse SET grace_started_at = NULL WHERE licensee_id = ?").bind(m.owner_id)];
+  if (m.kind === "incident") return [insertIncident(db, m.marker, m.at, m.detail)];
+  // Delivery order is best-effort: a reset older than the stored start leaves that start alone.
+  return [db.prepare("UPDATE overuse SET grace_started_at = NULL WHERE licensee_id = ? AND grace_started_at <= ?").bind(m.owner_id, m.at)];
 }
 
 export async function consumeWrites(batch: MessageBatch, env: WritesEnv, nowS: number): Promise<void> {
   const db = env.DB;
   if (batch.queue === DEAD_LETTER_QUEUE) {
+    const writes: D1PreparedStatement[] = [];
     for (const msg of batch.messages) {
       const body = msg.body as { kind?: unknown; at?: unknown } | null;
       console.log(JSON.stringify({ marker: "write-dead-lettered", kind: body?.kind ?? null, at: body?.at ?? null }));
+      writes.push(insertIncident(db, "write-dead-lettered", nowS, typeof body?.kind === "string" ? body.kind : null));
     }
-    await stamp(db, "last_dead_letter_at", nowS).run();
+    await db.batch([...writes, stamp(db, "last_dead_letter_at", nowS)]);
     batch.ackAll();
     return;
   }

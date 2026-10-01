@@ -131,11 +131,18 @@ export function dayOf(at: number): string {
   return new Date(at * 1000).toISOString().slice(0, 10);
 }
 
+/** The markers the alerts count in a window, each occurrence an `incidents` row. */
+export const INCIDENT_MARKERS = ["d1-unreadable", "polar-unreachable", "app-not-installed", "polar-webhook-refused", "write-dead-lettered", "secondary-rate-limit"] as const;
+export type IncidentMarker = (typeof INCIDENT_MARKERS)[number];
+/** The longest `detail` an incident carries. */
+export const INCIDENT_DETAIL_MAX = 200;
+
 /** What the key Worker queues and the sync Worker writes, one message each. */
 export type WriteMessage =
   | { v: 1; kind: "usage"; at: number; repo_id: number; user_id: number; owner_id: number; plan: PaidPlan; day: string }
   | { v: 1; kind: "grace-start"; at: number; owner_id: number }
-  | { v: 1; kind: "grace-reset"; at: number; owner_id: number };
+  | { v: 1; kind: "grace-reset"; at: number; owner_id: number }
+  | { v: 1; kind: "incident"; at: number; marker: IncidentMarker; detail?: string };
 
 const PAID_PLANS: readonly string[] = ["private-repo", "personal", "organization", "internal"];
 const isId = (v: unknown) => typeof v === "number" && Number.isSafeInteger(v) && v > 0;
@@ -144,7 +151,11 @@ const isId = (v: unknown) => typeof v === "number" && Number.isSafeInteger(v) &&
 export function isWriteMessage(m: unknown): m is WriteMessage {
   if (typeof m !== "object" || m === null) return false;
   const r = m as Record<string, unknown>;
-  if (r.v !== 1 || typeof r.at !== "number" || !Number.isSafeInteger(r.at) || !isId(r.owner_id)) return false;
+  if (r.v !== 1 || typeof r.at !== "number" || !Number.isSafeInteger(r.at)) return false;
+  if (r.kind === "incident") {
+    return (INCIDENT_MARKERS as readonly unknown[]).includes(r.marker) && (r.detail === undefined || (typeof r.detail === "string" && r.detail.length <= INCIDENT_DETAIL_MAX));
+  }
+  if (!isId(r.owner_id)) return false;
   if (r.kind === "grace-start" || r.kind === "grace-reset") return true;
   return r.kind === "usage" && isId(r.repo_id) && isId(r.user_id) && PAID_PLANS.includes(r.plan as string) && typeof r.day === "string" && /^\d{4}-\d{2}-\d{2}$/.test(r.day);
 }
