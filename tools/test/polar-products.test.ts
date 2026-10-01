@@ -1,7 +1,13 @@
+import { spawn } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { parse } from "yaml";
 import { startPolarStub } from "../polar-stub.mjs";
 import { POLAR_VERSION, readPlans, syncProducts } from "../polar-products.mjs";
 
+const ROOT = resolve(import.meta.dirname, "../..");
 const plans = readPlans();
 let stub: Awaited<ReturnType<typeof startPolarStub>>;
 
@@ -141,4 +147,78 @@ describe("tools/polar-products.mjs", () => {
     await expect(sync(true)).rejects.toThrow(/Someone Else.*MissingBulb/);
     expect(stub.state.writes).toEqual([]);
   });
+});
+
+describe("polar-products.yml", () => {
+  const wf = parse(readFileSync(join(ROOT, ".github/workflows/polar-products.yml"), "utf8"));
+  type Step = { uses?: string; run?: string; env?: Record<string, string> };
+  const steps = wf.jobs.products.steps as Step[];
+  const step = steps.find((s) => s.run?.includes("polar-products.mjs"))!;
+
+  // Evaluates a step's `${{ }}` env values the way Actions would, for the operators and the
+  // property and index access these use; an unset secret reads as the empty string.
+  function resolveEnv(ctx: { inputs: Record<string, unknown>; secrets: Record<string, string> }) {
+    const scopes = { inputs: new Proxy(ctx.inputs, { get: (t, p) => t[String(p)] ?? "" }), secrets: new Proxy(ctx.secrets, { get: (t, p) => t[String(p)] ?? "" }) };
+    return Object.fromEntries(
+      Object.entries(step.env ?? {}).map(([k, v]) => {
+        const m = /^\$\{\{(.*)\}\}$/s.exec(String(v));
+        if (!m) return [k, String(v)];
+        const value = new Function("inputs", "secrets", `return (${m[1]!.replace(/==/g, "===")});`)(scopes.inputs, scopes.secrets);
+        return [k, value === undefined || value === null ? "" : String(value)];
+      }),
+    );
+  }
+
+  // Asynchronous, since the stub answering the step's requests runs in this process.
+  async function runStep(inputs: Record<string, unknown>, secrets: Record<string, string>) {
+    const summary = join(mkdtempSync(join(tmpdir(), "acme-summary-")), "summary.md");
+    const child = spawn("bash", ["-e", "-c", step.run!], {
+      cwd: ROOT,
+      env: { PATH: process.env.PATH!, GITHUB_STEP_SUMMARY: summary, POLAR_API_BASE: stub.base, ...resolveEnv({ inputs, secrets }) },
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (c) => (stdout += c));
+    child.stderr.on("data", (c) => (stderr += c));
+    const status: number | null = await new Promise((ok) => child.on("close", ok));
+    return { status, stdout, stderr, summary: existsSync(summary) ? readFileSync(summary, "utf8") : "" };
+  }
+
+  it("is dispatch-only, with an env choice and an apply switch off by default, reading contents only", () => {
+    expect(Object.keys(wf.on)).toEqual(["workflow_dispatch"]);
+    expect(wf.on.workflow_dispatch.inputs.env.options).toEqual(["sandbox", "production"]);
+    expect(wf.on.workflow_dispatch.inputs.apply).toMatchObject({ type: "boolean", default: false });
+    expect(wf.permissions).toEqual({ contents: "read" });
+  });
+
+  it("pins its actions by the SHAs the other workflows use", () => {
+    const ci = parse(readFileSync(join(ROOT, ".github/workflows/ci.yml"), "utf8"));
+    const pinned = new Set((ci.jobs.verify.steps as Step[]).filter((s) => s.uses).map((s) => s.uses));
+    const uses = steps.filter((s) => s.uses).map((s) => s.uses);
+    expect(uses.length).toBeGreaterThan(0);
+    for (const u of uses) expect(pinned, u).toContain(u);
+  });
+
+  for (const [env, secret, other] of [
+    ["sandbox", "POLAR_SANDBOX_TOKEN", "POLAR_TOKEN"],
+    ["production", "POLAR_TOKEN", "POLAR_SANDBOX_TOKEN"],
+  ] as const) {
+    it(`hands the tool ${secret} for ${env}, and fails when it is unset`, async () => {
+      stub = await startPolarStub({ token: `token-of-${secret}` });
+      const secrets = { [secret]: `token-of-${secret}`, [other]: `token-of-${other}` };
+      const dry = await runStep({ env, apply: false }, secrets);
+      expect(dry.status, dry.stderr).toBe(0);
+      expect(stub.state.writes).toEqual([]);
+      const applied = await runStep({ env, apply: true }, secrets);
+      expect(applied.status, applied.stderr).toBe(0);
+      expect(stub.state.products.filter((p) => !p.is_archived)).toHaveLength(6);
+      for (const p of stub.state.products) {
+        expect(applied.summary).toContain(p.id);
+        expect(applied.summary).toContain(p.prices[0]!.id);
+      }
+      const missing = await runStep({ env, apply: true }, { [other]: `token-of-${other}` });
+      expect(missing.status).not.toBe(0);
+      expect(missing.stdout + missing.stderr).toContain(secret);
+    });
+  }
 });

@@ -1,0 +1,45 @@
+name: polar-products
+
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        description: The Polar environment whose products to set up
+        type: choice
+        options: [sandbox, production]
+        required: true
+        default: sandbox
+      apply:
+        description: Make the changes; off prints the plan only
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  products:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Set up the Polar products
+        env:
+          POLAR_ENV: ${{ inputs.env }}
+          APPLY: ${{ inputs.apply }}
+          POLAR_ACCESS_TOKEN: ${{ secrets[inputs.env == 'production' && 'POLAR_TOKEN' || 'POLAR_SANDBOX_TOKEN'] }}
+        run: |
+          case "$POLAR_ENV" in
+            sandbox) secret=POLAR_SANDBOX_TOKEN ;;
+            production) secret=POLAR_TOKEN ;;
+            *) echo "::error::unknown env '$POLAR_ENV'"; exit 1 ;;
+          esac
+          if [ -z "$POLAR_ACCESS_TOKEN" ]; then
+            echo "::error::the repository secret $secret is not set"
+            exit 1
+          fi
+          args=(--env "$POLAR_ENV" --summary "$GITHUB_STEP_SUMMARY")
+          if [ "$APPLY" = true ]; then args+=(--apply); fi
+          node tools/polar-products.mjs "${args[@]}"
