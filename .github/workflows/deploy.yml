@@ -252,13 +252,48 @@ jobs:
           probe 200 "b.last_polar_reconcile_at>=$started" -- https://license.claudinite.com/v1/sync/health
           # The live Polar path: a sandbox checkout made with the code the key Worker bundles, whose
           # checkout.created delivery, signed with the endpoint's secret, the sync Worker must verify.
-          # Nothing is bought; the checkout expires on its own.
+          # Polar sends it when the checkout is created, so the hosted page is never fetched. Nothing
+          # is bought; the checkout expires on its own.
           checkout=$(node tools/polar-checkout.mjs --plan private-repo --owner-id "$GITHUB_REPOSITORY_OWNER_ID" --owner-login "$GITHUB_REPOSITORY_OWNER" --owner-type "$OWNER_TYPE" --repo-id "$GITHUB_REPOSITORY_ID" --repo "$GITHUB_REPOSITORY")
           echo "sandbox checkout: $checkout"
-          probe 200 -- -L "$checkout"
           probe 200 "b.last_polar_webhook_at>=$started" -- https://license.claudinite.com/v1/sync/health
           # A real OIDC token from this run: deploy.yml is not a pinned workflow, so the verifier must
           # accept the token and the pin must refuse it.
           oidc=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=claudinite" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>process.stdout.write(JSON.parse(s).value))')
           echo "::add-mask::$oidc"
           probe 403 'b.refused==="workflow-not-pinned"' -- -X POST -H "Authorization: Bearer $oidc" -H 'content-type: application/json' -d '{"engine_version":"deploy-read-back"}' https://license.claudinite.com/v1/actions-key
+      - if: steps.gate.outputs.skip == 'false'
+        name: Read back the alerts
+        run: |
+          # A fresh deploy can inherit a standing condition it did not cause and cannot clear, such as a
+          # correction the previous reconcile already made, so a 503 is reported here, not failed.
+          status=$(curl -sS -o "$RUNNER_TEMP/alerts.json" -w '%{http_code}' --max-time 20 https://license.claudinite.com/v1/sync/alerts || true)
+          cat "$RUNNER_TEMP/alerts.json"; echo
+          B="$(cat "$RUNNER_TEMP/alerts.json")" S="$status" node -e '
+            let b = null;
+            try { b = JSON.parse(process.env.B); } catch {}
+            const s = process.env.S;
+            if (!(s === "200" || s === "503") || !b || typeof b.ok !== "boolean" || !Array.isArray(b.alerts)) {
+              console.log(`::error::/v1/sync/alerts answered ${s} without the alerts shape`);
+              process.exit(1);
+            }
+            for (const a of b.alerts) console.log(`::warning::standing alert ${a.id}${a.detail ? `: ${a.detail}` : ""}`);
+          '
+          rm -f "$RUNNER_TEMP/alerts.json"
+      - if: steps.gate.outputs.skip == 'false'
+        name: Probe the live Workers from outside
+        run: |
+          # The scheduled probe's checks; its alerts check is the step above's to report, and only the
+          # schedule files the standing issue.
+          OIDC=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=claudinite" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>process.stdout.write(JSON.parse(s).value))')
+          echo "::add-mask::$OIDC"
+          export OIDC
+          set +e
+          node tools/probe.mjs --base https://license.claudinite.com --oidc-token-env OIDC --json "$RUNNER_TEMP/probe.json" --attempts 3
+          set -e
+          node -e '
+            const s = JSON.parse(require("fs").readFileSync(process.env.RUNNER_TEMP + "/probe.json", "utf8"));
+            const failed = s.checks.filter((c) => !c.ok && c.name !== "sync-alerts");
+            for (const c of failed) console.log(`::error::probe check ${c.name} failed: ${c.detail}`);
+            process.exit(failed.length ? 1 : 0);
+          '

@@ -276,4 +276,45 @@ describe("deploy.yml", () => {
     expect(run.indexOf("polar-checkout.mjs")).toBeLessThan(run.indexOf("b.last_polar_webhook_at>=$started"));
     expect(step.env).toMatchObject({ POLAR_ACCESS_TOKEN: "${{ secrets.POLAR_SANDBOX_TOKEN }}", OWNER_TYPE: "${{ github.event.repository.owner.type }}" });
   });
+
+  it("no longer fetches the hosted checkout page: the checkout.created delivery is the whole proof", () => {
+    const run = steps.find((s) => s.name === "Read back the live Workers")!.run!;
+    const checkoutLines = run.split("\n").filter((l) => /\$checkout\b|\$\{checkout\}/.test(l) && !/^\s*#/.test(l));
+    expect(checkoutLines.filter((l) => /\b(curl|probe)\b/.test(l))).toEqual([]);
+  });
+
+  const alertsStep = () => steps.find((s) => (s.run ?? "").includes("https://license.claudinite.com/v1/sync/alerts"));
+  const probeStep = () => steps.find((s) => (s.run ?? "").split("\n").some((l) => /^\s*node tools\/probe\.mjs\b/.test(l)));
+
+  it("reads the alerts back, then runs the outside probe without --issue, with the run's OIDC token", () => {
+    const alerts = alertsStep();
+    const probe = probeStep();
+    expect(alerts).toBeDefined();
+    expect(probe).toBeDefined();
+    expect(steps.indexOf(alerts!)).toBeGreaterThan(steps.findIndex((s) => s.name === "Read back the live Workers"));
+    expect(steps.indexOf(alerts!)).toBeLessThan(steps.indexOf(probe!));
+    const line = probe!.run!.split("\n").find((l) => /^\s*node tools\/probe\.mjs\b/.test(l))!;
+    expect(line).toContain("--base https://license.claudinite.com");
+    expect(line).toMatch(/--oidc-token-env \w+/);
+    expect(line).not.toMatch(/--issue\b/);
+    expect(probe!.run).toContain("audience=claudinite");
+  });
+
+  // Runs the alerts step with a curl that answers `status` and `body`.
+  function alertsRun(status: number, body: string) {
+    const dir = mkdtempSync(join(tmpdir(), "acme-alerts-"));
+    writeFileSync(join(dir, "curl"), `#!/usr/bin/env bash\nout=""\nwhile [ $# -gt 0 ]; do if [ "$1" = -o ]; then out=$2; shift; fi; shift; done\nprintf '%s' '${body}' > "$out"\nprintf '%s' '${status}'\n`);
+    chmodSync(join(dir, "curl"), 0o755);
+    return runStep(alertsStep()!, {}, { PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir });
+  }
+
+  it("reports a standing alert without failing the deploy, and fails only on a body that is not the alerts shape", () => {
+    const clear = alertsRun(200, '{"ok":true,"checked_at":1,"alerts":[]}');
+    expect(clear.status, clear.stderr).toBe(0);
+    const standing = alertsRun(503, '{"ok":false,"checked_at":1,"alerts":[{"id":"polar-reconcile-corrected","since":1,"detail":"1"}]}');
+    expect(standing.status, standing.stderr).toBe(0);
+    expect(standing.stdout).toMatch(/::warning::.*polar-reconcile-corrected/);
+    expect(alertsRun(200, "not json").status).not.toBe(0);
+    expect(alertsRun(502, '{"ok":false,"alerts":[]}').status).not.toBe(0);
+  });
 });
