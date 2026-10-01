@@ -10,6 +10,16 @@ export function insertIncident(db: D1Database, marker: IncidentMarker, at: numbe
   return db.prepare("INSERT INTO incidents (marker, at, detail) VALUES (?, ?, ?)").bind(marker, at, detail == null ? null : detail.slice(0, INCIDENT_DETAIL_MAX));
 }
 
+/** Past this many of one marker in the last hour, insertCappedIncident records no more until the hour moves. */
+export const INCIDENT_HOURLY_CAP = 100;
+
+/** An incident a caller nobody authenticated can trigger, recorded only while the marker's last hour holds fewer than the cap. */
+export function insertCappedIncident(db: D1Database, marker: IncidentMarker, at: number, detail?: string | null): D1PreparedStatement {
+  return db
+    .prepare("INSERT INTO incidents (marker, at, detail) SELECT ?, ?, ? WHERE (SELECT COUNT(*) FROM incidents WHERE marker = ? AND at >= ?) < ?")
+    .bind(marker, at, detail == null ? null : detail.slice(0, INCIDENT_DETAIL_MAX), marker, at - 3600, INCIDENT_HOURLY_CAP);
+}
+
 export async function pruneIncidents(db: D1Database, nowS: number): Promise<number> {
   const res = await db.prepare("DELETE FROM incidents WHERE at < ?").bind(nowS - INCIDENT_KEEP_S).run();
   return res.meta.changes;

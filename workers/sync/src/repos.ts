@@ -26,7 +26,8 @@ export type StampName =
   | "last_polar_reconcile_error"
   | "last_queue_at"
   | "queue_lag_s"
-  | "last_dead_letter_at";
+  | "last_dead_letter_at"
+  | "paying_uncovered";
 
 export function upsertRepo(db: D1Database, r: RepoRow, nowS: number): D1PreparedStatement {
   return db

@@ -129,6 +129,7 @@ describe("GET /v1/sync/health", () => {
       last_queue_at: null,
       queue_lag_s: null,
       last_dead_letter_at: null,
+      paying_uncovered: null,
       polar_webhook_secret: true,
     });
     const { POLAR_WEBHOOK_SECRET: _unset, ...noSecret } = env;

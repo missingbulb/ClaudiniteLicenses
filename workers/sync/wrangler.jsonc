@@ -5,7 +5,9 @@
   "compatibility_date": "2026-08-15",
   "workers_dev": false,
   "observability": { "enabled": true },
-  // The webhook path has no public route: it is reached only through the router's service binding.
+  // The App's webhook path, /webhook, has no public route: it is reached only through the router's
+  // service binding. Everything under /v1/sync/ is public by design: health, alerts, Polar's
+  // webhook (verified by its signature) and the reconciles (behind the admin token).
   "routes": [{ "pattern": "license.claudinite.com/v1/sync/*", "zone_name": "claudinite.com" }],
   // deploy.yml writes the real database_id with tools/ensure-d1.mjs --write; the committed value is a placeholder.
   "d1_databases": [

@@ -1,8 +1,9 @@
 // Polar's signed webhooks: subscription events upsert the subscriptions table; every other event,
 // checkout.created included, is acknowledged with no write. A verified delivery stamps
-// last_polar_webhook_at; a refused one stamps nothing, so a secret that stops matching shows as a
-// stale stamp.
+// last_polar_webhook_at; a refused one stamps nothing and records a polar-webhook-refused incident,
+// so a secret that stops matching shows as a stale stamp and, repeated, as an alert.
 import { SUBSCRIPTION_EVENTS, verifyWebhook, type PolarSubscription } from "../../../packages/polar/src/index.ts";
+import { insertCappedIncident } from "./incidents.ts";
 import { stamp } from "./repos.ts";
 import { subscriptionRow, upsertSubscription } from "./subscriptions.ts";
 
@@ -11,16 +12,22 @@ export interface PolarWebhookEnv {
   POLAR_WEBHOOK_SECRET?: string;
 }
 
-function refuse(reason: string): Response {
+async function refuse(db: D1Database, reason: string, nowS: number): Promise<Response> {
   console.log(JSON.stringify({ marker: "polar-webhook-refused", reason }));
+  try {
+    // Anyone can post here unsigned, so the record is capped per hour.
+    await insertCappedIncident(db, "polar-webhook-refused", nowS, reason).run();
+  } catch (err) {
+    console.error(JSON.stringify({ marker: "incident-unwritten", error: String(err) }));
+  }
   return new Response(reason, { status: 401 });
 }
 
 export async function polarWebhook(req: Request, env: PolarWebhookEnv, nowS: number): Promise<Response> {
   const body = await req.text();
-  if (!env.POLAR_WEBHOOK_SECRET) return refuse("secret-unset");
+  if (!env.POLAR_WEBHOOK_SECRET) return refuse(env.DB, "secret-unset", nowS);
   const verdict = await verifyWebhook(req.headers, body, env.POLAR_WEBHOOK_SECRET, nowS);
-  if (!verdict.ok) return refuse(verdict.reason);
+  if (!verdict.ok) return refuse(env.DB, verdict.reason, nowS);
   const { type, data } = verdict.event;
   const seen = stamp(env.DB, "last_polar_webhook_at", nowS);
   if (!(SUBSCRIPTION_EVENTS as readonly string[]).includes(type)) {
