@@ -1,12 +1,15 @@
 import { b64urlEncode } from "../../../packages/signing/src/index.ts";
 
 export class GitHubError extends Error {
-  constructor(
-    readonly status: number,
-    readonly body: string,
-    readonly call: string,
-  ) {
+  readonly status: number;
+  readonly body: string;
+  readonly call: string;
+
+  constructor(status: number, body: string, call: string) {
     super(`${call} answered ${status}`);
+    this.status = status;
+    this.body = body;
+    this.call = call;
   }
 
   get secondaryRateLimit(): boolean {
