@@ -26,7 +26,7 @@ async function startCloudflare(databases: { uuid: string; name: string }[]) {
       const url = new URL(req.url!, "http://x");
       const send = (result: unknown) => res.end(JSON.stringify({ success: true, result }));
       if (req.headers.authorization !== "Bearer t") {
-        res.statusCode = 403;
+        res.statusCode = req.headers.authorization === "Bearer expired" ? 401 : 403;
         return res.end(JSON.stringify({ success: false, errors: [{ message: "bad token" }] }));
       }
       if (url.pathname === "/accounts/acct/d1/database" && req.method === "GET") {
@@ -66,6 +66,16 @@ describe("tools/ensure-d1.mjs", () => {
   it("fails on a Cloudflare error", async () => {
     const cf = await startCloudflare([]);
     await expect(ensureD1({ base: cf.base, token: "wrong", accountId: "acct", name: NAME })).rejects.toThrow(/403/);
+  });
+
+  it("names the D1 Edit permission when Cloudflare refuses the token, and only then", async () => {
+    const cf = await startCloudflare([]);
+    for (const token of ["wrong", "expired"]) {
+      await expect(ensureD1({ base: cf.base, token, accountId: "acct", name: NAME })).rejects.toThrow(/CLOUDFLARE_API_TOKEN needs the D1 Edit permission/);
+    }
+    const missing = ensureD1({ base: cf.base, token: "t", accountId: "other", name: NAME });
+    await expect(missing).rejects.toThrow(/404/);
+    await expect(ensureD1({ base: cf.base, token: "t", accountId: "other", name: NAME })).rejects.not.toThrow(/D1 Edit/);
   });
 
   it("--write patches database_id in exactly the three configs and leaves every other key untouched", () => {

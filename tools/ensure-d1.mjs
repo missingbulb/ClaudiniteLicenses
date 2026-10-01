@@ -23,7 +23,10 @@ export async function ensureD1({ base = "https://api.cloudflare.com/client/v4", 
   const call = async (method, path, body) => {
     const res = await fetch(`${base}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
     const json = await res.json().catch(() => ({}));
-    if (!res.ok || json.success === false) throw new Error(`${method} ${path} answered ${res.status}: ${JSON.stringify(json.errors ?? json)}`);
+    if (!res.ok || json.success === false) {
+      const hint = res.status === 401 || res.status === 403 ? "; the CLOUDFLARE_API_TOKEN needs the D1 Edit permission on this account" : "";
+      throw new Error(`${method} ${path} answered ${res.status}: ${JSON.stringify(json.errors ?? json)}${hint}`);
+    }
     return json.result;
   };
   const path = `/accounts/${accountId}/d1/database`;
