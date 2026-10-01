@@ -125,10 +125,10 @@ describe("POST /v1/sync/reconcile", () => {
 });
 
 describe("GET /v1/sync/health", () => {
-  it("reads back nulls on a fresh database", async () => {
+  it("reads back the GitHub stamps as null on a fresh database", async () => {
     const res = await fetchPath("/v1/sync/health");
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, repos: 0, last_webhook_at: null, last_reconcile_at: null, last_reconcile_corrections: null });
+    expect(await res.json()).toMatchObject({ ok: true, repos: 0, last_webhook_at: null, last_reconcile_at: null, last_reconcile_corrections: null });
   });
 
   it("reads back the stamps after a webhook and a reconcile", async () => {

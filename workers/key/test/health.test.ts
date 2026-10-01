@@ -15,8 +15,13 @@ describe("GET /v1/key/health", () => {
   it("names the issuing key, its certificate's expiry and that D1 answers, calling no one", async () => {
     const res = await call("/v1/key/health");
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, kid: cert().keyId, cert_exp: cert().notAfter, d1: "ok" });
+    expect(await res.json()).toEqual({ ok: true, kid: cert().keyId, cert_exp: cert().notAfter, d1: "ok", queue: "bound", polar: "configured" });
     expect(world.calls).toHaveLength(0);
+  });
+
+  it("says when the queue is unbound or Polar is unconfigured", async () => {
+    const res = await call("/v1/key/health", {}, env({ WRITES: undefined, POLAR_ACCESS_TOKEN: undefined }));
+    expect(await res.json()).toMatchObject({ queue: "unbound", polar: "unconfigured" });
   });
 
   it("says d1 unreadable when D1 throws", async () => {
@@ -29,4 +34,5 @@ describe("GET /v1/key/health", () => {
 it("answers 404 off its routes", async () => {
   expect((await call("/v1/key/other")).status).toBe(404);
   expect((await call("/webhook")).status).toBe(404);
+  expect((await call("/v1/item-grant")).status).toBe(404);
 });

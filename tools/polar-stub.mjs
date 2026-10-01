@@ -1,12 +1,19 @@
 #!/usr/bin/env node
-// A local stand-in for the Polar API calls the billing tools make: the token's organization and its
-// customer portal settings, and products with their prices and benefits. It answers only requests
-// carrying its token and a Polar-Version it knows, and records every write.
+// A local stand-in for the Polar API calls the billing tools and the Workers make: the token's
+// organization and its customer portal settings, products with their prices and benefits,
+// subscriptions (paged, from a seeded list), checkouts, customer sessions, and webhook endpoints
+// with a generated whsec_ secret each, plus deliver(), which posts a Standard Webhooks delivery
+// signed with an endpoint's secret to its url. It answers only requests carrying its token and a
+// Polar-Version it knows, and records every write. The links it hands out are https URLs naming
+// the stub's address, which nothing serves over TLS; they only have to be shaped like Polar's.
 //
 //   node tools/polar-stub.mjs --port <n> [--token <t>]
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { parseArgs } from "node:util";
+import { MANAGED_BY, signDelivery } from "../packages/polar/src/index.ts";
+
+export { signDelivery };
 
 export const STUB_VERSIONS = ["2026-04", "2026-10", "2027-01"];
 
@@ -14,6 +21,8 @@ export const STUB_VERSIONS = ["2026-04", "2026-10", "2027-01"];
  * @typedef {{ id: string, created_at: string, modified_at: string | null, source: string, amount_type: string, price_currency: string, tax_behavior: string | null, is_archived: boolean, product_id: string, seat_tiers?: any, price_amount?: number }} Price
  * @typedef {{ id: string, created_at: string, modified_at: string | null, name: string, description: string | null, visibility: string, recurring_interval: string | null, recurring_interval_count: number | null, is_recurring: boolean, is_archived: boolean, organization_id: string, metadata: Record<string, unknown>, prices: Price[], benefits: { id: string }[], medias: [], attached_custom_fields: [] }} Product
  * @typedef {{ name?: string, metadata?: Record<string, unknown>, recurring_interval?: string | null, is_archived?: boolean, prices?: any[], benefits?: string[] }} Seed
+ * @typedef {{ id?: string, externalId: string | null, plan: string, interval?: "month" | "year", seats: number, status?: string, ownerType?: string, repo?: { id: number, fullName: string }, metadata?: Record<string, unknown>, product?: any, managed?: boolean }} SubscriptionSeed
+ * @typedef {{ id: string, created_at: string, modified_at: string | null, url: string, name: string | null, api_version: string, format: string, secret: string, organization_id: string, events: string[], enabled: boolean, uses_standard_webhook_signature: boolean }} Endpoint
  */
 
 /**
@@ -40,7 +49,17 @@ export async function startPolarStub(opts = {}) {
     writes: [],
     /** @type {string[]} */
     requests: [],
+    /** @type {any[]} */
+    subscriptions: [],
+    /** @type {{ id: string, body: any }[]} */
+    checkouts: [],
+    /** @type {any[]} */
+    customerSessions: [],
+    /** @type {Endpoint[]} */
+    endpoints: [],
   };
+  /** @type {string} filled once the server listens */
+  let linkOrigin = "";
 
   /** @param {string} productId @param {any} p @returns {Price} */
   const newPrice = (productId, p) => ({
@@ -91,6 +110,98 @@ export async function startPolarStub(opts = {}) {
     product.prices = (seed.prices ?? [{ amount_type: "fixed", price_amount: 500 }]).map((p) => newPrice(id, p));
     state.products.push(product);
     return product;
+  };
+
+  /** A Polar-shaped subscription, on a product we manage for the plan unless `managed` is false. @param {SubscriptionSeed} seed */
+  const createSubscription = (seed) => {
+    const interval = seed.interval ?? "month";
+    const product =
+      seed.product ??
+      state.products.find((p) => p.metadata.managed_by === MANAGED_BY && p.metadata.claudinite_plan === seed.plan && p.metadata.claudinite_interval === interval) ?? {
+        id: randomUUID(),
+        name: `${seed.plan} (${interval})`,
+        is_archived: false,
+        recurring_interval: interval,
+        metadata: { claudinite_plan: seed.plan, claudinite_interval: interval, ...(seed.managed === false ? {} : { managed_by: MANAGED_BY }) },
+      };
+    const at = now();
+    const metadata = {
+      claudinite_plan: seed.plan,
+      ...(seed.externalId ? { github_owner_id: seed.externalId } : {}),
+      github_owner_type: seed.ownerType ?? (seed.plan === "organization" ? "Organization" : "User"),
+      ...(seed.repo ? { github_repo_id: String(seed.repo.id), github_repo_full_name: seed.repo.fullName } : {}),
+      ...seed.metadata,
+    };
+    const sub = {
+      id: seed.id ?? randomUUID(),
+      created_at: at,
+      modified_at: null,
+      status: seed.status ?? "active",
+      recurring_interval: interval,
+      current_period_start: at,
+      current_period_end: new Date(Date.parse(at) + 30 * 86_400_000).toISOString(),
+      cancel_at_period_end: false,
+      canceled_at: null,
+      started_at: at,
+      ends_at: null,
+      ended_at: null,
+      customer_id: randomUUID(),
+      product_id: product.id,
+      seats: seed.seats,
+      metadata,
+      customer: { id: randomUUID(), external_id: seed.externalId, email: "acme@example.com" },
+      product,
+    };
+    state.subscriptions.push(sub);
+    return sub;
+  };
+
+  /** Ends a subscription as Polar's revoke does: canceled, ended at `at`. @param {string} id @param {string} at */
+  const endSubscription = (id, at) => {
+    const sub = state.subscriptions.find((s) => s.id === id);
+    if (!sub) throw new Error(`no subscription ${id}`);
+    Object.assign(sub, { status: "canceled", ended_at: at, ends_at: at, canceled_at: at, modified_at: now() });
+    return sub;
+  };
+
+  /** @param {{ url: string, events: string[], format?: string, api_version?: string }} body @returns {Endpoint} */
+  const addEndpoint = (body) => {
+    const endpoint = {
+      id: randomUUID(),
+      created_at: now(),
+      modified_at: null,
+      url: body.url,
+      name: null,
+      api_version: body.api_version ?? "2026-04",
+      format: body.format ?? "raw",
+      secret: `whsec_${randomBytes(32).toString("base64")}`,
+      organization_id: organization.id,
+      events: body.events,
+      enabled: true,
+      uses_standard_webhook_signature: true,
+    };
+    state.endpoints.push(endpoint);
+    return endpoint;
+  };
+
+  /**
+   * Posts one Standard Webhooks delivery of `event` to the endpoint's url, signed with its secret,
+   * and returns the answer's status.
+   * @param {string} event @param {unknown} data @param {{ endpointId: string, timestamp?: number }} opts
+   */
+  const deliver = async (event, data, opts) => {
+    const endpoint = state.endpoints.find((e) => e.id === opts.endpointId);
+    if (!endpoint) throw new Error(`no endpoint ${opts.endpointId}`);
+    const id = `msg_${randomUUID()}`;
+    const timestamp = opts.timestamp ?? Math.floor(Date.now() / 1000);
+    const body = JSON.stringify({ type: event, timestamp: new Date(timestamp * 1000).toISOString(), data });
+    const res = await fetch(endpoint.url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "webhook-id": id, "webhook-timestamp": String(timestamp), "webhook-signature": await signDelivery(endpoint.secret, id, timestamp, body) },
+      body,
+    });
+    await res.arrayBuffer();
+    return res.status;
   };
 
   const server = createServer(async (req, res) => {
@@ -162,18 +273,50 @@ export async function startPolarStub(opts = {}) {
       product.benefits = (body.benefits ?? []).map((/** @type {string} */ b) => ({ id: b }));
       return send(200, product);
     }
+    if (req.method === "GET" && path === "/v1/subscriptions/") return page(state.subscriptions);
+    if (req.method === "POST" && path === "/v1/checkouts/") {
+      if (!Array.isArray(body?.products) || body.products.length === 0) return send(422, { detail: [{ msg: "products is required" }] });
+      const id = randomUUID();
+      state.checkouts.push({ id, body });
+      return send(201, { id, url: `${linkOrigin}/checkout/${id}`, expires_at: new Date(clock + 3600_000).toISOString(), status: "open", products: body.products, external_customer_id: body.external_customer_id ?? null, metadata: body.metadata ?? {} });
+    }
+    if (req.method === "POST" && path === "/v1/customer-sessions/") {
+      state.customerSessions.push(body);
+      const known = state.subscriptions.some((s) => s.customer.external_id !== null && s.customer.external_id === body?.external_customer_id);
+      if (!known) return send(404, { error: "ResourceNotFound", detail: "Customer not found" });
+      const token = randomBytes(12).toString("hex");
+      return send(201, { id: randomUUID(), token, expires_at: new Date(clock + 3600_000).toISOString(), customer_portal_url: `${linkOrigin}/portal/${token}` });
+    }
+    if (req.method === "GET" && (path === "/v1/webhooks/endpoints" || path === "/v1/webhooks/endpoints/")) return page(state.endpoints);
+    if (req.method === "POST" && (path === "/v1/webhooks/endpoints" || path === "/v1/webhooks/endpoints/")) {
+      if (!body?.url || !body.format || !Array.isArray(body.events)) return send(422, { detail: [{ msg: "url, format and events are required" }] });
+      return send(201, addEndpoint(body));
+    }
+    if (req.method === "DELETE" && (m = /^\/v1\/webhooks\/endpoints\/([^/]+)$/.exec(path))) {
+      const at = state.endpoints.findIndex((e) => e.id === m[1]);
+      if (at === -1) return send(404, { error: "ResourceNotFound" });
+      state.endpoints.splice(at, 1);
+      return send(204);
+    }
     return send(404, { detail: "Not Found (stub)" });
   });
 
   await new Promise((ok) => server.listen(opts.port ?? 0, "127.0.0.1", () => ok(undefined)));
   const address = server.address();
   const port = typeof address === "object" && address ? address.port : 0;
+  linkOrigin = `https://127.0.0.1:${port}`;
   return {
     port,
     base: `http://127.0.0.1:${port}`,
+    /** The origin of the checkout and portal links the stub hands out. */
+    linkOrigin,
     token,
     state,
     addProduct,
+    createSubscription,
+    endSubscription,
+    addEndpoint,
+    deliver,
     close: () =>
       new Promise((ok) => {
         server.closeAllConnections();

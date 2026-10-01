@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      rotate_polar_webhook:
+        description: Replace the Polar webhook endpoint, and with it the sync Worker's POLAR_WEBHOOK_SECRET
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -50,6 +55,7 @@ jobs:
           ISSUING_KEY_CERT: ${{ secrets.ISSUING_KEY_CERT }}
           KEY_ISSUING_KEY_PRIVATE: ${{ secrets.KEY_ISSUING_KEY_PRIVATE }}
           KEY_ISSUING_KEY_CERT: ${{ secrets.KEY_ISSUING_KEY_CERT }}
+          POLAR_SANDBOX_TOKEN: ${{ secrets.POLAR_SANDBOX_TOKEN }}
         run: |
           for pair in "ISSUING_KEY_PRIVATE ISSUING_KEY_CERT" "KEY_ISSUING_KEY_PRIVATE KEY_ISSUING_KEY_CERT"; do
             set -- $pair
@@ -60,7 +66,7 @@ jobs:
             fi
           done
           missing=""
-          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLAUDINITE_GITHUB_APP_ID CLAUDINITE_GITHUB_APP_PRIVATE_KEY CLAUDINITE_GITHUB_APP_WEBHOOK_SECRET; do
+          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLAUDINITE_GITHUB_APP_ID CLAUDINITE_GITHUB_APP_PRIVATE_KEY CLAUDINITE_GITHUB_APP_WEBHOOK_SECRET POLAR_SANDBOX_TOKEN; do
             if [ -z "$(printenv "$name")" ]; then missing="$missing $name"; fi
           done
           if [ -n "$missing" ]; then
@@ -98,6 +104,12 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npx wrangler d1 migrations apply claudinite-licenses --remote -c db/wrangler.jsonc
       - if: steps.gate.outputs.skip == 'false'
+        name: Make the writes queue and its dead-letter queue exist
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node tools/ensure-queue.mjs --name claudinite-licenses-writes --dlq
+      - if: steps.gate.outputs.skip == 'false'
         name: Secrets for claudinite-public-key
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -126,8 +138,9 @@ jobs:
           GITHUB_APP_CLIENT_SECRET: ${{ secrets.CLAUDINITE_GITHUB_APP_CLIENT_SECRET }}
           ISSUING_KEY_PRIVATE: ${{ secrets.KEY_ISSUING_KEY_PRIVATE }}
           ISSUING_KEY_CERT: ${{ secrets.KEY_ISSUING_KEY_CERT }}
+          POLAR_ACCESS_TOKEN: ${{ secrets.POLAR_SANDBOX_TOKEN }}
         run: |
-          node -e 'const e=process.env,dev=(f)=>require("fs").readFileSync("keys/dev/"+f,"utf8"),useDev=!e.ISSUING_KEY_PRIVATE;console.log(JSON.stringify({GITHUB_APP_ID:e.GITHUB_APP_ID,GITHUB_APP_PRIVATE_KEY:e.GITHUB_APP_PRIVATE_KEY,...(e.GITHUB_APP_CLIENT_SECRET?{GITHUB_APP_CLIENT_SECRET:e.GITHUB_APP_CLIENT_SECRET}:{}),ISSUING_KEY_PRIVATE:useDev?dev("license.key"):e.ISSUING_KEY_PRIVATE,ISSUING_KEY_CERT:useDev?dev("license.cert.json"):e.ISSUING_KEY_CERT}))' > "$RUNNER_TEMP/key.secrets.json"
+          node -e 'const e=process.env,dev=(f)=>require("fs").readFileSync("keys/dev/"+f,"utf8"),useDev=!e.ISSUING_KEY_PRIVATE;console.log(JSON.stringify({GITHUB_APP_ID:e.GITHUB_APP_ID,GITHUB_APP_PRIVATE_KEY:e.GITHUB_APP_PRIVATE_KEY,...(e.GITHUB_APP_CLIENT_SECRET?{GITHUB_APP_CLIENT_SECRET:e.GITHUB_APP_CLIENT_SECRET}:{}),ISSUING_KEY_PRIVATE:useDev?dev("license.key"):e.ISSUING_KEY_PRIVATE,ISSUING_KEY_CERT:useDev?dev("license.cert.json"):e.ISSUING_KEY_CERT,POLAR_ACCESS_TOKEN:e.POLAR_ACCESS_TOKEN}))' > "$RUNNER_TEMP/key.secrets.json"
           npx wrangler secret bulk "$RUNNER_TEMP/key.secrets.json" -c workers/key/wrangler.jsonc
           rm "$RUNNER_TEMP/key.secrets.json"
       - if: steps.gate.outputs.skip == 'false'
@@ -135,7 +148,26 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx wrangler deploy -c workers/key/wrangler.jsonc
+        run: |
+          # The roots an Actions key must chain to for an item grant.
+          roots=$(node tools/keys.mjs trust-roots)
+          npx wrangler deploy -c workers/key/wrangler.jsonc --var "TRUST_ROOTS:$roots"
+      - if: steps.gate.outputs.skip == 'false'
+        name: Make the Polar webhook endpoint exist
+        env:
+          POLAR_API_BASE: https://sandbox-api.polar.sh
+          POLAR_ACCESS_TOKEN: ${{ secrets.POLAR_SANDBOX_TOKEN }}
+          ROTATE: ${{ inputs.rotate_polar_webhook }}
+        run: |
+          # Polar shows an endpoint's secret only when it makes the endpoint, so a Worker that lost or
+          # never had the secret needs a new endpoint; otherwise the existing one is kept.
+          rotate=""
+          if [ "$ROTATE" = "true" ]; then
+            rotate="--rotate"
+          elif ! curl -sS --max-time 20 https://license.claudinite.com/v1/sync/health | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{let b={};try{b=JSON.parse(s)}catch{}process.exit(b.polar_webhook_secret===true?0:1)})'; then
+            rotate="--rotate"
+          fi
+          node tools/ensure-polar-webhook.mjs --url https://license.claudinite.com/v1/sync/polar-webhook --secret-out "$RUNNER_TEMP/polar-webhook-secret" $rotate
       - if: steps.gate.outputs.skip == 'false'
         name: Secrets for claudinite-sync
         env:
@@ -143,15 +175,17 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           GITHUB_APP_ID: ${{ secrets.CLAUDINITE_GITHUB_APP_ID }}
           GITHUB_APP_PRIVATE_KEY: ${{ secrets.CLAUDINITE_GITHUB_APP_PRIVATE_KEY }}
+          POLAR_ACCESS_TOKEN: ${{ secrets.POLAR_SANDBOX_TOKEN }}
         run: |
           # A fresh admin token every run, kept only until the read-back has used it once.
           umask 077
           SYNC_ADMIN_TOKEN=$(openssl rand -hex 32)
           echo "::add-mask::$SYNC_ADMIN_TOKEN"
           printf %s "$SYNC_ADMIN_TOKEN" > "$RUNNER_TEMP/sync-admin-token"
-          SYNC_ADMIN_TOKEN=$SYNC_ADMIN_TOKEN node -e 'const e=process.env;console.log(JSON.stringify({GITHUB_APP_ID:e.GITHUB_APP_ID,GITHUB_APP_PRIVATE_KEY:e.GITHUB_APP_PRIVATE_KEY,SYNC_ADMIN_TOKEN:e.SYNC_ADMIN_TOKEN}))' > "$RUNNER_TEMP/sync.secrets.json"
+          # The webhook secret exists only when the step before made a new endpoint.
+          SYNC_ADMIN_TOKEN=$SYNC_ADMIN_TOKEN node -e 'const e=process.env,fs=require("fs"),f=e.RUNNER_TEMP+"/polar-webhook-secret",hook=fs.existsSync(f)?{POLAR_WEBHOOK_SECRET:fs.readFileSync(f,"utf8")}:{};console.log(JSON.stringify({GITHUB_APP_ID:e.GITHUB_APP_ID,GITHUB_APP_PRIVATE_KEY:e.GITHUB_APP_PRIVATE_KEY,SYNC_ADMIN_TOKEN:e.SYNC_ADMIN_TOKEN,POLAR_ACCESS_TOKEN:e.POLAR_ACCESS_TOKEN,...hook}))' > "$RUNNER_TEMP/sync.secrets.json"
           npx wrangler secret bulk "$RUNNER_TEMP/sync.secrets.json" -c workers/sync/wrangler.jsonc
-          rm "$RUNNER_TEMP/sync.secrets.json"
+          rm -f "$RUNNER_TEMP/sync.secrets.json" "$RUNNER_TEMP/polar-webhook-secret"
       - if: steps.gate.outputs.skip == 'false'
         name: Deploy claudinite-sync
         env:
@@ -181,6 +215,10 @@ jobs:
         run: node tools/ensure-dns.mjs --zone claudinite.com --name license.claudinite.com
       - if: steps.gate.outputs.skip == 'false'
         name: Read back the live Workers
+        env:
+          POLAR_API_BASE: https://sandbox-api.polar.sh
+          POLAR_ACCESS_TOKEN: ${{ secrets.POLAR_SANDBOX_TOKEN }}
+          OWNER_TYPE: ${{ github.event.repository.owner.type }}
         run: |
           # probe <status> [<node expression over the JSON body, b>] -- <curl args>
           probe() {
@@ -202,12 +240,23 @@ jobs:
           token=$(cat "$RUNNER_TEMP/sync-admin-token")
           rm "$RUNNER_TEMP/sync-admin-token"
           probe 200 -- https://license.claudinite.com/v1/public/health
-          probe 200 'b.d1==="ok"' -- https://license.claudinite.com/v1/key/health
+          probe 200 'b.d1==="ok"&&b.queue==="bound"&&b.polar==="configured"' -- https://license.claudinite.com/v1/key/health
           probe 200 -- https://license.claudinite.com/v1/sync/health
           probe 200 'b.ok===true' -- -X POST -H "Authorization: Bearer $token" https://license.claudinite.com/v1/sync/reconcile
           # The App is installed on all of missingbulb, so the reconcile must have found repos.
           probe 200 "b.repos>0&&b.last_reconcile_at>=$started" -- https://license.claudinite.com/v1/sync/health
           probe 401 -- -X POST -H 'content-type: application/json' -d '{}' https://license.claudinite.com/github-webhook
+          probe 200 'b.polar_webhook_secret===true' -- https://license.claudinite.com/v1/sync/health
+          # A real listing of the sandbox's subscriptions, empty or not.
+          probe 200 'b.ok===true' -- -X POST -H "Authorization: Bearer $token" https://license.claudinite.com/v1/sync/polar-reconcile
+          probe 200 "b.last_polar_reconcile_at>=$started" -- https://license.claudinite.com/v1/sync/health
+          # The live Polar path: a sandbox checkout made with the code the key Worker bundles, whose
+          # checkout.created delivery, signed with the endpoint's secret, the sync Worker must verify.
+          # Nothing is bought; the checkout expires on its own.
+          checkout=$(node tools/polar-checkout.mjs --plan private-repo --owner-id "$GITHUB_REPOSITORY_OWNER_ID" --owner-login "$GITHUB_REPOSITORY_OWNER" --owner-type "$OWNER_TYPE" --repo-id "$GITHUB_REPOSITORY_ID" --repo "$GITHUB_REPOSITORY")
+          echo "sandbox checkout: $checkout"
+          probe 200 -- -L "$checkout"
+          probe 200 "b.last_polar_webhook_at>=$started" -- https://license.claudinite.com/v1/sync/health
           # A real OIDC token from this run: deploy.yml is not a pinned workflow, so the verifier must
           # accept the token and the pin must refuse it.
           oidc=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=claudinite" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>process.stdout.write(JSON.parse(s).value))')

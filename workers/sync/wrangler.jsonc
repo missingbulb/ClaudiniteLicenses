@@ -11,6 +11,17 @@
   "d1_databases": [
     { "binding": "DB", "database_name": "claudinite-licenses", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "../../db/migrations" }
   ],
-  "triggers": { "crons": ["17 3 * * *"] },
-  "vars": { "GITHUB_API_BASE": "https://api.github.com" }
+  // The nightly cron runs the GitHub and Polar reconciles; the hourly one reruns the Polar reconcile
+  // only after a failure or a day without success.
+  "triggers": { "crons": ["17 3 * * *", "47 * * * *"] },
+  // The key Worker produces onto claudinite-licenses-writes; deploy.yml creates both queues with
+  // tools/ensure-queue.mjs before either Worker deploys.
+  "queues": {
+    "consumers": [
+      { "queue": "claudinite-licenses-writes", "max_batch_size": 100, "max_batch_timeout": 5, "max_retries": 5, "dead_letter_queue": "claudinite-licenses-writes-dlq" },
+      { "queue": "claudinite-licenses-writes-dlq", "max_batch_size": 100 }
+    ]
+  },
+  // The sandbox until the commercial track flips both Workers to the production organization.
+  "vars": { "GITHUB_API_BASE": "https://api.github.com", "POLAR_API_BASE": "https://sandbox-api.polar.sh" }
 }

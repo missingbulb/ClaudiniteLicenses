@@ -1,9 +1,15 @@
 // The sync Worker, the only writer of D1: the Claudinite App's installation and repository
-// webhooks, forwarded by the router, keep the repos table current, and the nightly reconcile
-// repairs whatever a lost or reordered webhook left. It holds no signing key.
+// webhooks, forwarded by the router, keep the repos table current; Polar's signed webhooks and the
+// Polar reconcile keep subscriptions current; and the writes queue brings the seat, usage and
+// overuse records the key Worker produces. The nightly reconciles repair whatever a lost or
+// reordered webhook left. It holds no signing key.
 import { GitHubError } from "../../../packages/github-app/src/index.ts";
+import { PolarError } from "../../../packages/polar/src/index.ts";
+import { polarReconcileDue, reconcilePolar } from "./polar-reconcile.ts";
+import { polarWebhook } from "./polar-webhook.ts";
 import { githubClient, reconcileInstallations } from "./reconcile.ts";
 import { applyWebhook } from "./repos.ts";
+import { consumeWrites } from "./writes.ts";
 
 export interface Env {
   DB: D1Database;
@@ -11,7 +17,14 @@ export interface Env {
   GITHUB_APP_PRIVATE_KEY: string;
   SYNC_ADMIN_TOKEN?: string;
   GITHUB_API_BASE?: string;
+  POLAR_API_BASE?: string;
+  POLAR_ACCESS_TOKEN?: string;
+  POLAR_WEBHOOK_SECRET?: string;
 }
+
+/** The nightly cron runs both reconciles; the hourly one retries the Polar reconcile when it is due. */
+const NIGHTLY_CRON = "17 3 * * *";
+const HOURLY_CRON = "47 * * * *";
 
 const nowS = () => Math.floor(Date.now() / 1000);
 
@@ -24,21 +37,33 @@ async function bearerMatches(req: Request, secret: string | undefined): Promise<
   return a.every((x, i) => x === b[i]);
 }
 
-async function stampAt(db: D1Database, name: string): Promise<{ at: number; detail: string | null } | null> {
-  return db.prepare("SELECT at, detail FROM sync_state WHERE name = ?").bind(name).first<{ at: number; detail: string | null }>();
-}
-
 async function health(env: Env): Promise<Response> {
-  const count = await env.DB.prepare("SELECT COUNT(*) AS n FROM repos").first<{ n: number }>();
-  const webhook = await stampAt(env.DB, "last_webhook_at");
-  const reconcile = await stampAt(env.DB, "last_reconcile_at");
-  const corrections = await stampAt(env.DB, "last_reconcile_corrections");
+  const nowS = Math.floor(Date.now() / 1000);
+  const counts = await env.DB.prepare(
+    "SELECT (SELECT COUNT(*) FROM repos) AS repos, (SELECT COUNT(*) FROM subscriptions) AS subscriptions, (SELECT COUNT(*) FROM seats WHERE last_key_at >= ?) AS seats",
+  )
+    .bind(nowS - 30 * 86400)
+    .first<{ repos: number; subscriptions: number; seats: number }>();
+  const { results } = await env.DB.prepare("SELECT name, at, detail FROM sync_state").all<{ name: string; at: number; detail: string | null }>();
+  const row = (name: string) => results.find((r) => r.name === name);
+  const at = (name: string) => row(name)?.at ?? null;
+  const count = (name: string) => (row(name)?.detail == null ? null : Number(row(name)!.detail));
   return Response.json({
     ok: true,
-    repos: count?.n ?? 0,
-    last_webhook_at: webhook?.at ?? null,
-    last_reconcile_at: reconcile?.at ?? null,
-    last_reconcile_corrections: corrections?.detail == null ? null : Number(corrections.detail),
+    repos: counts?.repos ?? 0,
+    subscriptions: counts?.subscriptions ?? 0,
+    seats: counts?.seats ?? 0,
+    last_webhook_at: at("last_webhook_at"),
+    last_reconcile_at: at("last_reconcile_at"),
+    last_reconcile_corrections: count("last_reconcile_corrections"),
+    last_polar_webhook_at: at("last_polar_webhook_at"),
+    last_polar_reconcile_at: at("last_polar_reconcile_at"),
+    last_polar_reconcile_corrections: count("last_polar_reconcile_corrections"),
+    last_polar_reconcile_error: row("last_polar_reconcile_error")?.detail ?? null,
+    last_queue_at: at("last_queue_at"),
+    queue_lag_s: count("queue_lag_s"),
+    last_dead_letter_at: at("last_dead_letter_at"),
+    polar_webhook_secret: Boolean(env.POLAR_WEBHOOK_SECRET),
   });
 }
 
@@ -54,6 +79,28 @@ async function reconcileNow(env: Env): Promise<Response> {
   }
 }
 
+async function polarReconcileNow(env: Env): Promise<Response> {
+  try {
+    const out = await reconcilePolar(env, nowS());
+    console.log(JSON.stringify({ reconcile: "polar", ...out }));
+    return Response.json({ ok: true, ...out });
+  } catch (err) {
+    if (!(err instanceof PolarError)) throw err;
+    console.error(JSON.stringify({ reconcile: "polar-failed", call: err.call, status: err.status }));
+    return Response.json({ ok: false, error: err.message }, { status: 502 });
+  }
+}
+
+function logged(names: { ok: string; failed: string }, cron: string, work: Promise<unknown>): Promise<void> {
+  return work.then(
+    (out) => console.log(JSON.stringify({ reconcile: names.ok, cron, ...(out as object) })),
+    (err) => console.error(JSON.stringify({ reconcile: names.failed, cron, error: String(err) })),
+  );
+}
+
+const GITHUB_LOG = { ok: "ok", failed: "failed" };
+const POLAR_LOG = { ok: "polar", failed: "polar-failed" };
+
 export default {
   async fetch(req: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
@@ -67,6 +114,11 @@ export default {
       return applyWebhook(env, githubClient(env), req.headers.get("X-GitHub-Event") ?? "", payload as never, nowS(), req.headers.get("X-GitHub-Delivery"));
     }
     if (req.method === "GET" && url.pathname === "/v1/sync/health") return health(env);
+    if (req.method === "POST" && url.pathname === "/v1/sync/polar-webhook") return polarWebhook(req, env, nowS());
+    if (req.method === "POST" && url.pathname === "/v1/sync/polar-reconcile") {
+      if (!(await bearerMatches(req, env.SYNC_ADMIN_TOKEN))) return new Response("unauthorized", { status: 401 });
+      return polarReconcileNow(env);
+    }
     if (req.method === "POST" && url.pathname === "/v1/sync/reconcile") {
       if (!(await bearerMatches(req, env.SYNC_ADMIN_TOKEN))) return new Response("unauthorized", { status: 401 });
       return reconcileNow(env);
@@ -75,10 +127,20 @@ export default {
   },
 
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(
-      reconcileInstallations(env, Math.floor(controller.scheduledTime / 1000))
-        .then((out) => console.log(JSON.stringify({ reconcile: "ok", cron: controller.cron, ...out })))
-        .catch((err) => console.error(JSON.stringify({ reconcile: "failed", cron: controller.cron, error: String(err) }))),
-    );
+    const at = Math.floor(controller.scheduledTime / 1000);
+    const cron = controller.cron;
+    const run = async () => {
+      if (cron === HOURLY_CRON) {
+        if (await polarReconcileDue(env.DB, at)) await logged(POLAR_LOG, cron, reconcilePolar(env, at));
+        return;
+      }
+      await logged(GITHUB_LOG, cron, reconcileInstallations(env, at));
+      await logged(POLAR_LOG, cron, reconcilePolar(env, at));
+    };
+    ctx.waitUntil(run());
+  },
+
+  async queue(batch: MessageBatch, env: Env, _ctx: ExecutionContext): Promise<void> {
+    await consumeWrites(batch, env, nowS());
   },
 };

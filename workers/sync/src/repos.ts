@@ -16,7 +16,17 @@ export interface RepoRow {
 /** The columns the sync Worker owns, in the order the reconcile compares them. */
 export const ROW_FIELDS = ["owner_id", "owner_type", "owner_login", "visibility", "installation_id", "full_name", "default_branch"] as const;
 
-export type StampName = "last_webhook_at" | "last_reconcile_at" | "last_reconcile_corrections";
+export type StampName =
+  | "last_webhook_at"
+  | "last_reconcile_at"
+  | "last_reconcile_corrections"
+  | "last_polar_webhook_at"
+  | "last_polar_reconcile_at"
+  | "last_polar_reconcile_corrections"
+  | "last_polar_reconcile_error"
+  | "last_queue_at"
+  | "queue_lag_s"
+  | "last_dead_letter_at";
 
 export function upsertRepo(db: D1Database, r: RepoRow, nowS: number): D1PreparedStatement {
   return db

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FEATURES } from "../../../packages/signing/src/index.ts";
-import { call, certKeyId, certUse, env, freshDatabase, HEAD, NONCE, resetWorld, seedRepo, verified, world } from "./helpers.ts";
+import { call, certKeyId, certUse, CHECKOUT_URL, DAY, env, freshDatabase, HEAD, NONCE, nowS, POLAR, resetWorld, seedRepo, sentMessages, verified, world } from "./helpers.ts";
 
 function dispatch(over: Record<string, unknown> = {}) {
   return {
@@ -37,24 +37,64 @@ describe("web path", () => {
     ]);
     const run = checkRun();
     expect(run).toMatchObject({ name: "Claudinite key", head_sha: HEAD, external_id: NONCE, status: "completed", conclusion: "neutral", output: { title: "Claudinite key" } });
-    expect(run.output.summary).toMatch(/^public key for @acme-dev \(sender type User\), issued \d{4}-/);
+    expect(run.output.summary).toMatch(/^public key for @acme-dev \(sender type User\), state ok, issued \d{4}-/);
     const p = await verified(run.output.text!);
     expect(p).toMatchObject({ typ: "session", plan: "public", state: "ok", kid: certKeyId(), user_id: 3003, nonce: NONCE, repo_id: 1001, owner_id: 2002, owner_type: "User", owner_login: "acme-user" });
     expect(certUse(run.output.text!)).toBe("license");
     expect(p.exp - p.iat).toBe(7 * 86400);
     expect([...p.features].sort()).toEqual(FEATURES.filter((f) => f !== "fleet").sort());
-    expect(world.points).toEqual([{ indexes: ["1001"], blobs: ["public", "issued", "User", "1.1.0", "web"], doubles: [1] }]);
+    expect(world.points).toEqual([{ indexes: ["1001"], blobs: ["public", "issued-ok", "User", "1.1.0", "web"], doubles: [1] }]);
+    expect(p).toMatchObject({ seats: null, checkout_url: null, portal_url: null });
+    expect(world.calls.filter((c) => c.url.startsWith(POLAR))).toEqual([]);
+    expect(world.sent).toEqual([]);
   });
 
-  it("answers a private repo's dispatch with a refusal check run naming no-plan and carrying no key", async () => {
+  const privateDispatch = () => dispatch({ repository: { ...dispatch().repository, private: true } });
+
+  it("answers a private repo with no plan with a grace key carrying seats and the checkout link, and names overused", async () => {
     await seedRepo({ visibility: "private" });
-    const res = await post(dispatch({ repository: { ...dispatch().repository, private: true } }));
+    const res = await post(privateDispatch());
     expect(res.status).toBe(201);
     const run = checkRun();
-    expect(run.output.title).toBe("Claudinite key refused");
-    expect(run.output.summary).toBe("no-plan: this private repo has no plan yet; the Public plan covers public repos only");
-    expect(run.output).not.toHaveProperty("text");
-    expect(world.points.map((p) => p.blobs)).toEqual([["none", "refused-no-plan", "User", "1.1.0", "web"]]);
+    expect(run.output.title).toBe("Claudinite key");
+    expect(run.output.summary).toMatch(/^private-repo key for @acme-dev \(sender type User\), state grace, overused, issued \d{4}-/);
+    const p = await verified(run.output.text!);
+    expect(p).toMatchObject({ plan: "private-repo", state: "grace", seats: { paid: 0, counted: 1, headroom: 0 }, checkout_url: CHECKOUT_URL, portal_url: null });
+    expect(p.grace_until! - nowS()).toBeGreaterThan(7 * DAY - 10);
+    const checkout = JSON.parse(world.calls.find((c) => c.url === `${POLAR}/v1/checkouts/`)!.body);
+    expect(checkout).toMatchObject({ external_customer_id: "2002", metadata: { claudinite_plan: "private-repo", github_repo_id: "1001", github_repo_full_name: "acme-user/acme-repo" } });
+    expect(world.points.map((x) => x.blobs?.[1])).toEqual(["issued-grace"]);
+    expect(sentMessages().map((m) => m.kind)).toEqual(["usage", "grace-start"]);
+  });
+
+  it("issues the key with a null checkout link and logs polar-unreachable when Polar answers 500", async () => {
+    await seedRepo({ visibility: "private" });
+    world.polarCheckout = () => Response.json({ detail: "boom" }, { status: 500 });
+    await post(privateDispatch());
+    const p = await verified(checkRun().output.text!);
+    expect(p).toMatchObject({ state: "grace", checkout_url: null });
+    expect(world.logs.some((l) => l.includes('"marker":"polar-unreachable"'))).toBe(true);
+  });
+
+  it("issues the key with a null checkout link when Polar takes longer than 3 seconds", async () => {
+    await seedRepo({ visibility: "private" });
+    const realSetTimeout = globalThis.setTimeout;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      world.polarCheckout = () => new Promise<Response>(() => {});
+      let done = false;
+      const answered = post(privateDispatch()).finally(() => (done = true));
+      for (let i = 0; i < 200 && !done; i++) {
+        await vi.advanceTimersByTimeAsync(250);
+        await new Promise((ok) => realSetTimeout(ok, 5));
+      }
+      expect((await answered).status).toBe(201);
+    } finally {
+      vi.useRealTimers();
+    }
+    const p = await verified(checkRun().output.text!);
+    expect(p).toMatchObject({ state: "grace", checkout_url: null });
+    expect(world.logs.some((l) => l.includes('"marker":"polar-unreachable"'))).toBe(true);
   });
 
   it("issues for a public repo whose row the sync Worker has not written yet: the webhook proves the installation", async () => {
@@ -69,6 +109,7 @@ describe("web path", () => {
     const run = checkRun();
     const p = await verified(run.output.text!);
     expect(p).toMatchObject({ state: "unverified", plan: "public" });
+    expect(world.calls.filter((c) => c.url.startsWith(POLAR))).toEqual([]);
     expect([...p.features].sort()).toEqual([...FEATURES].sort());
     expect(run.output.summary).toMatch(/unverified/);
   });

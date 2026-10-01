@@ -78,6 +78,17 @@ export async function generateVectors(): Promise<string> {
     release,
   };
 
+  const grant: KeyPayload = { ...actions, typ: "grant", issue: 42 };
+  const graceSession: KeyPayload = {
+    ...base,
+    plan: "private-repo",
+    state: "grace",
+    grace_until: iat + 7 * 86400,
+    seats: { paid: 5, counted: 7, headroom: 1 },
+    checkout_url: "https://sandbox.polar.sh/checkout/acme-checkout",
+    portal_url: null,
+  };
+
   const pubKey = await signKey(seeds.licensePublic, certificates["license-public"], base);
   // Flips the low bit of one byte: in the payload, the second digit of repo_id, so the JSON still parses.
   const flip = (key: string, field: "payload" | "signature") => {
@@ -103,6 +114,10 @@ export async function generateVectors(): Promise<string> {
     { name: "release carries a field the verifier does not know", key: await signKey(seeds.licensePublic, certificates["license-public"], { ...base, release: { ...release, acme_field: [1] } } as KeyPayload), valid: true },
     { name: "payload carries a field the verifier does not know", key: await signKey(seeds.licensePublic, certificates["license-public"], { ...base, acme_field: { any: "thing" } } as KeyPayload), valid: true },
     { name: "pack_keys entry is not a key id", key: await signKey(seeds.licensePublic, certificates["license-public"], { ...base, release: { ...release, pack_keys: ["acme"] } }), valid: false, reason: "shape" },
+    { name: "item grant carrying its issue", key: await signKey(seeds.license, certificates.license, grant), valid: true },
+    { name: "grace session key carrying seats and a checkout link", key: await signKey(seeds.license, certificates.license, graceSession), valid: true },
+    { name: "seats holding a negative count", key: await signKey(seeds.license, certificates.license, { ...graceSession, seats: { paid: -1, counted: 7, headroom: 1 } }), valid: false, reason: "shape" },
+    { name: "checkout link that is not https", key: await signKey(seeds.license, certificates.license, { ...graceSession, checkout_url: "http://sandbox.polar.sh/checkout/acme-checkout" }), valid: false, reason: "shape" },
     { name: "kid is not the certificate's key id", key: await signKey(seeds.licensePublic, certificates["license-public"], base, { kid: "0000000000000000" }), valid: false, reason: "kid-mismatch" },
     { name: "flipped payload byte", key: flip(pubKey, "payload"), valid: false, reason: "bad-signature" },
     { name: "flipped signature byte", key: flip(pubKey, "signature"), valid: false, reason: "bad-signature" },
@@ -117,6 +132,7 @@ export async function generateVectors(): Promise<string> {
       "A key is valid from 300 seconds before its iat, to absorb clock skew.",
       "A license certificate signs a key of any plan; a license-public certificate signs only a public plan key.",
       "An unknown feature name, release field or payload field is ignored, so the server can add one without an engine release.",
+      "seats, checkout_url, portal_url and issue are optional: absent or null says nothing; when present, seats holds three non-negative integers, a link is an https URL and issue a positive integer.",
       "Seeds here are test keys only and sign nothing anyone trusts.",
     ],
     domains: { certificate: CERT_DOMAIN, license: LICENSE_DOMAIN },

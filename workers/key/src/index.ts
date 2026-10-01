@@ -1,10 +1,12 @@
 // The paid key Worker: answers key requests from all three places a key is asked for, a web
 // session's dispatch through the router, a desktop's App user token and an Actions run's OIDC
-// token, deciding from D1 reads alone. It writes nothing; the sync Worker is D1's only writer.
+// token, deciding from D1 reads alone, and exchanges an Actions key for an item grant. It writes
+// nothing to D1: each key's records go onto the writes queue the sync Worker consumes.
 import { certBody, refusal, type Env } from "./env.ts";
 import { sessionKey } from "./desktop.ts";
 import { webhook } from "./web.ts";
 import { actionsKey } from "./actions.ts";
+import { itemGrant } from "./grant.ts";
 
 export type { Env } from "./env.ts";
 
@@ -40,20 +42,29 @@ async function health(env: Env): Promise<Response> {
   } catch {
     d1 = "unreadable";
   }
-  return Response.json({ ok: true, kid: body.keyId, cert_exp: body.notAfter, d1 });
+  return Response.json({
+    ok: true,
+    kid: body.keyId,
+    cert_exp: body.notAfter,
+    d1,
+    queue: env.WRITES ? "bound" : "unbound",
+    polar: env.POLAR_API_BASE && env.POLAR_ACCESS_TOKEN ? "configured" : "unconfigured",
+  });
 }
 
 export default {
-  async fetch(req: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
+  async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
     const route = `${req.method} ${url.pathname}`;
     switch (route) {
       case "POST /webhook":
-        return webhook(req, env);
+        return webhook(req, env, ctx);
       case "POST /v1/session-key":
-        return sessionKey(req, env);
+        return sessionKey(req, env, ctx);
       case "POST /v1/actions-key":
         return actionsKey(req, env);
+      case "POST /v1/item-grant":
+        return itemGrant(req, env);
       case "GET /v1/login/config":
         return loginConfig(env);
       case "POST /v1/login/refresh":

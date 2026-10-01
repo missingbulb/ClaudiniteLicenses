@@ -46,6 +46,13 @@ export interface ReleaseStates {
   pack_keys: string[];
 }
 
+/** A licensee's seats as a key reports them: the paid count, the distinct users counted in the 30-day window, and the headroom. */
+export interface KeySeats {
+  paid: number;
+  counted: number;
+  headroom: number;
+}
+
 export interface KeyPayload {
   v: 1;
   typ: (typeof KEY_TYPES)[number];
@@ -63,6 +70,14 @@ export interface KeyPayload {
   grace_until: number | null;
   features: string[];
   release: ReleaseStates;
+  /** Absent or null on a key that has nothing to say about seats. */
+  seats?: KeySeats | null;
+  /** The plan's checkout link for this owner (and repo), or null. */
+  checkout_url?: string | null;
+  /** The owner's customer portal link, or null. */
+  portal_url?: string | null;
+  /** Grant keys only: the work item's issue number. */
+  issue?: number;
 }
 
 export interface LicenseKey {
@@ -279,6 +294,26 @@ function isRelease(v: unknown): boolean {
   );
 }
 
+const isCount = (v: unknown) => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+
+function isSeats(v: unknown): boolean {
+  return v === undefined || v === null || (isObject(v) && isCount(v.paid) && isCount(v.counted) && isCount(v.headroom));
+}
+
+function isLink(v: unknown): boolean {
+  if (v === undefined || v === null) return true;
+  if (typeof v !== "string") return false;
+  try {
+    return new URL(v).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function isIssue(v: unknown): boolean {
+  return v === undefined || v === null || (typeof v === "number" && Number.isSafeInteger(v) && v > 0);
+}
+
 /** The features a key turns on: its names from FEATURES, in the key's order; an unknown name turns nothing on. */
 export function knownFeatures(payload: Pick<KeyPayload, "features">): Feature[] {
   return payload.features.filter((f): f is Feature => (FEATURES as readonly string[]).includes(f));
@@ -290,7 +325,8 @@ function useSignsPlan(use: Use, plan: Plan): boolean {
 
 /**
  * Verifies a key's wire form, checking in order: shape (v, typ, plan and state from their closed
- * sets, features as distinct non-empty names, and the five release fields' types; a feature name,
+ * sets, features as distinct non-empty names, the five release fields' types, and, when present and
+ * not null, seats, the two https links and a positive integer issue; a feature name,
  * release field or payload field it does not know is ignored), the certificate against `roots` and its
  * window, `kid` against the certificate, the key signature, the key's iat (less IAT_LEEWAY_S) and exp, and the purpose
  * (a `license` certificate signs any plan, a `license-public` certificate only the `public` plan).
@@ -315,7 +351,11 @@ export async function verifyKey(key: string, opts: { roots: string[]; now: Date 
     !KEY_TYPES.includes(p.typ as KeyPayload["typ"]) ||
     !STATES.includes(p.state as KeyPayload["state"]) ||
     !isFeatureList(p.features) ||
-    !isRelease(p.release)
+    !isRelease(p.release) ||
+    !isSeats(p.seats) ||
+    !isLink(p.checkout_url) ||
+    !isLink(p.portal_url) ||
+    !isIssue(p.issue)
   ) {
     return { ok: false, reason: "shape" };
   }

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FEATURES } from "../../../packages/signing/src/index.ts";
 import { resetJwksCache } from "../src/oidc.ts";
-import { actionsClaims, call, certUse, env, freshDatabase, githubCalls, oidcIssuer, resetWorld, seedRepo, verified, world } from "./helpers.ts";
+import { actionsClaims, call, certUse, DAY, env, freshDatabase, githubCalls, nowS, oidcIssuer, resetWorld, seedOveruse, seedRepo, seedSeats, seedSubscription, verified, world } from "./helpers.ts";
 
 let issuer: Awaited<ReturnType<typeof oidcIssuer>>;
 const jwksCalls = () => world.calls.filter((c) => c.url === "https://oidc.test/.well-known/jwks").length;
@@ -30,7 +30,7 @@ describe("POST /v1/actions-key", () => {
     const res = await ask(await issuer.sign(actionsClaims()));
     expect(res.status).toBe(200);
     const out = (await res.json()) as { key: string; plan: string; state: string };
-    expect(out).toMatchObject({ plan: "public", state: "ok" });
+    expect(out).toEqual({ key: out.key, plan: "public", state: "ok", notice: null, checkout_url: null, portal_url: null });
     const p = await verified(out.key);
     expect(p).toMatchObject({ typ: "actions", plan: "public", repo_id: 1001, owner_id: 2002, owner_type: "User", owner_login: "acme-user" });
     expect(p).not.toHaveProperty("user_id");
@@ -38,7 +38,8 @@ describe("POST /v1/actions-key", () => {
     expect(p.exp - p.iat).toBe(6 * 3600);
     expect([...p.features].sort()).toEqual(FEATURES.filter((f) => f !== "fleet").sort());
     expect(certUse(out.key)).toBe("license");
-    expect(world.points).toEqual([{ indexes: ["1001"], blobs: ["public", "issued", "User", "1.1.0", "actions"], doubles: [1] }]);
+    expect(world.points).toEqual([{ indexes: ["1001"], blobs: ["public", "issued-ok", "User", "1.1.0", "actions"], doubles: [1] }]);
+    expect(world.sent).toEqual([]);
     expect(githubCalls()).toHaveLength(0);
   });
 
@@ -77,10 +78,34 @@ describe("POST /v1/actions-key", () => {
     await refusedWith(await issuer.sign(actionsClaims()), 403, "repo-not-synced");
   });
 
-  it("refuses a repo the App is not installed on, and a private repo with no plan", async () => {
+  it("refuses a repo the App is not installed on", async () => {
     await refusedWith(await issuer.sign(actionsClaims()), 403, "app-not-installed");
-    await seedRepo();
-    await refusedWith(await issuer.sign(actionsClaims({ repository_visibility: "private" })), 403, "no-plan");
+  });
+
+  it("gives the Actions key its licensee's state: degraded past grace, grace during it, and writes nothing", async () => {
+    await seedRepo({ visibility: "private" });
+    await seedSubscription({ plan: "personal", seats: 5 });
+    await seedSeats(2002, 7);
+    await seedOveruse(2002, nowS() - 2 * DAY, nowS() + 28 * DAY);
+    const token = async () => issuer.sign(actionsClaims({ repository_visibility: "private" }));
+    const grace = (await (await ask(await token())).json()) as Record<string, unknown>;
+    expect(grace).toMatchObject({ plan: "personal", state: "grace", notice: "overused" });
+    expect(await verified(grace.key as string)).toMatchObject({ typ: "actions", state: "grace", seats: { paid: 5, counted: 7, headroom: 1 } });
+    await env().DB.prepare("UPDATE overuse SET grace_started_at = ?").bind(nowS() - 8 * DAY).run();
+    const degraded = (await (await ask(await token())).json()) as Record<string, unknown>;
+    expect(degraded).toMatchObject({ state: "degraded", notice: "seat-refused" });
+    expect((await verified(degraded.key as string)).features).toEqual([]);
+    expect(world.sent).toEqual([]);
+    expect(world.points.map((p) => p.blobs?.[1])).toEqual(["issued-grace", "issued-degraded"]);
+  });
+
+  it("gives a public repo of a paying organization an ok Organization key", async () => {
+    await seedRepo({ owner_id: 8008, owner_type: "Organization", owner_login: "acme-org", full_name: "acme-org/acme-repo" });
+    await seedSubscription({ owner_id: 8008, owner_type: "Organization", plan: "organization", seats: 10 });
+    const claims = actionsClaims({ repository_owner_id: "8008", repository: "acme-org/acme-repo", repository_owner: "acme-org", job_workflow_ref: "acme-org/acme-repo/.github/workflows/claudinite-scheduler.yml@refs/heads/main" });
+    const out = (await (await ask(await issuer.sign(claims))).json()) as Record<string, unknown>;
+    expect(out).toMatchObject({ plan: "organization", state: "ok" });
+    expect((await verified(out.key as string)).features).toEqual([...FEATURES]);
   });
 
   it("refuses a token whose audience, issuer, lifetime or signature is wrong, naming each", async () => {

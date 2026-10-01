@@ -9,6 +9,7 @@ export default defineProject({
         bindings: {
           ...inject("keyVars"),
           DEV_ROOTS: JSON.stringify(inject("devRoots")),
+          TRUST_ROOTS: JSON.stringify(inject("devRoots")),
           TEST_MIGRATIONS: await readD1Migrations(new URL("../../db/migrations", import.meta.url).pathname),
           GITHUB_API_BASE: "https://github-api.test",
           GITHUB_WEB_BASE: "https://github-web.test",

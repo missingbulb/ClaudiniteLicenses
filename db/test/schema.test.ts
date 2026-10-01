@@ -16,7 +16,7 @@ describe("migrations", () => {
   it("applies once: a second apply is a no-op recorded by the migrations table", async () => {
     await applyD1Migrations(e.DB, e.TEST_MIGRATIONS);
     const { results } = await e.DB.prepare("SELECT name FROM d1_migrations").all<{ name: string }>();
-    expect(results.map((r) => r.name)).toEqual(["0001_init.sql", "0002_repos_identity_and_sync_state.sql"]);
+    expect(results.map((r) => r.name)).toEqual(["0001_init.sql", "0002_repos_identity_and_sync_state.sql", "0003_subscription_status.sql"]);
   });
 
   it("holds one seat per licensee and user", async () => {
@@ -62,5 +62,23 @@ describe("migrations", () => {
     const { results } = await e.DB.prepare("SELECT name, at, detail FROM sync_state").all();
     expect(results).toEqual([{ name: "last_reconcile_at", at: 200, detail: null }]);
     await expect(e.DB.prepare("INSERT INTO sync_state (name, at) VALUES ('last_reconcile_at', 300)").run()).rejects.toThrow(/UNIQUE|PRIMARY KEY/);
+  });
+
+  const subscription = (id: string, over: Record<string, unknown> = {}) => {
+    const r: Record<string, unknown> = { polar_subscription_id: id, owner_id: 2, owner_type: "User", plan: "personal", seats: 5, source: "polar", modified_at: 100, raw: "{}", ...over };
+    const cols = Object.keys(r);
+    return e.DB.prepare(`INSERT INTO subscriptions (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`).bind(...cols.map((c) => r[c]));
+  };
+
+  it("adds status, ended_at, product_id and interval to subscriptions, an unended one reading back null", async () => {
+    await subscription("sub_running", { status: "active", product_id: "prod_acme", interval: "month" }).run();
+    const row = await e.DB.prepare("SELECT status, ended_at, product_id, interval FROM subscriptions WHERE polar_subscription_id = 'sub_running'").first();
+    expect(row).toEqual({ status: "active", ended_at: null, product_id: "prod_acme", interval: "month" });
+    await subscription("sub_ended", { status: "canceled", ended_at: 200, interval: "year" }).run();
+    expect(await e.DB.prepare("SELECT ended_at FROM subscriptions WHERE polar_subscription_id = 'sub_ended'").first()).toEqual({ ended_at: 200 });
+  });
+
+  it("allows only month or year as a subscription's interval", async () => {
+    await expect(subscription("sub_weekly", { interval: "week" }).run()).rejects.toThrow(/CHECK/);
   });
 });

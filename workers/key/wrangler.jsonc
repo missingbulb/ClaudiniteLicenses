@@ -9,6 +9,7 @@
   "routes": [
     { "pattern": "license.claudinite.com/v1/session-key", "zone_name": "claudinite.com" },
     { "pattern": "license.claudinite.com/v1/actions-key", "zone_name": "claudinite.com" },
+    { "pattern": "license.claudinite.com/v1/item-grant", "zone_name": "claudinite.com" },
     { "pattern": "license.claudinite.com/v1/login/*", "zone_name": "claudinite.com" },
     { "pattern": "license.claudinite.com/v1/key/*", "zone_name": "claudinite.com" }
   ],
@@ -18,12 +19,18 @@
     { "binding": "DB", "database_name": "claudinite-licenses", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "../../db/migrations" }
   ],
   "analytics_engine_datasets": [{ "binding": "KEY_COUNTS", "dataset": "claudinite_key_counts" }],
+  // Each key's usage, seat and grace records; the sync Worker consumes the queue as D1's only writer.
+  "queues": { "producers": [{ "binding": "WRITES", "queue": "claudinite-licenses-writes" }] },
   "ratelimits": [{ "name": "OWNER_LIMIT", "namespace_id": "1001", "simple": { "limit": 600, "period": 60 } }],
   "vars": {
     "GITHUB_API_BASE": "https://api.github.com",
     "GITHUB_WEB_BASE": "https://github.com",
     "OIDC_ISSUER": "https://token.actions.githubusercontent.com",
     "GITHUB_APP_CLIENT_ID": "Iv23lixTgnYXROPw9nb8",
-    "FAIL_OPEN": "true"
+    "FAIL_OPEN": "true",
+    "POLAR_API_BASE": "https://sandbox-api.polar.sh",
+    // The roots an Actions key must chain to for a grant. deploy.yml passes the real value with --var;
+    // the committed value is keys/dev/roots/root.pub.
+    "TRUST_ROOTS": "[\"nd22X_uFndtTBSMpDUfXAhKsfjfUX2mhnR9JblgYo2I\"]"
   }
 }

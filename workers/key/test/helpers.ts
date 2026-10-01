@@ -1,7 +1,8 @@
-import { applyD1Migrations, createExecutionContext, env as testEnv, type D1Migration } from "cloudflare:test";
+import { applyD1Migrations, env as testEnv, type D1Migration } from "cloudflare:test";
 import { vi } from "vitest";
 import { b64urlDecode, b64urlEncode, verifyKey, type KeyPayload } from "../../../packages/signing/src/index.ts";
 import worker, { type Env } from "../src/index.ts";
+import { resetLinkCaches } from "../src/links.ts";
 
 export const HEAD = "0123456789abcdef0123456789abcdef01234567";
 export const NONCE = "acme-nonce-0123456789abcdef";
@@ -21,32 +22,60 @@ export interface GitHubCall {
   body: string;
 }
 
-/** What the fetch spy answers and records: GitHub's API and web hosts, and the OIDC issuer. */
+/** What the fetch spy answers and records: GitHub's API and web hosts, the OIDC issuer and Polar. */
 export interface World {
   calls: GitHubCall[];
   points: Point[];
   logs: string[];
   dbCalls: number;
+  /** Every statement prepared, in order. */
+  dbSql: string[];
+  /** Each sendBatch call's message bodies. */
+  sent: unknown[][];
+  /** Every promise handed to the request's waitUntil. */
+  waited: Promise<unknown>[];
+  /** What WRITES.sendBatch does; resolves at once unless a test says otherwise. */
+  send: () => Promise<void>;
   limited: Record<string, number>;
   user: () => Response;
   repo: () => Response;
   oauth: () => Response;
   jwks: () => Response;
+  polarProducts: () => Response;
+  polarCheckout: () => Response | Promise<Response>;
+  polarSession: () => Response | Promise<Response>;
 }
+
+export const POLAR = "https://polar-api.test";
+export const CHECKOUT_URL = "https://sandbox.polar.test/checkout/acme";
+export const PORTAL_URL = "https://sandbox.polar.test/portal/acme";
+
+const managedProduct = (plan: string, interval: string) => ({ id: `prod_${plan}_${interval}`, name: `${plan} (${interval})`, is_archived: false, recurring_interval: interval, metadata: { claudinite_plan: plan, claudinite_interval: interval, managed_by: "claudinite-licenses" } });
 
 export let world: World;
 
 export function resetWorld(): World {
+  resetLinkCaches();
   world = {
     calls: [],
     points: [],
     logs: [],
     dbCalls: 0,
+    dbSql: [],
+    sent: [],
+    waited: [],
+    send: async () => {},
     limited: {},
     user: () => Response.json({ id: 3003, login: "acme-dev", type: "User" }),
     repo: () => Response.json(githubRepo()),
     oauth: () => Response.json({ access_token: "ghu_new", expires_in: 28800, refresh_token: "ghr_new", refresh_token_expires_in: 15811200 }),
     jwks: () => Response.json({ keys: [] }),
+    polarProducts: () => {
+      const items = ["private-repo", "personal", "organization"].flatMap((p) => ["month", "year"].map((i) => managedProduct(p, i)));
+      return Response.json({ items, pagination: { total_count: items.length, max_page: 1 } });
+    },
+    polarCheckout: () => Response.json({ id: "chk_acme", url: CHECKOUT_URL, expires_at: "2026-10-02T00:00:00Z" }, { status: 201 }),
+    polarSession: () => Response.json({ id: "cs_acme", token: "acme", customer_portal_url: PORTAL_URL }, { status: 201 }),
   };
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
     const req = new Request(input, init);
@@ -59,6 +88,9 @@ export function resetWorld(): World {
     if (/^\/repos\/[^/]+\/[^/]+$/.test(url.pathname)) return world.repo();
     if (req.url === "https://github-web.test/login/oauth/access_token") return world.oauth();
     if (req.url === "https://oidc.test/.well-known/jwks") return world.jwks();
+    if (url.origin === POLAR && req.method === "GET" && url.pathname === "/v1/products/") return world.polarProducts();
+    if (url.origin === POLAR && req.method === "POST" && url.pathname === "/v1/checkouts/") return world.polarCheckout();
+    if (url.origin === POLAR && req.method === "POST" && url.pathname === "/v1/customer-sessions/") return world.polarSession();
     return new Response("unexpected", { status: 599 });
   });
   vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => void world.logs.push(a.join(" ")));
@@ -77,6 +109,7 @@ export function countingDb(inner: D1Database, opts: { broken?: boolean } = {}): 
       if (prop === "prepare") {
         return (sql: string) => {
           world.dbCalls++;
+          world.dbSql.push(sql.replace(/\s+/g, " ").trim());
           if (opts.broken) throw new Error("D1_ERROR: acme outage");
           return target.prepare(sql);
         };
@@ -99,13 +132,59 @@ export function env(over: Partial<Env> & { brokenDb?: boolean; limit?: number } 
         return { success: world.limited[key]! <= limit };
       },
     } as RateLimit,
+    WRITES: {
+      send: async () => {
+        throw new Error("the key Worker sends batches only");
+      },
+      sendBatch: async (batch: Iterable<MessageSendRequest>) => {
+        const bodies = [...batch].map((m) => m.body);
+        await world.send();
+        world.sent.push(bodies);
+      },
+    } as unknown as Queue,
+    POLAR_API_BASE: POLAR,
+    POLAR_ACCESS_TOKEN: "polar_oat_acme",
+    TRUST_ROOTS: base.DEV_ROOTS,
     ...rest,
   };
 }
 
 export async function freshDatabase(): Promise<void> {
   await applyD1Migrations(base.DB, base.TEST_MIGRATIONS);
-  await base.DB.prepare("DELETE FROM repos").run();
+  await base.DB.batch(["repos", "subscriptions", "seats", "overuse", "usage"].map((t) => base.DB.prepare(`DELETE FROM ${t}`)));
+}
+
+export const DAY = 86400;
+export const nowS = () => Math.floor(Date.now() / 1000);
+
+export async function seedSubscription(over: Partial<{ id: string; owner_id: number; owner_type: string; plan: string; seats: number; repo_ids: string | null; status: string; ended_at: number | null }> = {}) {
+  const r = { id: `sub_${crypto.randomUUID()}`, owner_id: 2002, owner_type: "User", plan: "personal", seats: 5, repo_ids: null, status: "active", ended_at: null, ...over };
+  await base.DB.prepare(
+    "INSERT INTO subscriptions (polar_subscription_id, owner_id, owner_type, plan, seats, repo_ids, source, modified_at, raw, status, ended_at) VALUES (?, ?, ?, ?, ?, ?, 'polar', 1, '{}', ?, ?)",
+  )
+    .bind(r.id, r.owner_id, r.owner_type, r.plan, r.seats, r.repo_ids, r.status, r.ended_at)
+    .run();
+}
+
+/** Seats for `n` users of a licensee, user ids 4001.., in that order of first key, each active yesterday. */
+export async function seedSeats(licenseeId: number, n: number) {
+  const now = nowS();
+  for (let i = 0; i < n; i++) {
+    await base.DB.prepare("INSERT INTO seats (licensee_id, user_id, first_key_at, last_key_at) VALUES (?, ?, ?, ?)").bind(licenseeId, 4001 + i, now - 20 * DAY + i * 60, now - DAY).run();
+  }
+}
+
+export async function seedOveruse(ownerId: number, startedAt: number | null, spentUntil: number | null) {
+  await base.DB.prepare("INSERT INTO overuse (licensee_id, grace_started_at, grace_spent_until) VALUES (?, ?, ?)").bind(ownerId, startedAt, spentUntil).run();
+}
+
+export async function seedUsage(repoId: number, userId: number, day: string) {
+  await base.DB.prepare("INSERT INTO usage (repo_id, user_id, day) VALUES (?, ?, ?)").bind(repoId, userId, day).run();
+}
+
+/** The request's ExecutionContext, recording what it is handed. */
+export function recordingContext(): ExecutionContext {
+  return { waitUntil: (p: Promise<unknown>) => void world.waited.push(p), passThroughOnException: () => {}, props: {} } as unknown as ExecutionContext;
 }
 
 export async function seedRepo(over: Partial<{ repo_id: number; owner_id: number; owner_type: string; owner_login: string; visibility: string; installation_id: number; full_name: string; default_branch: string | null }> = {}) {
@@ -117,9 +196,15 @@ export async function seedRepo(over: Partial<{ repo_id: number; owner_id: number
     .run();
 }
 
+/** Calls the Worker and waits for what it handed waitUntil, so the queued writes are recorded. */
 export async function call(path: string, init: RequestInit = {}, e: Env = env()): Promise<Response> {
-  return worker.fetch(new Request(`https://license.claudinite.com${path}`, init), e, createExecutionContext());
+  const res = await worker.fetch(new Request(`https://license.claudinite.com${path}`, init), e, recordingContext());
+  await Promise.allSettled(world.waited);
+  return res;
 }
+
+/** The queued messages of every send, in order. */
+export const sentMessages = () => world.sent.flat() as { kind: string; [k: string]: unknown }[];
 
 export async function verified(key: string): Promise<KeyPayload> {
   const v = await verifyKey(key, { roots, now: new Date() });
