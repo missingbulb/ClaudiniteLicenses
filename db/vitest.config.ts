@@ -1,0 +1,12 @@
+import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-pool-workers";
+import { defineProject } from "vitest/config";
+
+export default defineProject({
+  plugins: [
+    cloudflareTest(async () => ({
+      wrangler: { configPath: "./wrangler.jsonc" },
+      miniflare: { bindings: { TEST_MIGRATIONS: await readD1Migrations(new URL("./migrations", import.meta.url).pathname) } },
+    })),
+  ],
+  test: { name: "db" },
+});
