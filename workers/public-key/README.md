@@ -17,7 +17,9 @@ version.
 
 ## Secrets
 
-- `GITHUB_APP_ID`
-- `GITHUB_APP_PRIVATE_KEY` (the App's PEM as GitHub hands it out)
+Each repository secret `deploy.yml` reads, and the Worker secret it is stored as:
+
+- `CLAUDINITE_GITHUB_APP_ID`, as `GITHUB_APP_ID`
+- `CLAUDINITE_GITHUB_APP_PRIVATE_KEY`, as `GITHUB_APP_PRIVATE_KEY` (the App's PEM as GitHub hands it out)
 - `ISSUING_KEY_PRIVATE` (the issuing key's seed file, ClaudiniteEngine's key format)
 - `ISSUING_KEY_CERT` (its `license-public` certificate JSON)

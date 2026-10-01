@@ -9,4 +9,6 @@ yet answers 202 `unrouted: <event>`, so GitHub keeps the delivery redeliverable.
 
 ## Secrets
 
-- `GITHUB_APP_WEBHOOK_SECRET`
+Each repository secret `deploy.yml` reads, and the Worker secret it is stored as:
+
+- `CLAUDINITE_GITHUB_APP_WEBHOOK_SECRET`, as `GITHUB_APP_WEBHOOK_SECRET`

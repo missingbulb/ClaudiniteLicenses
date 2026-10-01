@@ -35,9 +35,9 @@ jobs:
       WRANGLER_SEND_METRICS: "false"
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      GITHUB_APP_ID: ${{ secrets.GITHUB_APP_ID }}
-      GITHUB_APP_PRIVATE_KEY: ${{ secrets.GITHUB_APP_PRIVATE_KEY }}
-      GITHUB_APP_WEBHOOK_SECRET: ${{ secrets.GITHUB_APP_WEBHOOK_SECRET }}
+      CLAUDINITE_GITHUB_APP_ID: ${{ secrets.CLAUDINITE_GITHUB_APP_ID }}
+      CLAUDINITE_GITHUB_APP_PRIVATE_KEY: ${{ secrets.CLAUDINITE_GITHUB_APP_PRIVATE_KEY }}
+      CLAUDINITE_GITHUB_APP_WEBHOOK_SECRET: ${{ secrets.CLAUDINITE_GITHUB_APP_WEBHOOK_SECRET }}
       ISSUING_KEY_PRIVATE: ${{ secrets.ISSUING_KEY_PRIVATE }}
       ISSUING_KEY_CERT: ${{ secrets.ISSUING_KEY_CERT }}
     steps:
@@ -45,7 +45,7 @@ jobs:
         name: Check deploy secrets
         run: |
           missing=""
-          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID GITHUB_APP_ID GITHUB_APP_PRIVATE_KEY GITHUB_APP_WEBHOOK_SECRET ISSUING_KEY_PRIVATE ISSUING_KEY_CERT; do
+          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLAUDINITE_GITHUB_APP_ID CLAUDINITE_GITHUB_APP_PRIVATE_KEY CLAUDINITE_GITHUB_APP_WEBHOOK_SECRET ISSUING_KEY_PRIVATE ISSUING_KEY_CERT; do
             if [ -z "$(printenv "$name")" ]; then missing="$missing $name"; fi
           done
           if [ -n "$missing" ]; then
@@ -67,7 +67,7 @@ jobs:
       - if: steps.gate.outputs.skip == 'false'
         name: Secrets for claudinite-public-key
         run: |
-          node -e 'const e=process.env;console.log(JSON.stringify({GITHUB_APP_ID:e.GITHUB_APP_ID,GITHUB_APP_PRIVATE_KEY:e.GITHUB_APP_PRIVATE_KEY,ISSUING_KEY_PRIVATE:e.ISSUING_KEY_PRIVATE,ISSUING_KEY_CERT:e.ISSUING_KEY_CERT}))' > "$RUNNER_TEMP/public-key.secrets.json"
+          node -e 'const e=process.env;console.log(JSON.stringify({GITHUB_APP_ID:e.CLAUDINITE_GITHUB_APP_ID,GITHUB_APP_PRIVATE_KEY:e.CLAUDINITE_GITHUB_APP_PRIVATE_KEY,ISSUING_KEY_PRIVATE:e.ISSUING_KEY_PRIVATE,ISSUING_KEY_CERT:e.ISSUING_KEY_CERT}))' > "$RUNNER_TEMP/public-key.secrets.json"
           npx wrangler secret bulk "$RUNNER_TEMP/public-key.secrets.json" -c workers/public-key/wrangler.jsonc
           rm "$RUNNER_TEMP/public-key.secrets.json"
       - if: steps.gate.outputs.skip == 'false'
@@ -76,7 +76,7 @@ jobs:
       - if: steps.gate.outputs.skip == 'false'
         name: Secrets for claudinite-router
         run: |
-          node -e 'console.log(JSON.stringify({GITHUB_APP_WEBHOOK_SECRET:process.env.GITHUB_APP_WEBHOOK_SECRET}))' > "$RUNNER_TEMP/router.secrets.json"
+          node -e 'console.log(JSON.stringify({GITHUB_APP_WEBHOOK_SECRET:process.env.CLAUDINITE_GITHUB_APP_WEBHOOK_SECRET}))' > "$RUNNER_TEMP/router.secrets.json"
           npx wrangler secret bulk "$RUNNER_TEMP/router.secrets.json" -c workers/router/wrangler.jsonc
           rm "$RUNNER_TEMP/router.secrets.json"
       - if: steps.gate.outputs.skip == 'false'
