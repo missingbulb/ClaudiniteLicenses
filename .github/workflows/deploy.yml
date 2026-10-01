@@ -31,6 +31,10 @@ jobs:
   deploy:
     needs: verify
     runs-on: ubuntu-latest
+    # id-token: the read-back asks GitHub for an OIDC token, so a real one proves the key Worker's verifier.
+    permissions:
+      contents: read
+      id-token: write
     env:
       WRANGLER_SEND_METRICS: "false"
     steps:
@@ -44,11 +48,17 @@ jobs:
           CLAUDINITE_GITHUB_APP_WEBHOOK_SECRET: ${{ secrets.CLAUDINITE_GITHUB_APP_WEBHOOK_SECRET }}
           ISSUING_KEY_PRIVATE: ${{ secrets.ISSUING_KEY_PRIVATE }}
           ISSUING_KEY_CERT: ${{ secrets.ISSUING_KEY_CERT }}
+          KEY_ISSUING_KEY_PRIVATE: ${{ secrets.KEY_ISSUING_KEY_PRIVATE }}
+          KEY_ISSUING_KEY_CERT: ${{ secrets.KEY_ISSUING_KEY_CERT }}
         run: |
-          if [ -n "$ISSUING_KEY_PRIVATE$ISSUING_KEY_CERT" ] && { [ -z "$ISSUING_KEY_PRIVATE" ] || [ -z "$ISSUING_KEY_CERT" ]; }; then
-            echo "::error::only one of ISSUING_KEY_PRIVATE and ISSUING_KEY_CERT is set: set both, or neither to deploy with the dev key in keys/dev"
-            exit 1
-          fi
+          for pair in "ISSUING_KEY_PRIVATE ISSUING_KEY_CERT" "KEY_ISSUING_KEY_PRIVATE KEY_ISSUING_KEY_CERT"; do
+            set -- $pair
+            a=$(printenv "$1" || true); b=$(printenv "$2" || true)
+            if [ -n "$a$b" ] && { [ -z "$a" ] || [ -z "$b" ]; }; then
+              echo "::error::only one of $1 and $2 is set: set both, or neither to deploy with the dev key in keys/dev"
+              exit 1
+            fi
+          done
           missing=""
           for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLAUDINITE_GITHUB_APP_ID CLAUDINITE_GITHUB_APP_PRIVATE_KEY CLAUDINITE_GITHUB_APP_WEBHOOK_SECRET; do
             if [ -z "$(printenv "$name")" ]; then missing="$missing $name"; fi
@@ -60,7 +70,10 @@ jobs:
             exit 0
           fi
           if [ -z "$ISSUING_KEY_PRIVATE$ISSUING_KEY_CERT" ]; then
-            echo "::warning::ISSUING_KEY_PRIVATE and ISSUING_KEY_CERT are unset: claudinite-public-key signs with the dev key in keys/dev, trusted by no released binary, until ClaudiniteEngine#5"
+            echo "::warning::ISSUING_KEY_PRIVATE and ISSUING_KEY_CERT are unset: claudinite-public-key signs with the dev license-public key in keys/dev, trusted by no released binary, until ClaudiniteEngine#5"
+          fi
+          if [ -z "$KEY_ISSUING_KEY_PRIVATE$KEY_ISSUING_KEY_CERT" ]; then
+            echo "::warning::KEY_ISSUING_KEY_PRIVATE and KEY_ISSUING_KEY_CERT are unset: claudinite-key signs with the dev license key in keys/dev, trusted by no released binary, until ClaudiniteEngine#5"
           fi
           echo "skip=false" >> "$GITHUB_OUTPUT"
       - if: steps.gate.outputs.skip == 'false'
@@ -72,6 +85,18 @@ jobs:
           cache: npm
       - if: steps.gate.outputs.skip == 'false'
         run: npm ci
+      - if: steps.gate.outputs.skip == 'false'
+        name: Make the D1 database exist and write its id
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node tools/ensure-d1.mjs --name claudinite-licenses --write
+      - if: steps.gate.outputs.skip == 'false'
+        name: Apply the D1 migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler d1 migrations apply claudinite-licenses --remote -c db/wrangler.jsonc
       - if: steps.gate.outputs.skip == 'false'
         name: Secrets for claudinite-public-key
         env:
@@ -91,6 +116,48 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npx wrangler deploy -c workers/public-key/wrangler.jsonc
+      - if: steps.gate.outputs.skip == 'false'
+        name: Secrets for claudinite-key
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GITHUB_APP_ID: ${{ secrets.CLAUDINITE_GITHUB_APP_ID }}
+          GITHUB_APP_PRIVATE_KEY: ${{ secrets.CLAUDINITE_GITHUB_APP_PRIVATE_KEY }}
+          GITHUB_APP_CLIENT_SECRET: ${{ secrets.CLAUDINITE_GITHUB_APP_CLIENT_SECRET }}
+          ISSUING_KEY_PRIVATE: ${{ secrets.KEY_ISSUING_KEY_PRIVATE }}
+          ISSUING_KEY_CERT: ${{ secrets.KEY_ISSUING_KEY_CERT }}
+        run: |
+          node -e 'const e=process.env,dev=(f)=>require("fs").readFileSync("keys/dev/"+f,"utf8"),useDev=!e.ISSUING_KEY_PRIVATE;console.log(JSON.stringify({GITHUB_APP_ID:e.GITHUB_APP_ID,GITHUB_APP_PRIVATE_KEY:e.GITHUB_APP_PRIVATE_KEY,...(e.GITHUB_APP_CLIENT_SECRET?{GITHUB_APP_CLIENT_SECRET:e.GITHUB_APP_CLIENT_SECRET}:{}),ISSUING_KEY_PRIVATE:useDev?dev("license.key"):e.ISSUING_KEY_PRIVATE,ISSUING_KEY_CERT:useDev?dev("license.cert.json"):e.ISSUING_KEY_CERT}))' > "$RUNNER_TEMP/key.secrets.json"
+          npx wrangler secret bulk "$RUNNER_TEMP/key.secrets.json" -c workers/key/wrangler.jsonc
+          rm "$RUNNER_TEMP/key.secrets.json"
+      - if: steps.gate.outputs.skip == 'false'
+        name: Deploy claudinite-key
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler deploy -c workers/key/wrangler.jsonc
+      - if: steps.gate.outputs.skip == 'false'
+        name: Secrets for claudinite-sync
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GITHUB_APP_ID: ${{ secrets.CLAUDINITE_GITHUB_APP_ID }}
+          GITHUB_APP_PRIVATE_KEY: ${{ secrets.CLAUDINITE_GITHUB_APP_PRIVATE_KEY }}
+        run: |
+          # A fresh admin token every run, kept only until the read-back has used it once.
+          umask 077
+          SYNC_ADMIN_TOKEN=$(openssl rand -hex 32)
+          echo "::add-mask::$SYNC_ADMIN_TOKEN"
+          printf %s "$SYNC_ADMIN_TOKEN" > "$RUNNER_TEMP/sync-admin-token"
+          SYNC_ADMIN_TOKEN=$SYNC_ADMIN_TOKEN node -e 'const e=process.env;console.log(JSON.stringify({GITHUB_APP_ID:e.GITHUB_APP_ID,GITHUB_APP_PRIVATE_KEY:e.GITHUB_APP_PRIVATE_KEY,SYNC_ADMIN_TOKEN:e.SYNC_ADMIN_TOKEN}))' > "$RUNNER_TEMP/sync.secrets.json"
+          npx wrangler secret bulk "$RUNNER_TEMP/sync.secrets.json" -c workers/sync/wrangler.jsonc
+          rm "$RUNNER_TEMP/sync.secrets.json"
+      - if: steps.gate.outputs.skip == 'false'
+        name: Deploy claudinite-sync
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler deploy -c workers/sync/wrangler.jsonc
       - if: steps.gate.outputs.skip == 'false'
         name: Secrets for claudinite-router
         env:
@@ -115,15 +182,34 @@ jobs:
       - if: steps.gate.outputs.skip == 'false'
         name: Read back the live Workers
         run: |
+          # probe <status> [<node expression over the JSON body, b>] -- <curl args>
           probe() {
             want=$1; shift
+            check=true
+            if [ "$1" != "--" ]; then check=$1; shift; fi
+            shift
             for i in 1 2 3 4 5 6; do
-              got=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$@" || true)
-              [ "$got" = "$want" ] && { echo "ok $want: $*"; return 0; }
+              got=$(curl -sS -o "$RUNNER_TEMP/probe.body" -w '%{http_code}' --max-time 20 "$@" || true)
+              if [ "$got" = "$want" ] && B="$(cat "$RUNNER_TEMP/probe.body")" node -e "let b=null;try{b=JSON.parse(process.env.B)}catch{}process.exit(($check)?0:1)" 2>/dev/null; then
+                echo "ok $want ($check): ${*: -1}"; return 0
+              fi
               sleep $((i * 5))
             done
-            echo "::error::expected $want, got $got: $*"
+            echo "::error::expected $want with ($check), got $got $(head -c 300 "$RUNNER_TEMP/probe.body"): ${*: -1}"
             return 1
           }
-          probe 200 https://license.claudinite.com/v1/public/health
-          probe 401 -X POST -H 'content-type: application/json' -d '{}' https://license.claudinite.com/github-webhook
+          started=$(date +%s)
+          token=$(cat "$RUNNER_TEMP/sync-admin-token")
+          rm "$RUNNER_TEMP/sync-admin-token"
+          probe 200 -- https://license.claudinite.com/v1/public/health
+          probe 200 'b.d1==="ok"' -- https://license.claudinite.com/v1/key/health
+          probe 200 -- https://license.claudinite.com/v1/sync/health
+          probe 200 'b.ok===true' -- -X POST -H "Authorization: Bearer $token" https://license.claudinite.com/v1/sync/reconcile
+          # The App is installed on all of missingbulb, so the reconcile must have found repos.
+          probe 200 "b.repos>0&&b.last_reconcile_at>=$started" -- https://license.claudinite.com/v1/sync/health
+          probe 401 -- -X POST -H 'content-type: application/json' -d '{}' https://license.claudinite.com/github-webhook
+          # A real OIDC token from this run: deploy.yml is not a pinned workflow, so the verifier must
+          # accept the token and the pin must refuse it.
+          oidc=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=claudinite" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>process.stdout.write(JSON.parse(s).value))')
+          echo "::add-mask::$oidc"
+          probe 403 'b.refused==="workflow-not-pinned"' -- -X POST -H "Authorization: Bearer $oidc" -H 'content-type: application/json' -d '{"engine_version":"deploy-read-back"}' https://license.claudinite.com/v1/actions-key
