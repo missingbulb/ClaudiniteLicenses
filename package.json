@@ -7,7 +7,7 @@
     "workers/*"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=22.18"
   },
   "scripts": {
     "test": "WRANGLER_SEND_METRICS=false vitest run",
