@@ -5,13 +5,17 @@
 // desktop requests, an Actions request with a token the stub's OIDC issuer signed, and a reconcile;
 // then the paid path on a private repo: a grace key with its checkout link, a signed Polar
 // subscription delivery, seats taken through the writes queue up to the headroom and past it, the
-// Actions key, an item grant and the Polar reconcile. Each key is verified against the dev chain's
-// roots and must carry the issuing key its Worker holds. Exits 0 only when every key and the grant
-// verify and every stamp moved. With --serve it stops once everything is serving and leaves it up,
-// the stubs included, until interrupted.
+// Actions key, an item grant and the Polar reconcile; then the alerts: none on the fresh set, an
+// incident queued from a key whose Polar call ran out of time, the polar-unreachable alert firing
+// once three such keys have been asked for and clearing once those incidents are an hour old, an
+// account the App no longer covers firing and clearing across two reconciles, and the outside probe
+// passing against the local set. Each key is verified against the dev chain's roots and must carry
+// the issuing key its Worker holds. Exits 0 only when every key and the grant verify, every stamp
+// moved and every alert came and went. With --serve it stops once everything is serving and leaves
+// it up, the stubs included, until interrupted.
 //
 //   node tools/local-roundtrip.mjs [--chain .dev] [--port 8787] [--timeout-ms 180000] [--serve]
-import { spawn, spawnSync } from "node:child_process";
+import { execFile, spawn, spawnSync } from "node:child_process";
 import { createHmac, randomBytes } from "node:crypto";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -164,7 +168,7 @@ async function healthUntil(label, ok) {
 
 /** @param {string} label @param {string} token @param {number} repoId @param {Record<string, unknown>} want */
 async function desktopKey(label, token, repoId, want) {
-  const target = world.installations[0].repos.find((r) => r.id === repoId);
+  const target = world.installations.flatMap((i) => i.repos).find((r) => r.id === repoId);
   const started = performance.now();
   const res = await call("/v1/session-key", {
     method: "POST",
@@ -338,5 +342,119 @@ if (beforePolar?.last_polar_reconcile_at !== null || typeof afterPolar?.last_pol
   await fail(`sync health around the Polar reconcile: before ${JSON.stringify(beforePolar)}, after ${JSON.stringify(afterPolar)}`);
 }
 console.log(`polar reconcile: last_polar_reconcile_at moved from null to ${afterPolar.last_polar_reconcile_at}, ${afterPolar.last_polar_reconcile_corrections} corrections, ${afterPolar.subscriptions} subscription`);
+
+/** The alerts endpoint's answer. */
+async function alerts() {
+  const res = await call("/v1/sync/alerts");
+  if (!Array.isArray(res.json?.alerts)) return fail(`/v1/sync/alerts answered ${res.status} without the alerts shape: ${res.text}`);
+  return { status: res.status, ids: /** @type {{ id: string }[]} */ (res.json.alerts).map((a) => a.id).sort() };
+}
+
+/** Polls the alerts until `ok` holds. @param {string} label @param {(a: { status: number, ids: string[] }) => boolean} ok */
+async function alertsUntil(label, ok) {
+  let a;
+  for (;;) {
+    a = await alerts();
+    if (ok(a)) return a;
+    if (Date.now() > deadline) return fail(`${label}: the alerts never matched: ${a.status} ${JSON.stringify(a.ids)}`);
+    await sleep(250);
+  }
+}
+
+/** Runs one statement on the local D1 beside the running Workers, as an operator would. @param {string} sql @returns {Promise<any[]>} */
+function localSql(sql) {
+  return new Promise((ok, no) =>
+    execFile("npx", ["wrangler", "d1", "execute", "claudinite-licenses", "--local", "-c", "db/wrangler.jsonc", "--persist-to", PERSIST, "--json", "--command", sql], { cwd: ROOT, env, encoding: "utf8" }, (err, stdout, stderr) => {
+      if (err) return no(new Error(`wrangler d1 execute failed: ${stderr || err.message}`));
+      try {
+        ok(JSON.parse(stdout)[0]?.results ?? []);
+      } catch {
+        no(new Error(`wrangler d1 execute printed no JSON: ${stdout}`));
+      }
+    }),
+  );
+}
+
+/** The local D1's polar-unreachable incidents, read directly. */
+async function polarIncidents() {
+  try {
+    return await localSql("SELECT marker, at, detail FROM incidents WHERE marker = 'polar-unreachable' ORDER BY id");
+  } catch (err) {
+    return fail(String(err));
+  }
+}
+
+// A fresh set has nothing to say: the stale-reconcile alerts stay silent on a database just reconciled.
+const fresh = await alerts();
+if (fresh.status !== 200 || fresh.ids.length !== 0) await fail(`the alerts on the fresh set: ${fresh.status} ${JSON.stringify(fresh.ids)}`);
+console.log("alerts: 200, none on the fresh set");
+
+// A second account installs the App on a private repo it has no plan for; the reconcile writes it.
+// Polar holds every answer past the key Worker's 3-second deadline, and a link Polar did not give is
+// never cached, so each key there asks again: its grace key still verifies, with no checkout link,
+// and its one polar-unreachable incident reaches D1 through the queue, below the threshold.
+const OTHER = { id: 1003, name: "acme-other-private", full_name: "acme-other/acme-other-private", private: true, default_branch: "main" };
+world.installations.push({ id: 6006, account: { id: 2004, login: "acme-other", type: "User" }, repos: [OTHER] });
+const withOther = await call("/v1/sync/reconcile", { method: "POST", headers: { Authorization: `Bearer ${vars.sync.SYNC_ADMIN_TOKEN}` } });
+if (withOther.status !== 200 || withOther.json?.repos !== 3) await fail(`the reconcile with a second installation answered ${withOther.status}: ${withOther.text}`);
+polar.slow(10_000);
+const slowKey = () => desktopKey("private repo of a second account, Polar too slow", tokenA, OTHER.id, { plan: "private-repo", state: "grace", checkout_url: null, portal_url: null });
+await slowKey();
+let incidentRows;
+while ((incidentRows = await polarIncidents()).length === 0) {
+  if (Date.now() > deadline) await fail("no polar-unreachable incident reached D1");
+  await sleep(500);
+}
+const under = await alerts();
+if (under.status !== 200 || under.ids.length !== 0) await fail(`one polar-unreachable must stay under the threshold: ${under.status} ${JSON.stringify(under.ids)}`);
+console.log(`incident: ${incidentRows.length} polar-unreachable row in D1 (${incidentRows.map((/** @type {any} */ r) => r.detail).join(", ")}), alerts still 200`);
+
+// Two more such keys put it over the threshold of three in the hour.
+await slowKey();
+await slowKey();
+polar.slow(0);
+await alertsUntil("polar-unreachable firing", (a) => a.status === 503 && a.ids.includes("polar-unreachable"));
+console.log(`alerts: 503 polar-unreachable after three slow keys, ${(await polarIncidents()).length} incidents`);
+
+// An hour later the window has passed them: aged by hand here, the alert clears on its own.
+try {
+  await localSql("UPDATE incidents SET at = at - 3700 WHERE marker = 'polar-unreachable'");
+} catch (err) {
+  await fail(String(err));
+}
+await alertsUntil("polar-unreachable clearing", (a) => a.status === 200 && a.ids.length === 0);
+console.log("alerts: 200 again once the polar-unreachable incidents are an hour old");
+
+// The App leaves the account's repos: Personal needs it on at least one, so the account is uncovered.
+const keptRepos = inst.repos;
+inst.repos = [];
+const dropped = await call("/v1/sync/reconcile", { method: "POST", headers: { Authorization: `Bearer ${vars.sync.SYNC_ADMIN_TOKEN}` } });
+if (dropped.status !== 200) await fail(`the reconcile without the repos answered ${dropped.status}: ${dropped.text}`);
+const uncovered = (await call("/v1/sync/health")).json;
+if (uncovered?.paying_uncovered !== 1) await fail(`paying_uncovered after the App left: ${JSON.stringify(uncovered)}`);
+const firing = await alerts();
+if (firing.status !== 503 || JSON.stringify(firing.ids) !== JSON.stringify(["paying-uncovered"])) await fail(`the alerts with an uncovered account: ${firing.status} ${JSON.stringify(firing.ids)}`);
+console.log("coverage: the App left the account's repos, paying_uncovered 1, alerts 503 paying-uncovered");
+
+// The repos return: the next reconcile covers the account and the endpoint clears.
+inst.repos = keptRepos;
+const restored = await call("/v1/sync/reconcile", { method: "POST", headers: { Authorization: `Bearer ${vars.sync.SYNC_ADMIN_TOKEN}` } });
+if (restored.status !== 200) await fail(`the reconcile with the repos back answered ${restored.status}: ${restored.text}`);
+const covered = (await call("/v1/sync/health")).json;
+const cleared = await alerts();
+if (covered?.paying_uncovered !== 0 || cleared.status !== 200 || cleared.ids.length !== 0) await fail(`after the repos returned: health ${JSON.stringify(covered)}, alerts ${cleared.status} ${JSON.stringify(cleared.ids)}`);
+console.log("coverage: the repos returned, paying_uncovered 0, alerts 200");
+
+// The outside probe, as the schedule runs it, against the local set: no issue, no OIDC token.
+const probed = await new Promise((ok) => {
+  const child = spawn(process.execPath, ["tools/probe.mjs", "--base", origin], { cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"] });
+  let out = "";
+  child.stdout.on("data", (c) => (out += c));
+  child.stderr.on("data", (c) => (out += c));
+  child.on("close", (code) => ok({ code, out }));
+});
+const { code: probeCode, out: probeOut } = /** @type {{ code: number | null, out: string }} */ (probed);
+if (probeCode !== 0) await fail(`the outside probe exited ${probeCode}:\n${probeOut}`);
+console.log(`probe: exit 0, ${probeOut.split("\n").filter((l) => l.startsWith("ok ")).length} checks passed`);
 
 await shutdown();
