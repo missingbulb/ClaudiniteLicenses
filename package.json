@@ -11,7 +11,7 @@
   },
   "scripts": {
     "test": "WRANGLER_SEND_METRICS=false vitest run",
-    "typecheck": "tsc --noEmit -p packages/signing && tsc --noEmit -p workers/router && tsc --noEmit -p workers/public-key && tsc --noEmit -p tools && tsc --noEmit -p db",
+    "typecheck": "tsc --noEmit -p packages/signing && tsc --noEmit -p workers/router && tsc --noEmit -p workers/public-key && tsc --noEmit -p tools && tsc --noEmit -p db && tsc --noEmit -p spike",
     "dry-run": "WRANGLER_SEND_METRICS=false wrangler deploy --dry-run --outdir .wrangler/dry-run/router -c workers/router/wrangler.jsonc && WRANGLER_SEND_METRICS=false wrangler deploy --dry-run --outdir .wrangler/dry-run/public-key -c workers/public-key/wrangler.jsonc",
     "dev": "WRANGLER_SEND_METRICS=false wrangler dev -c workers/router/wrangler.jsonc -c workers/public-key/wrangler.jsonc",
     "e2e": "WRANGLER_SEND_METRICS=false node tools/local-roundtrip.mjs"
