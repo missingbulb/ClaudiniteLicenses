@@ -14,8 +14,9 @@ import { polarWebhook } from "./polar-webhook.ts";
 import { githubClient, reconcileInstallations } from "./reconcile.ts";
 import { applyWebhook } from "./repos.ts";
 import { consumeWrites } from "./writes.ts";
+import { versionOf, withVersion, type VersionEnv } from "../../../packages/version/src/index.ts";
 
-export interface Env {
+export interface Env extends VersionEnv {
   DB: D1Database;
   GITHUB_APP_ID: string;
   GITHUB_APP_PRIVATE_KEY: string;
@@ -69,6 +70,7 @@ async function health(env: Env): Promise<Response> {
     last_dead_letter_at: at("last_dead_letter_at"),
     paying_uncovered: count("paying_uncovered"),
     polar_webhook_secret: Boolean(env.POLAR_WEBHOOK_SECRET),
+    version: versionOf(env),
   });
 }
 
@@ -118,35 +120,41 @@ function logged(names: { ok: string; failed: string }, cron: string, work: Promi
 const GITHUB_LOG = { ok: "ok", failed: "failed" };
 const POLAR_LOG = { ok: "polar", failed: "polar-failed" };
 
+async function route(req: Request, env: Env): Promise<Response> {
+  const url = new URL(req.url);
+  if (req.method === "POST" && url.pathname === "/webhook") {
+    let payload: unknown;
+    try {
+      payload = await req.json();
+    } catch {
+      return new Response("malformed-payload", { status: 400 });
+    }
+    return applyWebhook(env, githubClient(env), req.headers.get("X-GitHub-Event") ?? "", payload as never, nowS(), req.headers.get("X-GitHub-Delivery"));
+  }
+  if (req.method === "GET" && url.pathname === "/v1/sync/health") return health(env);
+  if (req.method === "GET" && url.pathname === "/v1/sync/alerts") return alertsRoute(env.DB, nowS());
+  if (req.method === "POST" && url.pathname === "/v1/sync/polar-webhook") return polarWebhook(req, env, nowS());
+  if (req.method === "POST" && url.pathname === "/v1/sync/polar-reconcile") {
+    if (!(await bearerMatches(req, env.SYNC_ADMIN_TOKEN))) return new Response("unauthorized", { status: 401 });
+    return polarReconcileNow(env);
+  }
+  if (req.method === "POST" && url.pathname === "/v1/sync/reconcile") {
+    if (!(await bearerMatches(req, env.SYNC_ADMIN_TOKEN))) return new Response("unauthorized", { status: 401 });
+    return reconcileNow(env);
+  }
+  return new Response("not found", { status: 404 });
+}
+
 export default {
   async fetch(req: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
-    const url = new URL(req.url);
-    if (req.method === "POST" && url.pathname === "/webhook") {
-      let payload: unknown;
-      try {
-        payload = await req.json();
-      } catch {
-        return new Response("malformed-payload", { status: 400 });
-      }
-      return applyWebhook(env, githubClient(env), req.headers.get("X-GitHub-Event") ?? "", payload as never, nowS(), req.headers.get("X-GitHub-Delivery"));
-    }
-    if (req.method === "GET" && url.pathname === "/v1/sync/health") return health(env);
-    if (req.method === "GET" && url.pathname === "/v1/sync/alerts") return alertsRoute(env.DB, nowS());
-    if (req.method === "POST" && url.pathname === "/v1/sync/polar-webhook") return polarWebhook(req, env, nowS());
-    if (req.method === "POST" && url.pathname === "/v1/sync/polar-reconcile") {
-      if (!(await bearerMatches(req, env.SYNC_ADMIN_TOKEN))) return new Response("unauthorized", { status: 401 });
-      return polarReconcileNow(env);
-    }
-    if (req.method === "POST" && url.pathname === "/v1/sync/reconcile") {
-      if (!(await bearerMatches(req, env.SYNC_ADMIN_TOKEN))) return new Response("unauthorized", { status: 401 });
-      return reconcileNow(env);
-    }
-    return new Response("not found", { status: 404 });
+    return withVersion(await route(req, env), versionOf(env));
   },
 
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     const at = Math.floor(controller.scheduledTime / 1000);
     const cron = controller.cron;
+    // Which version a split hands a cron is not documented; this line is how a real run learns it.
+    console.log(JSON.stringify({ invocation: "scheduled", cron, version: versionOf(env) }));
     const run = async () => {
       if (cron === HOURLY_CRON) {
         if (await polarReconcileDue(env.DB, at)) await logged(POLAR_LOG, cron, reconcilePolar(env, at));
@@ -164,6 +172,7 @@ export default {
   },
 
   async queue(batch: MessageBatch, env: Env, _ctx: ExecutionContext): Promise<void> {
+    console.log(JSON.stringify({ invocation: "queue", messages: batch.messages.length, version: versionOf(env) }));
     await consumeWrites(batch, env, nowS());
   },
 };

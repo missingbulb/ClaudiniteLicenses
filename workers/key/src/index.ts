@@ -8,6 +8,7 @@ import { sessionKey } from "./desktop.ts";
 import { webhook } from "./web.ts";
 import { actionsKey } from "./actions.ts";
 import { itemGrant } from "./grant.ts";
+import { versionOf, withVersion } from "../../../packages/version/src/index.ts";
 
 export type { Env } from "./env.ts";
 
@@ -57,33 +58,37 @@ async function health(env: Env): Promise<Response> {
       queue: env.WRITES ? "bound" : "unbound",
       polar: env.POLAR_API_BASE && env.POLAR_ACCESS_TOKEN ? "configured" : "unconfigured",
       trust_roots: roots,
+      version: versionOf(env),
       alerts,
     },
     { status: alerts.length === 0 ? 200 : 503 },
   );
 }
 
+function route(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> | Response {
+  const url = new URL(req.url);
+  switch (`${req.method} ${url.pathname}`) {
+    case "POST /webhook":
+      return webhook(req, env, ctx);
+    case "POST /v1/session-key":
+      return sessionKey(req, env, ctx);
+    case "POST /v1/actions-key":
+      return actionsKey(req, env, ctx);
+    case "POST /v1/item-grant":
+      return itemGrant(req, env);
+    case "GET /v1/login/config":
+      return loginConfig(env);
+    case "POST /v1/login/refresh":
+      return loginRefresh(req, env);
+    case "GET /v1/key/health":
+      return health(env);
+    default:
+      return new Response("not found", { status: 404 });
+  }
+}
+
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const url = new URL(req.url);
-    const route = `${req.method} ${url.pathname}`;
-    switch (route) {
-      case "POST /webhook":
-        return webhook(req, env, ctx);
-      case "POST /v1/session-key":
-        return sessionKey(req, env, ctx);
-      case "POST /v1/actions-key":
-        return actionsKey(req, env, ctx);
-      case "POST /v1/item-grant":
-        return itemGrant(req, env);
-      case "GET /v1/login/config":
-        return loginConfig(env);
-      case "POST /v1/login/refresh":
-        return loginRefresh(req, env);
-      case "GET /v1/key/health":
-        return health(env);
-      default:
-        return new Response("not found", { status: 404 });
-    }
+    return withVersion(await route(req, env, ctx), versionOf(env));
   },
 };
