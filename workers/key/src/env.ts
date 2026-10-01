@@ -43,7 +43,7 @@ export function refusal(status: number, reason: string): Response {
   return Response.json({ refused: reason }, { status });
 }
 
-/** The per-owner rate limit, keyed by the owner's login in lower case so the desktop path can check it before any GitHub call. */
+/** The per-owner rate limit, one bucket per owner login in lower case, checked once the caller is authenticated: by GitHub on the desktop path, by the OIDC token on the Actions path. */
 export async function withinOwnerLimit(env: Env, ownerLogin: string): Promise<boolean> {
   const { success } = await env.OWNER_LIMIT.limit({ key: `owner:${ownerLogin.toLowerCase()}` });
   return success;

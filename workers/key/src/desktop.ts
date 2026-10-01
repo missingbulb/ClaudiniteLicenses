@@ -9,7 +9,6 @@ export async function sessionKey(req: Request, env: Env): Promise<Response> {
   const parsed = await parseDesktopRequest(req);
   if (!parsed.ok) return refusal(parsed.status, parsed.reason);
   const { token, owner: ownerLogin, name, nonce, engineVersion } = parsed.request;
-  if (!(await withinOwnerLimit(env, ownerLogin))) return refusal(429, "rate-limited");
 
   const caller = await readDesktopCaller({ base: env.GITHUB_API_BASE ?? "https://api.github.com", userAgent: "claudinite-key" }, token, ownerLogin, name);
   if (!caller.ok) {
@@ -17,6 +16,7 @@ export async function sessionKey(req: Request, env: Env): Promise<Response> {
     return refusal(caller.status, caller.reason);
   }
   const { user, repo, owner } = caller;
+  if (!(await withinOwnerLimit(env, owner.login))) return refusal(429, "rate-limited");
   const seen = { repoId: String(repo.id), ownerType: owner.type, engineVersion, path: "desktop" as const };
   const plan = await resolvePlan(env, { repoId: repo.id, visibility: repo.private ? "private" : "public" });
   if ("refused" in plan) {

@@ -52,8 +52,10 @@ engine design's "accepting each token once" is not implemented: a replayed token
 principal's key for the same run, and a token outlives its job by minutes.
 
 **Rate limit.** `OWNER_LIMIT`, 600 requests per 60 seconds per owner, keyed by the owner's login in
-lower case, is checked on the desktop path before any GitHub call or D1 read, and on the Actions
-path once the token verifies and before any D1 read: over it, 429 `rate-limited`.
+lower case as GitHub or the token names it, is checked only once the caller is authenticated: on
+the desktop path after GitHub has read the caller and the repo, on the Actions path once the token
+verifies, both before any D1 read. Over it, 429 `rate-limited`. An unauthenticated request never
+spends a bucket.
 
 Every answered request writes one Analytics Engine point to `KEY_COUNTS`, the dataset the public key
 Worker writes: index the repo id, blobs plan (or `none`), outcome (`issued`, `refused-<reason>`,

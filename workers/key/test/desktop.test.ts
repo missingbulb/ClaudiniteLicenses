@@ -73,16 +73,32 @@ describe("POST /v1/session-key", () => {
 });
 
 describe("the per-owner rate limit", () => {
-  it("answers the 601st request for one owner in the window with 429 and no GitHub or D1 call, while another owner still answers", async () => {
+  it("never spends an owner's bucket on requests GitHub has not authenticated", async () => {
     await seedRepo();
     const e = env();
+    for (let i = 0; i < 700; i++) expect((await ask(body(), e, null)).status).toBe(401);
+    world.user = () => Response.json({ message: "Bad credentials" }, { status: 401 });
+    for (let i = 0; i < 700; i++) expect((await ask(body(), e, "ghu_forged")).status).toBe(401);
+    world.user = () => Response.json({ id: 3003, login: "acme-dev", type: "User" });
+    world.repo = () => Response.json({ message: "Not Found" }, { status: 404 });
+    for (let i = 0; i < 50; i++) expect((await ask(body(), e)).status).toBe(403);
+    expect(world.limited).toEqual({});
+    world.repo = () => Response.json(githubRepo());
+    expect((await ask(body(), e)).status).toBe(200);
+    expect(world.limited).toEqual({ "owner:acme-user": 1 });
+  });
+
+  it("keys the bucket on GitHub's owner login in lower case, the bucket the Actions path shares, and refuses the 601st with 429 and no D1 read", async () => {
+    await seedRepo();
+    const e = env();
+    world.repo = () => Response.json(githubRepo({ owner: { id: 2002, login: "Acme-User", type: "User" } }));
     world.limited["owner:acme-user"] = 600;
-    const calls = world.calls.length;
     const dbCalls = world.dbCalls;
-    const res = await ask(body({ repo: "Acme-User/acme-repo" }), e);
+    const res = await ask(body({ repo: "someone-else/acme-repo" }), e);
     expect([res.status, await res.json()]).toEqual([429, { refused: "rate-limited" }]);
-    expect(world.calls.length - calls).toBe(0);
     expect(world.dbCalls - dbCalls).toBe(0);
-    expect((await ask(body({ repo: "acme-other/acme-repo" }), e)).status).toBe(200);
+    expect(world.limited["owner:someone-else"]).toBeUndefined();
+    world.repo = () => Response.json(githubRepo({ owner: { id: 2003, login: "acme-other", type: "User" } }));
+    expect((await ask(body(), e)).status).toBe(200);
   });
 });
