@@ -1,6 +1,6 @@
 # workers/key
 
-The paid key Worker. It signs every key with the `license` issuing key, whatever the plan, decides
+The paid key Worker, answering a web session, a desktop and an Actions run. It signs every key with the `license` issuing key, whatever the plan, decides
 from D1 reads alone and writes nothing; the sync Worker is D1's only writer. A test pins that no
 `INSERT`, `UPDATE` or `DELETE` appears under `src/`, since D1 has no read-only binding.
 
@@ -31,13 +31,33 @@ and the caller's push access) with the caller's token. It answers `{ "key", "pla
 has no access), `no-push-access`, `app-not-installed` or `no-plan`, 502 `github-error`, 503
 `server-error`.
 
+**Actions.** `POST /v1/actions-key`, `Authorization: Bearer <OIDC token>` requested with audience
+`claudinite`, body `{ "engine_version" }`. The token is verified RS256 against the key its `kid`
+names in `${OIDC_ISSUER}/.well-known/jwks` (cached in the isolate for an hour, refetched once on an
+unknown `kid`), with `iss` equal to `OIDC_ISSUER`, `aud` `claudinite`, and `exp`, `nbf` and `iat`
+within the signing spec's 5 minutes of skew; then `repository_id`, `repository_owner_id`,
+`repository`, `repository_owner`, `repository_visibility`, `event_name` and `job_workflow_ref` must
+be present. Each failure is a 401 naming it (`token-missing`, `token-malformed`,
+`token-unknown-key`, `token-signature`, `token-issuer`, `token-audience`, `token-expired`,
+`token-not-yet-valid`, `token-claims`), or 502 `jwks-unavailable`. Then, each a 403: `event_name`
+`pull_request` or `pull_request_target` is `pull-request-trigger`; a `job_workflow_ref` other than
+`{repository}/.github/workflows/{name}.yml@refs/heads/{default branch}`, `name` one of
+`claudinite-scheduler`, `claudinite-executor` and `claudinite-update`, is `workflow-not-pinned`; no
+row is `app-not-installed`; a row whose default branch the sync Worker has not read yet is
+`repo-not-synced`; a private repo is `no-plan`. The key is a 6-hour `actions` key, no user or nonce,
+the owner type from the row, the plan from the `repository_visibility` claim, answered as
+`{ "key", "plan", "state" }`. An Actions key never fails open: without D1 the workflow pin cannot be
+checked, so an unreadable D1 answers 503 `server-error`. There is no per-`jti` replay store, so the
+engine design's "accepting each token once" is not implemented: a replayed token mints the same
+principal's key for the same run, and a token outlives its job by minutes.
+
 **Rate limit.** `OWNER_LIMIT`, 600 requests per 60 seconds per owner, keyed by the owner's login in
-lower case, is checked on the desktop path before any GitHub call or D1 read: over it, 429
-`rate-limited`.
+lower case, is checked on the desktop path before any GitHub call or D1 read, and on the Actions
+path once the token verifies and before any D1 read: over it, 429 `rate-limited`.
 
 Every answered request writes one Analytics Engine point to `KEY_COUNTS`, the dataset the public key
 Worker writes: index the repo id, blobs plan (or `none`), outcome (`issued`, `refused-<reason>`,
-`github-error`), owner type, engine version and path (`web`, `desktop`).
+`github-error`), owner type, engine version and path (`web`, `desktop`, `actions`).
 
 `GET /v1/key/health` answers `{ ok, kid, cert_exp, d1 }`, `d1` being `ok` or `unreadable` after one
 `SELECT 1`.

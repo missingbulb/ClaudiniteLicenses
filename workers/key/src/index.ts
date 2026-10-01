@@ -1,8 +1,10 @@
-// The paid key Worker: answers key requests from the places a key is asked for, a web session's
-// dispatch through the router and a desktop's App user token, deciding from D1 reads alone. It writes nothing; the sync Worker is D1's only writer.
+// The paid key Worker: answers key requests from all three places a key is asked for, a web
+// session's dispatch through the router, a desktop's App user token and an Actions run's OIDC
+// token, deciding from D1 reads alone. It writes nothing; the sync Worker is D1's only writer.
 import { certBody, refusal, type Env } from "./env.ts";
 import { sessionKey } from "./desktop.ts";
 import { webhook } from "./web.ts";
+import { actionsKey } from "./actions.ts";
 
 export type { Env } from "./env.ts";
 
@@ -50,6 +52,8 @@ export default {
         return webhook(req, env);
       case "POST /v1/session-key":
         return sessionKey(req, env);
+      case "POST /v1/actions-key":
+        return actionsKey(req, env);
       case "GET /v1/login/config":
         return loginConfig(env);
       case "POST /v1/login/refresh":

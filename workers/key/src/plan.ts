@@ -50,7 +50,12 @@ export async function resolvePlan(env: PlanEnv, req: { repoId: number; visibilit
     return { refused: "server-error" };
   }
   if (!row && !opts.installed) return { refused: "app-not-installed" };
-  if (req.visibility !== "public") return { refused: "no-plan" };
+  return planFor(row, req.visibility);
+}
+
+/** The plan for a repo the App covers, from its row and the caller's visibility. */
+export function planFor(row: RepoRow | null, visibility: string): Resolution {
+  if (visibility !== "public") return { refused: "no-plan" };
   return { plan: "public", state: "ok", features: [...PUBLIC_FEATURES], row };
 }
 
