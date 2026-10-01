@@ -32,8 +32,14 @@ export async function certify(rootSeed, subjectPub, purpose, days, now = new Dat
   return issueCertificate(rootSeed.trim(), subjectPub.trim(), purpose, now, new Date(now.getTime() + days * DAY_MS));
 }
 
+// dotenv as wrangler reads it: single quotes are literal, double quotes expand \n and nothing else.
 function quote(value) {
-  return '"' + value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n") + '"';
+  if (value.includes("\n")) {
+    if (value.includes('"')) throw new Error("a multi-line .dev.vars value cannot hold a double quote");
+    return '"' + value.replace(/\n/g, "\\n") + '"';
+  }
+  if (value.includes("'")) throw new Error("a single-line .dev.vars value cannot hold a single quote");
+  return "'" + value + "'";
 }
 
 export function formatDevVars(vars) {
@@ -52,7 +58,8 @@ export function parseDevVars(text) {
     const m = /^([A-Z0-9_]+)=(.*)$/.exec(line);
     if (!m) continue;
     let v = m[2];
-    if (v.startsWith('"') && v.endsWith('"')) v = v.slice(1, -1).replace(/\\(.)/g, (_, c) => (c === "n" ? "\n" : c));
+    if (v.startsWith('"') && v.endsWith('"')) v = v.slice(1, -1).replace(/\\n/g, "\n");
+    else if (v.startsWith("'") && v.endsWith("'")) v = v.slice(1, -1);
     out[m[1]] = v;
   }
   return out;
