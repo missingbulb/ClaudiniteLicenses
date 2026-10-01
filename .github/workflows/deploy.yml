@@ -107,3 +107,18 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npx wrangler deploy -c workers/router/wrangler.jsonc
+      - if: steps.gate.outputs.skip == 'false'
+        name: Read back the live Workers
+        run: |
+          probe() {
+            want=$1; shift
+            for i in 1 2 3 4 5 6; do
+              got=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$@" || true)
+              [ "$got" = "$want" ] && { echo "ok $want: $*"; return 0; }
+              sleep $((i * 5))
+            done
+            echo "::error::expected $want, got $got: $*"
+            return 1
+          }
+          probe 200 https://license.claudinite.com/v1/public/health
+          probe 401 -X POST -H 'content-type: application/json' -d '{}' https://license.claudinite.com/github-webhook
