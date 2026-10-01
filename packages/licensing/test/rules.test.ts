@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { FEATURES } from "../../signing/src/index.ts";
-import { dayOf, GRACE_S, headroom, licenseeOf, paidSeats, planFeatures, resolveSeats, SEAT_WINDOW_S, type SeatRow, type SubscriptionRow } from "../src/index.ts";
+import { dayOf, GRACE_S, headroom, INCIDENT_MARKERS, isWriteMessage, licenseeOf, paidSeats, planFeatures, resolveSeats, SEAT_WINDOW_S, type SeatRow, type SubscriptionRow } from "../src/index.ts";
 
 const DAY = 86400;
 const NOW = 1_790_000_000;
@@ -159,5 +159,37 @@ describe("dayOf", () => {
   it("is the UTC date of a unix time", () => {
     expect(dayOf(Date.parse("2026-10-01T23:59:59Z") / 1000)).toBe("2026-10-01");
     expect(dayOf(Date.parse("2026-10-02T00:00:00Z") / 1000)).toBe("2026-10-02");
+  });
+});
+
+describe("isWriteMessage", () => {
+  const usage = { v: 1, kind: "usage", at: NOW, repo_id: 1001, user_id: 3003, owner_id: 2002, plan: "personal", day: "2026-09-21" };
+  const incident = { v: 1, kind: "incident", at: NOW, marker: "polar-unreachable" };
+
+  it("accepts an incident with and without a detail, and with no owner_id", () => {
+    expect(isWriteMessage(incident)).toBe(true);
+    expect(isWriteMessage({ ...incident, detail: "checkout" })).toBe(true);
+    expect(isWriteMessage({ ...incident, detail: "x".repeat(200) })).toBe(true);
+    for (const marker of INCIDENT_MARKERS) expect(isWriteMessage({ ...incident, marker }), marker).toBe(true);
+  });
+
+  it("names the six markers the alerts count, and not queue-send-failed, which no queued message can carry", () => {
+    expect([...INCIDENT_MARKERS]).toEqual(["d1-unreadable", "polar-unreachable", "app-not-installed", "polar-webhook-refused", "write-dead-lettered", "secondary-rate-limit"]);
+    expect(isWriteMessage({ ...incident, marker: "queue-send-failed" })).toBe(false);
+  });
+
+  it("refuses an incident with a marker outside the list, a 201-character detail, a detail that is not a string, or a fractional time", () => {
+    expect(isWriteMessage({ ...incident, marker: "acme-marker" })).toBe(false);
+    expect(isWriteMessage({ ...incident, detail: "x".repeat(201) })).toBe(false);
+    expect(isWriteMessage({ ...incident, detail: 7 })).toBe(false);
+    expect(isWriteMessage({ ...incident, at: NOW + 0.5 })).toBe(false);
+  });
+
+  it("still requires owner_id on a usage, grace-start and grace-reset message", () => {
+    expect(isWriteMessage(usage)).toBe(true);
+    const { owner_id: _o, ...noOwner } = usage;
+    expect(isWriteMessage(noOwner)).toBe(false);
+    expect(isWriteMessage({ v: 1, kind: "grace-start", at: NOW })).toBe(false);
+    expect(isWriteMessage({ v: 1, kind: "grace-reset", at: NOW, owner_id: 2002 })).toBe(true);
   });
 });

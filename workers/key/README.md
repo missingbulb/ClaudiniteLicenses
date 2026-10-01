@@ -35,9 +35,8 @@ and it writes nothing.
 
 When D1 cannot be read and the var `FAIL_OPEN` is `"true"`, the key is issued anyway, plan `public`
 for a public repo and `private-repo` for a private one (the binary refuses a Public key on a
-private repo), state `unverified`, every feature, and the Worker logs
-`{ "marker": "d1-unreadable" }` for the alerts; with any other value the request is refused
-`server-error`.
+private repo), state `unverified`, every feature, and the Worker reports a `d1-unreadable`
+incident (below); with any other value the request is refused `server-error`.
 
 ## Writes
 
@@ -47,7 +46,25 @@ the `grace-start` or `grace-reset` its verdict asks for; a fail-open key on a pr
 one `usage` message with the plan it assumed. The messages are `packages/licensing`'s
 `WriteMessage`, sent with one `sendBatch` inside `waitUntil`, so the answer never waits on the
 queue; a send that fails logs `{ "marker": "queue-send-failed" }` and the key stands. Public repos
-and Actions keys send nothing.
+and Actions keys send no seat records.
+
+## Incidents
+
+Each marker the alerts count is logged as a line and, when `WRITES` is bound, queued as an
+`incident` message (`{ v: 1, kind: "incident", at, marker, detail }`) in its own `sendBatch` inside
+`waitUntil`, so an answer never waits on it. The sync Worker writes it as an `incidents` row.
+
+| Marker | When | `detail` |
+| --- | --- | --- |
+| `d1-unreadable` | a key path cannot read D1, failing open or refusing | the path: `web`, `desktop` or `actions` |
+| `polar-unreachable` | a link call fails, runs out of time, or Polar is unconfigured | the call: `checkout`, `customer-session` or `unconfigured` |
+| `app-not-installed` | a desktop or Actions request for a repo with no row | the path |
+| `secondary-rate-limit` | GitHub refuses the web path's check run for its secondary rate limit | GitHub's call |
+
+A fail-open key therefore queues its `usage` and its incident, and both wait in the queue until D1
+answers. `queue-send-failed` is never an incident, since a Worker that cannot reach the queue
+cannot report through it: the probe's `queue: "bound"` check and a `queue_lag_s` that stops moving
+are its signal.
 
 ## Links
 
@@ -55,10 +72,10 @@ A key that is not plainly `ok` (state `grace` or `degraded`, or a notice) carrie
 a Polar checkout for the owner, the plan and, under `private-repo`, the repo, offering the monthly
 and yearly products; and, when the owner has any subscription row, `portal_url`, a customer
 portal session. Both come from `packages/polar` with `POLAR_API_BASE` and `POLAR_ACCESS_TOKEN`,
-under one 3-second deadline, cached in the isolate for an hour per owner, plan and repo (the
-managed products too). A call that fails or runs out of time logs
-`{ "marker": "polar-unreachable", "call" }` and leaves its link `null`; the key is answered either
-way. An `internal` plan has no checkout; an `unverified` key asks Polar nothing.
+under one 3-second deadline, which the Polar client also takes as its own timeout so an abandoned
+call is aborted, cached in the isolate for an hour per owner, plan and repo (the managed products
+too); a link Polar did not give is not cached. A call that fails or runs out of time reports a
+`polar-unreachable` incident and leaves its link `null`; the key is answered either way. An `internal` plan has no checkout; an `unverified` key asks Polar nothing.
 
 ## Paths
 
@@ -104,7 +121,8 @@ principal's key for the same run, and a token outlives its job by minutes.
 form), body `{ "issue": <positive integer> }`. The Actions key must verify against the var
 `TRUST_ROOTS`, a JSON array of root public keys (`deploy.yml` passes `tools/keys.mjs trust-roots`:
 `packages/signing/roots/*.pub` once that directory exists, the dev root until then), and be an
-unexpired `actions` key. The answer is `{ "grant" }`, a `grant` key carrying the Actions key's
+unexpired `actions` key. `TRUST_ROOTS` is parsed once per isolate; a value that is not a non-empty
+JSON array of non-empty strings refuses every grant with 503 `trust-roots-invalid`. The answer is `{ "grant" }`, a `grant` key carrying the Actions key's
 repo, owner, plan, state, grace end, features, seats and links, the body's `issue`, no user or
 nonce, lasting 6 hours and never past the Actions key's `exp`. A degraded Actions key gets a
 degraded grant. Refusals: 401 `{ "refused": "key-invalid", "reason" }` with `verifyKey`'s reason
@@ -122,9 +140,14 @@ Worker writes: index the repo id, blobs plan (or `none`), outcome (`issued-<stat
 `refused-<reason>`, `github-error`), owner type, engine version and path (`web`, `desktop`,
 `actions`, `grant`).
 
-`GET /v1/key/health` answers `{ ok, kid, cert_exp, d1, queue, polar }`: `d1` is `ok` or
-`unreadable` after one `SELECT 1`, `queue` is `bound` or `unbound`, and `polar` is `configured` when
-both `POLAR_API_BASE` and `POLAR_ACCESS_TOKEN` are set, else `unconfigured`.
+`GET /v1/key/health` answers `{ ok, kid, cert_exp, cert_days_left, d1, queue, polar, trust_roots,
+alerts }`: `cert_days_left` is the whole days to `cert_exp`, `d1` is `ok` or `unreadable` after one
+`SELECT 1`, `queue` is `bound` or `unbound`, `polar` is `configured` when both `POLAR_API_BASE`
+and `POLAR_ACCESS_TOKEN` are set, else `unconfigured`, and `trust_roots` is `ok` or `invalid`. It
+judges itself: while any of `cert-expiring` (fewer than 14 days left, the issuing keys' overlap),
+`cert-expired`, `trust-roots-invalid` or `d1-unreadable` stands it answers 503 with `ok: false` and
+those ids in `alerts`, else 200 with `alerts: []`. A status-only monitor therefore pages on the
+Worker's own conditions; the queue and Polar fields are the outside probe's to judge.
 
 ## Contract for `cn login`
 

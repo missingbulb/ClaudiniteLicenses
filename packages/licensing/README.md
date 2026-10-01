@@ -34,7 +34,9 @@ key, only the rows count and nobody is seated.
 
 1. **Within the paid count** (`counted ≤ paid`): `ok`. A grace start still stored asks for a
    `grace-reset` write.
-2. **Within headroom** (`counted ≤ paid + headroom`): `ok`, notice `over-within-headroom`.
+2. **Within headroom** (`counted ≤ paid + headroom`): `ok`, notice `over-within-headroom`. A
+   licensee back within headroom but still over the paid count keeps its grace start, so going
+   over headroom again resumes the same clock; only dropping within the paid count resets it.
 3. **Over headroom, grace**: with a grace start under 7 days old, `grace` until start + 7 days,
    notice `overused`. With no start and no spent grace (`grace_spent_until` null or past), `grace`
    until now + 7 days and a `grace-start` write: the first key beyond headroom starts the clock and
@@ -49,5 +51,9 @@ key, only the rows count and nobody is seated.
 ## Write messages
 
 `WriteMessage` is `{ v: 1, kind, at, … }`, `kind` one of `usage` (`repo_id`, `user_id`, `owner_id`,
-`plan`, `day`), `grace-start` and `grace-reset` (`owner_id`); `isWriteMessage` checks a queued
-body. `dayOf(at)` is the UTC day `usage` rows are keyed by.
+`plan`, `day`), `grace-start` and `grace-reset` (`owner_id`), and `incident` (`marker`, and an
+optional `detail` of at most 200 characters, no `owner_id`). An incident's `marker` is one of
+`INCIDENT_MARKERS`: `d1-unreadable`, `polar-unreachable`, `app-not-installed`,
+`polar-webhook-refused`, `write-dead-lettered` and `secondary-rate-limit`, the markers the alerts
+count. `isWriteMessage` checks a queued body and refuses an unknown marker. `dayOf(at)` is the UTC
+day `usage` rows are keyed by.

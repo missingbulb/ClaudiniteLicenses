@@ -8,15 +8,15 @@ beforeEach(async () => {
 });
 
 describe("migrations", () => {
-  it("creates the six tables of What it keeps and the sync stamps", async () => {
+  it("creates the six tables of What it keeps, the sync stamps and the incidents", async () => {
     const { results } = await e.DB.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'd1_%' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' ORDER BY name").all<{ name: string }>();
-    expect(results.map((r) => r.name)).toEqual(["overuse", "repos", "seats", "signing_keys", "subscriptions", "sync_state", "usage"]);
+    expect(results.map((r) => r.name)).toEqual(["incidents", "overuse", "repos", "seats", "signing_keys", "subscriptions", "sync_state", "usage"]);
   });
 
   it("applies once: a second apply is a no-op recorded by the migrations table", async () => {
     await applyD1Migrations(e.DB, e.TEST_MIGRATIONS);
     const { results } = await e.DB.prepare("SELECT name FROM d1_migrations").all<{ name: string }>();
-    expect(results.map((r) => r.name)).toEqual(["0001_init.sql", "0002_repos_identity_and_sync_state.sql", "0003_subscription_status.sql"]);
+    expect(results.map((r) => r.name)).toEqual(["0001_init.sql", "0002_repos_identity_and_sync_state.sql", "0003_subscription_status.sql", "0004_incidents.sql"]);
   });
 
   it("holds one seat per licensee and user", async () => {
@@ -80,5 +80,21 @@ describe("migrations", () => {
 
   it("allows only month or year as a subscription's interval", async () => {
     await expect(subscription("sub_weekly", { interval: "week" }).run()).rejects.toThrow(/CHECK/);
+  });
+
+  it("keeps one incidents row per occurrence, a missing detail reading back null, indexed by marker and time", async () => {
+    await e.DB.prepare("INSERT INTO incidents (marker, at, detail) VALUES ('polar-unreachable', 100, 'checkout')").run();
+    await e.DB.prepare("INSERT INTO incidents (marker, at) VALUES ('polar-unreachable', 100)").run();
+    const { results } = await e.DB.prepare("SELECT id, marker, at, detail FROM incidents ORDER BY id").all();
+    expect(results).toEqual([
+      { id: 1, marker: "polar-unreachable", at: 100, detail: "checkout" },
+      { id: 2, marker: "polar-unreachable", at: 100, detail: null },
+    ]);
+    await expect(e.DB.prepare("INSERT INTO incidents (at) VALUES (100)").run()).rejects.toThrow(/NOT NULL/);
+    const { results: indexes } = await e.DB.prepare("PRAGMA index_list('incidents')").all<{ name: string }>();
+    const named = indexes.find((i) => i.name === "incidents_marker_at");
+    expect(named).toBeDefined();
+    const { results: cols } = await e.DB.prepare("PRAGMA index_info('incidents_marker_at')").all<{ name: string }>();
+    expect(cols.map((c) => c.name)).toEqual(["marker", "at"]);
   });
 });

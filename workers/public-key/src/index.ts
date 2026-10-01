@@ -2,7 +2,7 @@
 // router, with a signed Public session key in a `Claudinite key` check run, and a desktop's
 // request with one in the answer. No database; one Analytics Engine data point per answered
 // request is its whole record.
-import { b64urlDecode, type Certificate } from "../../../packages/signing/src/index.ts";
+import { b64urlDecode, certStanding, type Certificate } from "../../../packages/signing/src/index.ts";
 import { createKeyCheckRun, GitHubError, parseKeyDispatch } from "../../../packages/github-app/src/index.ts";
 import { publicSessionKey } from "./desktop.ts";
 import { mintPublicSessionKey } from "./key.ts";
@@ -89,8 +89,11 @@ export default {
     if (req.method === "POST" && url.pathname === "/webhook") return webhook(req, env);
     if (req.method === "POST" && url.pathname === "/v1/public/session-key") return publicSessionKey(req, env);
     if (req.method === "GET" && url.pathname === "/v1/public/health") {
+      // Judges its own certificate, so a status-only monitor pages on it without reading the body.
       const body = certBody(env);
-      return Response.json({ ok: true, kid: body.keyId, cert_exp: body.notAfter });
+      const cert = certStanding(body.notAfter, new Date());
+      const alerts = cert.alert ? [cert.alert] : [];
+      return Response.json({ ok: alerts.length === 0, kid: body.keyId, cert_exp: body.notAfter, cert_days_left: cert.daysLeft, alerts }, { status: alerts.length === 0 ? 200 : 503 });
     }
     return new Response("not found", { status: 404 });
   },

@@ -1,10 +1,14 @@
 // The sync Worker, the only writer of D1: the Claudinite App's installation and repository
 // webhooks, forwarded by the router, keep the repos table current; Polar's signed webhooks and the
 // Polar reconcile keep subscriptions current; and the writes queue brings the seat, usage and
-// overuse records the key Worker produces. The nightly reconciles repair whatever a lost or
-// reordered webhook left. It holds no signing key.
+// overuse records and the incidents the key Worker produces. The nightly reconciles repair whatever
+// a lost or reordered webhook left, the coverage audit after them finds paying accounts the App no
+// longer covers, and GET /v1/sync/alerts judges it all. It holds no signing key.
 import { GitHubError } from "../../../packages/github-app/src/index.ts";
 import { PolarError } from "../../../packages/polar/src/index.ts";
+import { alertsRoute } from "./alerts.ts";
+import { auditCoverage } from "./coverage.ts";
+import { pruneIncidents } from "./incidents.ts";
 import { polarReconcileDue, reconcilePolar } from "./polar-reconcile.ts";
 import { polarWebhook } from "./polar-webhook.ts";
 import { githubClient, reconcileInstallations } from "./reconcile.ts";
@@ -63,14 +67,26 @@ async function health(env: Env): Promise<Response> {
     last_queue_at: at("last_queue_at"),
     queue_lag_s: count("queue_lag_s"),
     last_dead_letter_at: at("last_dead_letter_at"),
+    paying_uncovered: count("paying_uncovered"),
     polar_webhook_secret: Boolean(env.POLAR_WEBHOOK_SECRET),
   });
+}
+
+/** Re-judges coverage after a write to repos or subscriptions; a failure is logged, never the caller's. */
+async function audited(db: D1Database, at: number): Promise<void> {
+  try {
+    const uncovered = await auditCoverage(db, at);
+    console.log(JSON.stringify({ coverage: "audited", paying_uncovered: uncovered }));
+  } catch (err) {
+    console.error(JSON.stringify({ coverage: "failed", error: String(err) }));
+  }
 }
 
 async function reconcileNow(env: Env): Promise<Response> {
   try {
     const out = await reconcileInstallations(env, nowS());
     console.log(JSON.stringify({ reconcile: "ok", ...out }));
+    await audited(env.DB, nowS());
     return Response.json({ ok: true, ...out });
   } catch (err) {
     if (!(err instanceof GitHubError)) throw err;
@@ -83,6 +99,7 @@ async function polarReconcileNow(env: Env): Promise<Response> {
   try {
     const out = await reconcilePolar(env, nowS());
     console.log(JSON.stringify({ reconcile: "polar", ...out }));
+    await audited(env.DB, nowS());
     return Response.json({ ok: true, ...out });
   } catch (err) {
     if (!(err instanceof PolarError)) throw err;
@@ -114,6 +131,7 @@ export default {
       return applyWebhook(env, githubClient(env), req.headers.get("X-GitHub-Event") ?? "", payload as never, nowS(), req.headers.get("X-GitHub-Delivery"));
     }
     if (req.method === "GET" && url.pathname === "/v1/sync/health") return health(env);
+    if (req.method === "GET" && url.pathname === "/v1/sync/alerts") return alertsRoute(env.DB, nowS());
     if (req.method === "POST" && url.pathname === "/v1/sync/polar-webhook") return polarWebhook(req, env, nowS());
     if (req.method === "POST" && url.pathname === "/v1/sync/polar-reconcile") {
       if (!(await bearerMatches(req, env.SYNC_ADMIN_TOKEN))) return new Response("unauthorized", { status: 401 });
@@ -136,6 +154,11 @@ export default {
       }
       await logged(GITHUB_LOG, cron, reconcileInstallations(env, at));
       await logged(POLAR_LOG, cron, reconcilePolar(env, at));
+      await audited(env.DB, at);
+      await pruneIncidents(env.DB, at).then(
+        (pruned) => console.log(JSON.stringify({ incidents: "pruned", pruned })),
+        (err) => console.error(JSON.stringify({ incidents: "prune-failed", error: String(err) })),
+      );
     };
     ctx.waitUntil(run());
   },

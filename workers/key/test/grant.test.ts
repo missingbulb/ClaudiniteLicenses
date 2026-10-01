@@ -31,8 +31,8 @@ async function actionsKey(over: Partial<typeof subject> = {}, at = Math.floor(Da
   return mintKey(seed, cert, { typ: "actions", ...subject, ...over }, at);
 }
 
-const ask = (key: string | null, body: unknown) =>
-  call("/v1/item-grant", { method: "POST", headers: { "Content-Type": "application/json", ...(key ? { Authorization: `Bearer ${key}` } : {}) }, body: JSON.stringify(body) });
+const ask = (key: string | null, body: unknown, e = env()) =>
+  call("/v1/item-grant", { method: "POST", headers: { "Content-Type": "application/json", ...(key ? { Authorization: `Bearer ${key}` } : {}) }, body: JSON.stringify(body) }, e);
 
 describe("POST /v1/item-grant", () => {
   it("exchanges a valid Actions key and an issue for a grant carrying the issue, the key's plan, state, seats and links, capped at the key's exp", async () => {
@@ -91,5 +91,14 @@ describe("POST /v1/item-grant", () => {
       const res = await ask(key, { issue });
       expect([res.status, await res.json()], String(issue)).toEqual([400, { refused: "issue-invalid" }]);
     }
+  });
+
+  it("refuses every grant with 503 trust-roots-invalid when TRUST_ROOTS is not a JSON array of non-empty strings, never a 500", async () => {
+    const key = await actionsKey();
+    for (const TRUST_ROOTS of ["nope", "{}", "[]", '[""]', "[1]", '"acme"']) {
+      const res = await ask(key, { issue: 42 }, env({ TRUST_ROOTS }));
+      expect([res.status, await res.json()], TRUST_ROOTS).toEqual([503, { refused: "trust-roots-invalid" }]);
+    }
+    expect((await ask(key, { issue: 42 })).status).toBe(200);
   });
 });

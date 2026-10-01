@@ -18,7 +18,7 @@ The license server for Claudinite
 - `workers/sync`: the sync Worker, D1's only writer: repos from the App's installation webhooks and a nightly reconcile, subscriptions from Polar's webhooks and reconcile, seats and usage from the writes queue.
 - `db/`: the D1 schema and migrations; `deploy.yml` creates the database and applies them.
 - `billing/plans.json`: the paid plans and their prices per seat, read by the Polar products tool.
-- `tools/`: dev key chains, the D1, queue, DNS and Polar webhook deploy helpers, a Polar checkout maker, the App webhook re-pointer, the Polar products tool, local GitHub and Polar API stubs, the local round trip and its route front (`tools/dev-routes`).
+- `tools/`: dev key chains, the D1, queue, DNS and Polar webhook deploy helpers, a Polar checkout maker, the App webhook re-pointer, the Polar products tool, the outside probe (`tools/probe.mjs`), local GitHub and Polar API stubs, the local round trip and its route front (`tools/dev-routes`).
 - `spike/`: the web key spike, run in a Claude Code web session; results in `docs/spikes/`.
 
 ## Local verification
@@ -32,9 +32,28 @@ npm run e2e
 ```
 
 `npm run e2e` runs every key path against the GitHub and Polar stubs, the four Workers, the local
-writes queue and a local D1, with
+writes queue and a local D1, then an incident, the alerts firing and clearing and the outside probe, with
 the dev chain in `.dev` (`node tools/keys.mjs dev-chain --out .dev`) or a throwaway one. `npm run
 dev` serves the same set on port 8787 until interrupted.
+
+## The outside probe
+
+Each Worker judges its own health and the sync Worker judges the shared state, so four URLs on
+`license.claudinite.com` answer a non-200 while anything is wrong: `/v1/public/health`,
+`/v1/key/health`, `/v1/sync/health` and `/v1/sync/alerts`. An HTTP monitor polling them needs no
+API key.
+
+`tools/probe.mjs` checks the same from outside Cloudflare, plus the router's signature check, the
+desktop path reaching GitHub and, with an OIDC token, the Actions verifier and pin. The `probe`
+workflow runs it at minutes 7, 22, 37 and 52 of every hour and on dispatch, and keeps one standing
+issue titled `License server probe`, labelled `probe`: opened or commented on by a failing run,
+closed by the next passing one. GitHub fires a cron late or not at all under load and disables it
+after 60 days without repository activity, so it is the best-effort interim to a monitor polling
+every minute. `deploy.yml` runs the probe too, without the issue, after reading the alerts back.
+
+```
+node tools/probe.mjs --base https://license.claudinite.com
+```
 
 ## Polar products
 

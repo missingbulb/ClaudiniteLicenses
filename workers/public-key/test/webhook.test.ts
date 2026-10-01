@@ -148,12 +148,32 @@ describe("public key webhook", () => {
 });
 
 describe("health", () => {
-  it("names the issuing key and its certificate's expiry without calling GitHub", async () => {
+  const certBody = () => JSON.parse(new TextDecoder().decode(b64urlDecode(JSON.parse((testEnv as unknown as Env).ISSUING_KEY_CERT).payload)));
+  const health = async () => {
     const res = await worker.fetch(new Request("https://license.claudinite.com/v1/public/health"), env(), createExecutionContext());
-    expect(res.status).toBe(200);
-    const cert = JSON.parse((testEnv as unknown as Env).ISSUING_KEY_CERT);
-    const body = JSON.parse(new TextDecoder().decode(b64urlDecode(cert.payload)));
-    expect(await res.json()).toEqual({ ok: true, kid: body.keyId, cert_exp: body.notAfter });
+    return { status: res.status, body: (await res.json()) as Record<string, unknown> };
+  };
+  /** Health read at `days` (fractional) before the certificate's expiry. */
+  async function healthAt(days: number) {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.parse(certBody().notAfter) - days * 86_400_000);
+    try {
+      return await health();
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  it("names the issuing key, its certificate's expiry and days left without calling GitHub", async () => {
+    const body = certBody();
+    const days = Math.floor((Date.parse(body.notAfter) - Date.now()) / 86_400_000);
+    expect(await health()).toEqual({ status: 200, body: { ok: true, kid: body.keyId, cert_exp: body.notAfter, cert_days_left: days, alerts: [] } });
     expect(calls).toHaveLength(0);
+  });
+
+  it("answers 503 cert-expiring with 13 days left, 200 with 15, and 503 cert-expired after expiry", async () => {
+    expect(await healthAt(13.5)).toEqual({ status: 503, body: expect.objectContaining({ ok: false, cert_days_left: 13, alerts: ["cert-expiring"] }) });
+    expect(await healthAt(15.5)).toEqual({ status: 200, body: expect.objectContaining({ ok: true, cert_days_left: 15, alerts: [] }) });
+    expect(await healthAt(-0.5)).toEqual({ status: 503, body: expect.objectContaining({ ok: false, alerts: ["cert-expired"] }) });
   });
 });

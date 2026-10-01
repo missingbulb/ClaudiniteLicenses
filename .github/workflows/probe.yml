@@ -1,0 +1,36 @@
+name: probe
+
+# The outside probe, from outside Cloudflare. GitHub fires a cron late or not at all under load and
+# disables it after 60 days without repository activity, so this is the best-effort interim; the
+# uptime service polling the four health and alerts URLs every minute is what pages.
+on:
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  id-token: write
+
+concurrency:
+  group: probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Probe license.claudinite.com and keep the standing issue
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          OIDC=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=claudinite" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{process.stdout.write(JSON.parse(s).value??"")}catch{}})')
+          echo "::add-mask::$OIDC"
+          export OIDC
+          node tools/probe.mjs --base https://license.claudinite.com --oidc-token-env OIDC --issue --repo "$GITHUB_REPOSITORY" --attempts 2

@@ -78,6 +78,14 @@ describe("the writes queue consumer", () => {
     expect(await all("SELECT grace_started_at, grace_spent_until FROM overuse")).toEqual([{ grace_started_at: null, grace_spent_until: T + 30 * DAY }]);
   });
 
+  it("leaves a grace start later than a grace-reset delivered after it, as the queue may reorder them", async () => {
+    await consume([grace("grace-start", T + DAY)]);
+    await consume([grace("grace-reset", T)]);
+    expect(await all("SELECT grace_started_at FROM overuse")).toEqual([{ grace_started_at: T + DAY }]);
+    await consume([grace("grace-reset", T + DAY)]);
+    expect(await all("SELECT grace_started_at FROM overuse")).toEqual([{ grace_started_at: null }]);
+  });
+
   it("writes in message order within one batch", async () => {
     await consume([grace("grace-start", T), grace("grace-reset", T + 1)]);
     expect(await all("SELECT grace_started_at FROM overuse")).toEqual([{ grace_started_at: null }]);
@@ -119,5 +127,30 @@ describe("the writes queue consumer", () => {
       { marker: "write-dead-lettered", kind: "grace-start", at: T },
     ]);
     expect(await stampOf("last_dead_letter_at")).not.toBeNull();
+  });
+
+  it("writes one write-dead-lettered incident per dead-lettered message, and still no seat", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    await consume([usage(), grace("grace-start")], DEAD_LETTER_QUEUE);
+    const rows = await all("SELECT marker, at, detail FROM incidents ORDER BY id");
+    expect(rows).toEqual([
+      { marker: "write-dead-lettered", at: expect.any(Number), detail: "usage" },
+      { marker: "write-dead-lettered", at: expect.any(Number), detail: "grace-start" },
+    ]);
+    expect((rows[0] as { at: number }).at).toBeGreaterThanOrEqual(now);
+    expect(await all("SELECT COUNT(*) AS n FROM seats")).toEqual([{ n: 0 }]);
+  });
+
+  it("writes an incident message as an incidents row, with or without its detail", async () => {
+    const res = await consume([
+      { v: 1, kind: "incident", at: T, marker: "d1-unreadable", detail: "desktop" },
+      { v: 1, kind: "incident", at: T + 1, marker: "polar-unreachable" },
+    ]);
+    expect(res).toMatchObject({ ackAll: true });
+    expect(await all("SELECT marker, at, detail FROM incidents ORDER BY id")).toEqual([
+      { marker: "d1-unreadable", at: T, detail: "desktop" },
+      { marker: "polar-unreachable", at: T + 1, detail: null },
+    ]);
+    expect(await all("SELECT COUNT(*) AS n FROM seats")).toEqual([{ n: 0 }]);
   });
 });

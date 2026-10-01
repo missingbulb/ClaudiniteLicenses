@@ -2,7 +2,8 @@
 // session's dispatch through the router, a desktop's App user token and an Actions run's OIDC
 // token, deciding from D1 reads alone, and exchanges an Actions key for an item grant. It writes
 // nothing to D1: each key's records go onto the writes queue the sync Worker consumes.
-import { certBody, refusal, type Env } from "./env.ts";
+import { certStanding } from "../../../packages/signing/src/index.ts";
+import { certBody, refusal, trustRoots, type Env } from "./env.ts";
 import { sessionKey } from "./desktop.ts";
 import { webhook } from "./web.ts";
 import { actionsKey } from "./actions.ts";
@@ -34,6 +35,7 @@ async function loginRefresh(req: Request, env: Env): Promise<Response> {
   return new Response(res.body, { status: res.status, headers: { "Content-Type": res.headers.get("Content-Type") ?? "application/json" } });
 }
 
+/** Judges its own certificate, trust roots and D1, answering 503 while any of them is wrong. */
 async function health(env: Env): Promise<Response> {
   const body = certBody(env);
   let d1: "ok" | "unreadable" = "ok";
@@ -42,14 +44,23 @@ async function health(env: Env): Promise<Response> {
   } catch {
     d1 = "unreadable";
   }
-  return Response.json({
-    ok: true,
-    kid: body.keyId,
-    cert_exp: body.notAfter,
-    d1,
-    queue: env.WRITES ? "bound" : "unbound",
-    polar: env.POLAR_API_BASE && env.POLAR_ACCESS_TOKEN ? "configured" : "unconfigured",
-  });
+  const cert = certStanding(body.notAfter, new Date());
+  const roots = "invalid" in trustRoots(env) ? "invalid" : "ok";
+  const alerts = [cert.alert, roots === "invalid" ? "trust-roots-invalid" : null, d1 === "unreadable" ? "d1-unreadable" : null].filter((a) => a !== null);
+  return Response.json(
+    {
+      ok: alerts.length === 0,
+      kid: body.keyId,
+      cert_exp: body.notAfter,
+      cert_days_left: cert.daysLeft,
+      d1,
+      queue: env.WRITES ? "bound" : "unbound",
+      polar: env.POLAR_API_BASE && env.POLAR_ACCESS_TOKEN ? "configured" : "unconfigured",
+      trust_roots: roots,
+      alerts,
+    },
+    { status: alerts.length === 0 ? 200 : 503 },
+  );
 }
 
 export default {
@@ -62,7 +73,7 @@ export default {
       case "POST /v1/session-key":
         return sessionKey(req, env, ctx);
       case "POST /v1/actions-key":
-        return actionsKey(req, env);
+        return actionsKey(req, env, ctx);
       case "POST /v1/item-grant":
         return itemGrant(req, env);
       case "GET /v1/login/config":

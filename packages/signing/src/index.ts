@@ -210,6 +210,22 @@ function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+/** Issuing keys overlap their successor by two weeks, so a certificate this close to its end is due. */
+export const CERT_RENEW_DAYS = 14;
+
+/**
+ * Where a certificate stands at `now`: the whole days left before `notAfter`, and `cert-expiring`
+ * inside the renewal window or `cert-expired` once it ends. An unreadable time reads as expired.
+ */
+export function certStanding(notAfter: string, now: Date): { daysLeft: number | null; alert: "cert-expiring" | "cert-expired" | null } {
+  const end = Date.parse(notAfter);
+  if (Number.isNaN(end)) return { daysLeft: null, alert: "cert-expired" };
+  const leftMs = end - now.getTime();
+  const daysLeft = Math.floor(leftMs / 86_400_000);
+  if (leftMs <= 0) return { daysLeft, alert: "cert-expired" };
+  return { daysLeft, alert: daysLeft < CERT_RENEW_DAYS ? "cert-expiring" : null };
+}
+
 /**
  * Checks a certificate in the engine's order: signed by one of `roots` (base64url raw public keys),
  * version 1, keyId matching publicKey, validity at most 400 days and covering `now`. With `use`,

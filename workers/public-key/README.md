@@ -15,8 +15,10 @@ caller's token, as the paid key Worker's `/v1/session-key` does, refusing the sa
 `no-push-access`, 502 `github-error`). A public repo answers `{ "key", "plan": "public", "state":
 "ok" }`, a private one 403 `{ "refused": "refused-private" }`.
 
-`GET /v1/public/health` answers `{ ok, kid, cert_exp }` from the issuing key's certificate without
-calling GitHub.
+`GET /v1/public/health` answers `{ ok, kid, cert_exp, cert_days_left, alerts }` from the issuing
+key's certificate without calling GitHub, and judges it: with fewer than 14 days left it answers
+503 with `ok: false` and `alerts: ["cert-expiring"]`, once expired `["cert-expired"]`, else 200
+with `alerts: []`.
 
 Every answered request writes one Analytics Engine point to `KEY_COUNTS`: index the repo id, blobs
 plan, outcome (`issued`, `refused-private`, `refused-sender`, `refused-<reason>` on the desktop

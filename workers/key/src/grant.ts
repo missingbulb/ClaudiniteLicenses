@@ -2,7 +2,7 @@
 // grant key carrying the Actions key's licence, so the executor can show a routine session it may
 // work that item. The Actions key must chain to a trusted root; there is no replay store.
 import { verifyKey } from "../../../packages/signing/src/index.ts";
-import { countPoint, issuingKey, refusal, withinOwnerLimit, type Env } from "./env.ts";
+import { countPoint, issuingKey, refusal, trustRoots, withinOwnerLimit, type Env } from "./env.ts";
 import { mintKey } from "./key.ts";
 
 function refuseKey(reason: string): Response {
@@ -13,8 +13,9 @@ function refuseKey(reason: string): Response {
 export async function itemGrant(req: Request, env: Env): Promise<Response> {
   const key = /^Bearer (\S+)$/.exec(req.headers.get("Authorization") ?? "")?.[1];
   if (!key) return refuseKey("shape");
-  const roots = JSON.parse(env.TRUST_ROOTS) as string[];
-  const verdict = await verifyKey(key, { roots, now: new Date() });
+  const trust = trustRoots(env);
+  if ("invalid" in trust) return refusal(503, "trust-roots-invalid");
+  const verdict = await verifyKey(key, { roots: trust.roots, now: new Date() });
   if (!verdict.ok) return refuseKey(verdict.reason);
   const a = verdict.payload;
   if (a.typ !== "actions") return refusal(403, "key-not-actions");

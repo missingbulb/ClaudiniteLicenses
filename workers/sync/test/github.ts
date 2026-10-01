@@ -32,7 +32,7 @@ export function repo(id: number, over: Partial<GitHubRepo> = {}): GitHubRepo {
 
 export async function freshDatabase(): Promise<void> {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
-  await env.DB.batch(["repos", "sync_state", "subscriptions", "seats", "overuse", "usage"].map((t) => env.DB.prepare(`DELETE FROM ${t}`)));
+  await env.DB.batch(["repos", "sync_state", "subscriptions", "seats", "overuse", "usage", "incidents"].map((t) => env.DB.prepare(`DELETE FROM ${t}`)));
 }
 
 export function fakeGitHub(): FakeGitHub {

@@ -4,6 +4,7 @@
 import { countPoint, issuingKey, refusal, withinOwnerLimit, type Env } from "./env.ts";
 import { licenceFields, mintKey } from "./key.ts";
 import { linksFor, NO_LINKS, wantsLinks } from "./links.ts";
+import { incident, queueIncident } from "./incidents.ts";
 import { verifyActionsToken } from "./oidc.ts";
 import { readRepo, resolveForRow, type RepoRow } from "./plan.ts";
 
@@ -21,7 +22,7 @@ function pinnedBranch(repository: string, ref: string): string | null {
   return null;
 }
 
-export async function actionsKey(req: Request, env: Env): Promise<Response> {
+export async function actionsKey(req: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
   const token = /^Bearer (\S+)$/.exec(req.headers.get("Authorization") ?? "")?.[1];
   if (!token) return refusal(401, "token-missing");
   let engineVersion = "unknown";
@@ -55,11 +56,12 @@ export async function actionsKey(req: Request, env: Env): Promise<Response> {
     row = await readRepo(env.DB, c.repositoryId);
   } catch (err) {
     // Unlike a session key, an Actions key cannot fail open: the pin needs the row's default branch.
-    console.log(JSON.stringify({ marker: "d1-unreadable", repo_id: c.repositoryId, path: "actions", error: String(err) }));
+    incident(env, ctx, "d1-unreadable", "actions", { repo_id: c.repositoryId, path: "actions", error: String(err) });
     point("none", "refused-server-error");
     return refusal(503, "server-error");
   }
   if (!row) {
+    queueIncident(env, ctx, "app-not-installed", "actions");
     point("none", "refused-app-not-installed");
     return refusal(403, "app-not-installed");
   }
@@ -72,14 +74,14 @@ export async function actionsKey(req: Request, env: Env): Promise<Response> {
     return refusal(403, "workflow-not-pinned");
   }
   // The licensee's state, with no user of its own and nothing written.
-  const plan = await resolveForRow(env, { repoId: c.repositoryId, visibility: c.repositoryVisibility, ownerId: c.repositoryOwnerId, userId: null, typ: "actions" }, row);
+  const plan = await resolveForRow(env, { repoId: c.repositoryId, visibility: c.repositoryVisibility, ownerId: c.repositoryOwnerId, userId: null, typ: "actions" }, row, { ctx, path: "actions" });
   if ("refused" in plan) {
     point("none", `refused-${plan.refused}`, row.owner_type);
     return refusal(503, plan.refused);
   }
   const ownerType = row.owner_type;
   const links = wantsLinks(plan)
-    ? await linksFor(env, { plan: plan.plan, ownerId: c.repositoryOwnerId, ownerLogin: c.repositoryOwner, ownerType, repo: { id: c.repositoryId, fullName: c.repository }, subscribed: plan.subscribed })
+    ? await linksFor(env, { plan: plan.plan, ownerId: c.repositoryOwnerId, ownerLogin: c.repositoryOwner, ownerType, repo: { id: c.repositoryId, fullName: c.repository }, subscribed: plan.subscribed }, ctx)
     : NO_LINKS;
   const { seed, cert } = issuingKey(env);
   const key = await mintKey(seed, cert, { typ: "actions", repoId: c.repositoryId, ownerId: c.repositoryOwnerId, ownerType, ownerLogin: c.repositoryOwner, ...licenceFields(plan, links) }, nowS);

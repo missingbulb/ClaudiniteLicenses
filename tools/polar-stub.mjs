@@ -6,8 +6,9 @@
 // signed with an endpoint's secret to its url. It answers only requests carrying its token and a
 // Polar-Version it knows, and records every write. The links it hands out are https URLs naming
 // the stub's address, which nothing serves over TLS; they only have to be shaped like Polar's.
+// slow(ms) holds every answer that long, for a caller's own deadline to run out first.
 //
-//   node tools/polar-stub.mjs --port <n> [--token <t>]
+//   node tools/polar-stub.mjs --port <n> [--token <t>] [--slow-ms <ms>]
 import { randomBytes, randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { parseArgs } from "node:util";
@@ -60,6 +61,7 @@ export async function startPolarStub(opts = {}) {
   };
   /** @type {string} filled once the server listens */
   let linkOrigin = "";
+  let slowMs = 0;
 
   /** @param {string} productId @param {any} p @returns {Price} */
   const newPrice = (productId, p) => ({
@@ -212,6 +214,11 @@ export async function startPolarStub(opts = {}) {
     const url = new URL(req.url ?? "/", "http://stub");
     const path = url.pathname;
     state.requests.push(`${req.method} ${path}${url.search}`);
+    if (slowMs > 0) {
+      await new Promise((ok) => setTimeout(ok, slowMs));
+      // A caller that gave up has closed the socket; there is nobody left to answer.
+      if (res.destroyed || req.socket.destroyed) return;
+    }
     /** @param {number} status @param {unknown} [data] */
     const send = (status, data) => {
       res.writeHead(status, { "Content-Type": "application/json", "Polar-Version": String(req.headers["polar-version"] ?? "2026-10") });
@@ -317,6 +324,10 @@ export async function startPolarStub(opts = {}) {
     endSubscription,
     addEndpoint,
     deliver,
+    /** Holds every answer `ms` milliseconds from now on; 0 answers at once again. @param {number} ms */
+    slow: (ms) => {
+      slowMs = ms;
+    },
     close: () =>
       new Promise((ok) => {
         server.closeAllConnections();
@@ -326,7 +337,8 @@ export async function startPolarStub(opts = {}) {
 }
 
 if (import.meta.filename === process.argv[1]) {
-  const { values } = parseArgs({ options: { port: { type: "string" }, token: { type: "string" } } });
+  const { values } = parseArgs({ options: { port: { type: "string" }, token: { type: "string" }, "slow-ms": { type: "string" } } });
   const stub = await startPolarStub({ port: Number(values.port ?? 8791), token: values.token });
+  if (values["slow-ms"]) stub.slow(Number(values["slow-ms"]));
   console.log(`polar stub listening on ${stub.base}, token ${stub.token}`);
 }

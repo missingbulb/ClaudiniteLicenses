@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { b64urlDecode, b64urlEncode, issueCertificate, keyId, knownFeatures, PLANS, signKey, verifyCertificate, verifyKey, type KeyPayload } from "../src/index.ts";
+import { b64urlDecode, b64urlEncode, CERT_RENEW_DAYS, certStanding, issueCertificate, keyId, knownFeatures, PLANS, signKey, verifyCertificate, verifyKey, type KeyPayload } from "../src/index.ts";
 import { DAY, devChain, NOW, NOW_S, payload } from "./chain.ts";
 
 describe("key ids", () => {
@@ -220,3 +220,22 @@ describe("verifyKey", () => {
   });
 });
 
+
+describe("certStanding", () => {
+  const notAfter = "2026-12-30T17:49:26Z";
+  const at = (days: number) => new Date(Date.parse(notAfter) - days * DAY * 1000);
+
+  it("counts whole days left and asks for renewal inside the two weeks of overlap", () => {
+    expect(CERT_RENEW_DAYS).toBe(14);
+    expect(certStanding(notAfter, at(15.5))).toEqual({ daysLeft: 15, alert: null });
+    expect(certStanding(notAfter, at(14))).toEqual({ daysLeft: 14, alert: null });
+    expect(certStanding(notAfter, at(13.9))).toEqual({ daysLeft: 13, alert: "cert-expiring" });
+    expect(certStanding(notAfter, at(0.5))).toEqual({ daysLeft: 0, alert: "cert-expiring" });
+  });
+
+  it("names an expired certificate, and an unreadable expiry as expired", () => {
+    expect(certStanding(notAfter, at(0))).toEqual({ daysLeft: 0, alert: "cert-expired" });
+    expect(certStanding(notAfter, at(-2))).toEqual({ daysLeft: -2, alert: "cert-expired" });
+    expect(certStanding("not a time", at(1))).toEqual({ daysLeft: null, alert: "cert-expired" });
+  });
+});

@@ -16,6 +16,10 @@ Key files are Engine's too: a private key is the base64url 32-byte seed, a publi
 raw 32 bytes, each followed by a newline. The root ceremony (ClaudiniteEngine#5) certifies the
 issuing keys with Engine's `cn-keys`; `tools/keys.mjs` here makes development chains only.
 
+`certStanding(notAfter, now)` is what each key Worker's health reports about its own certificate:
+the whole days left, and `cert-expiring` once fewer than `CERT_RENEW_DAYS` (14, the design's two
+weeks of overlap) remain, `cert-expired` once it has ended.
+
 ## Keys
 
 A key's wire form is the JSON text of

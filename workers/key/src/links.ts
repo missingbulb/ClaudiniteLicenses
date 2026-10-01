@@ -1,8 +1,9 @@
 // The checkout and portal links a key carries when its notice needs one. Polar is asked only for a
 // key that is not plainly `ok`, with one deadline over every call, and never delays or fails a key:
-// a link Polar does not give in time is null, with a marker for the alerts.
+// a link Polar does not give in time is null, with an incident for the alerts.
 import { createCheckout, createCustomerSession, listManagedProducts, polarClient, POLAR_VERSION, type ManagedProducts, type PolarClient } from "../../../packages/polar/src/index.ts";
 import type { Plan } from "../../../packages/signing/src/index.ts";
+import { incident, type IncidentEnv } from "./incidents.ts";
 
 export const LINK_DEADLINE_MS = 3000;
 const CACHE_MS = 3600_000;
@@ -46,9 +47,9 @@ async function products(client: PolarClient, base: string): Promise<ManagedProdu
   return fresh;
 }
 
-export async function linksFor(env: { POLAR_API_BASE?: string; POLAR_ACCESS_TOKEN?: string }, s: LinkSubject): Promise<Links> {
+export async function linksFor(env: IncidentEnv & { POLAR_API_BASE?: string; POLAR_ACCESS_TOKEN?: string }, s: LinkSubject, ctx?: ExecutionContext): Promise<Links> {
   if (!env.POLAR_API_BASE || !env.POLAR_ACCESS_TOKEN) {
-    console.log(JSON.stringify({ marker: "polar-unreachable", call: "unconfigured" }));
+    incident(env, ctx, "polar-unreachable", "unconfigured", { call: "unconfigured" });
     return NO_LINKS;
   }
   const repoId = s.plan === "private-repo" ? (s.repo?.id ?? 0) : 0;
@@ -56,13 +57,14 @@ export async function linksFor(env: { POLAR_API_BASE?: string; POLAR_ACCESS_TOKE
   const cached = linkCache.get(key);
   if (cached && Date.now() - cached.at < CACHE_MS) return cached.links;
 
-  const client = polarClient({ base: env.POLAR_API_BASE, token: env.POLAR_ACCESS_TOKEN, version: POLAR_VERSION, userAgent: "claudinite-key" });
+  // The client aborts what the race below abandons; the race keeps one deadline over both calls.
+  const client = polarClient({ base: env.POLAR_API_BASE, token: env.POLAR_ACCESS_TOKEN, version: POLAR_VERSION, userAgent: "claudinite-key", timeoutMs: LINK_DEADLINE_MS });
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<"timeout">((ok) => (timer = setTimeout(() => ok("timeout"), LINK_DEADLINE_MS)));
   const within = async (call: string, work: () => Promise<string | null>): Promise<{ url: string | null; failed: boolean }> => {
     const settled = await Promise.race([work().then((url) => ({ url: https(url) })).catch((err: unknown) => ({ err })), deadline]);
     if (settled === "timeout" || "err" in settled) {
-      console.log(JSON.stringify({ marker: "polar-unreachable", call, error: settled === "timeout" ? `no answer in ${LINK_DEADLINE_MS} ms` : String(settled.err) }));
+      incident(env, ctx, "polar-unreachable", call, { call, error: settled === "timeout" ? `no answer in ${LINK_DEADLINE_MS} ms` : String(settled.err) });
       return { url: null, failed: true };
     }
     return { url: settled.url, failed: false };
