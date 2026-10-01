@@ -1,0 +1,34 @@
+{
+  "name": "claudinite-licenses",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "workers/*"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "WRANGLER_SEND_METRICS=false vitest run",
+    "typecheck": "tsc --noEmit -p workers/router && tsc --noEmit -p workers/public-key",
+    "dry-run": "WRANGLER_SEND_METRICS=false wrangler deploy --dry-run --outdir .wrangler/dry-run/router -c workers/router/wrangler.jsonc && WRANGLER_SEND_METRICS=false wrangler deploy --dry-run --outdir .wrangler/dry-run/public-key -c workers/public-key/wrangler.jsonc",
+    "dev": "WRANGLER_SEND_METRICS=false wrangler dev -c workers/router/wrangler.jsonc -c workers/public-key/wrangler.jsonc",
+    "e2e": "WRANGLER_SEND_METRICS=false node tools/local-roundtrip.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.22.0",
+    "@cloudflare/workers-types": "5.20261001.1",
+    "@types/node": "22.20.4",
+    "typescript": "7.0.2",
+    "vitest": "4.1.11",
+    "wrangler": "4.145.0",
+    "yaml": "2.9.1"
+  },
+  "overrides": {
+    "@cloudflare/vitest-pool-workers": {
+      "wrangler": "$wrangler",
+      "miniflare": "5.20260930.0-alpha"
+    }
+  }
+}
