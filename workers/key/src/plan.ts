@@ -3,6 +3,8 @@
 // subscriptions; a private repo's state, notice and queued writes from the seat rules.
 import { dayOf, licenseeOf, paidSeats, planFeatures, type Notice, type PaidPlan, type SubscriptionRow, type WriteMessage } from "../../../packages/licensing/src/index.ts";
 import { FEATURES, type KeySeats, type Plan } from "../../../packages/signing/src/index.ts";
+import type { Path } from "./env.ts";
+import { incident, type IncidentEnv } from "./incidents.ts";
 import { readLicensee, verdictFor } from "./seats.ts";
 
 export interface RepoRow {
@@ -43,9 +45,15 @@ export interface PlanRequest {
   typ: "session" | "actions";
 }
 
-export interface PlanEnv {
+export interface PlanEnv extends IncidentEnv {
   DB: D1Database;
   FAIL_OPEN?: string;
+}
+
+/** Where the request came from, so an unreadable D1 is reported as an incident naming the path. */
+export interface PlanContext {
+  ctx?: ExecutionContext;
+  path?: Path;
 }
 
 const REPO_SQL = "SELECT repo_id, owner_id, owner_type, owner_login, visibility, installation_id, full_name, default_branch FROM repos WHERE repo_id = ?";
@@ -92,9 +100,9 @@ async function decide(env: PlanEnv, req: PlanRequest, row: RepoRow | null, subs:
   return { plan, state: v.state, grace_until: v.graceUntil, features: v.features, seats: { paid, counted: v.counted, headroom: v.headroom }, notice: v.notice, writes, row, subscribed };
 }
 
-function failOpen(env: PlanEnv, req: PlanRequest, err: unknown, now: number): Resolution {
-  // The design's third layer: issue rather than degrade, and leave a line the alerts can find.
-  console.log(JSON.stringify({ marker: "d1-unreadable", repo_id: req.repoId, error: String(err) }));
+function failOpen(env: PlanEnv, req: PlanRequest, err: unknown, now: number, from: PlanContext): Resolution {
+  // The design's third layer: issue rather than degrade, and leave an incident the alerts count.
+  incident(env, from.ctx, "d1-unreadable", from.path, { repo_id: req.repoId, error: String(err) });
   if (env.FAIL_OPEN !== "true") return { refused: "server-error" };
   // The binary refuses a Public key on a private repo, so a private repo fails open on Private repo.
   const isPublic = req.visibility === "public";
@@ -107,7 +115,7 @@ function failOpen(env: PlanEnv, req: PlanRequest, err: unknown, now: number): Re
  * repo (a webhook that came through its installation), so a row the sync Worker has not written
  * yet is not a refusal.
  */
-export async function resolvePlan(env: PlanEnv, req: PlanRequest, opts: { installed?: boolean } = {}): Promise<Resolution> {
+export async function resolvePlan(env: PlanEnv, req: PlanRequest, opts: { installed?: boolean } & PlanContext = {}): Promise<Resolution> {
   const now = Math.floor(Date.now() / 1000);
   try {
     const [repo, subs] = await env.DB.batch([env.DB.prepare(REPO_SQL).bind(req.repoId), env.DB.prepare(SUBSCRIPTIONS_SQL).bind(req.ownerId)]);
@@ -115,18 +123,18 @@ export async function resolvePlan(env: PlanEnv, req: PlanRequest, opts: { instal
     if (!row && !opts.installed) return { refused: "app-not-installed" };
     return await decide(env, req, row, (subs?.results ?? []) as unknown as SubscriptionRow[], now);
   } catch (err) {
-    return failOpen(env, req, err, now);
+    return failOpen(env, req, err, now, opts);
   }
 }
 
 /** The key for a repo whose row the caller already read and checked, as the Actions path does. It never fails open. */
-export async function resolveForRow(env: PlanEnv, req: PlanRequest, row: RepoRow): Promise<Resolution> {
+export async function resolveForRow(env: PlanEnv, req: PlanRequest, row: RepoRow, from: PlanContext = {}): Promise<Resolution> {
   const now = Math.floor(Date.now() / 1000);
   try {
     const { results } = await env.DB.prepare(SUBSCRIPTIONS_SQL).bind(req.ownerId).all<SubscriptionRow>();
     return await decide(env, req, row, results, now);
   } catch (err) {
-    console.log(JSON.stringify({ marker: "d1-unreadable", repo_id: req.repoId, path: req.typ, error: String(err) }));
+    incident(env, from.ctx, "d1-unreadable", from.path, { repo_id: req.repoId, path: req.typ, error: String(err) });
     return { refused: "server-error" };
   }
 }

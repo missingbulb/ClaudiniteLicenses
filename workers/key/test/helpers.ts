@@ -32,6 +32,8 @@ export interface World {
   dbSql: string[];
   /** Each sendBatch call's message bodies. */
   sent: unknown[][];
+  /** The signal each Polar request carried, in order. */
+  polarSignals: AbortSignal[];
   /** Every promise handed to the request's waitUntil. */
   waited: Promise<unknown>[];
   /** What WRITES.sendBatch does; resolves at once unless a test says otherwise. */
@@ -63,6 +65,7 @@ export function resetWorld(): World {
     dbCalls: 0,
     dbSql: [],
     sent: [],
+    polarSignals: [],
     waited: [],
     send: async () => {},
     limited: {},
@@ -82,6 +85,7 @@ export function resetWorld(): World {
     const body = new TextDecoder().decode(await req.arrayBuffer());
     world.calls.push({ url: req.url, method: req.method, headers: req.headers, body });
     const url = new URL(req.url);
+    if (url.origin === POLAR) world.polarSignals.push(init?.signal ?? req.signal);
     if (url.pathname.endsWith("/access_tokens")) return Response.json({ token: "ghs_acme" }, { status: 201 });
     if (url.pathname.endsWith("/check-runs")) return Response.json({ id: 77 }, { status: 201 });
     if (req.url === "https://github-api.test/user") return world.user();
@@ -205,6 +209,9 @@ export async function call(path: string, init: RequestInit = {}, e: Env = env())
 
 /** The queued messages of every send, in order. */
 export const sentMessages = () => world.sent.flat() as { kind: string; [k: string]: unknown }[];
+
+/** The queued incident messages, in order. */
+export const sentIncidents = () => sentMessages().filter((m) => m.kind === "incident");
 
 export async function verified(key: string): Promise<KeyPayload> {
   const v = await verifyKey(key, { roots, now: new Date() });

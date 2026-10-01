@@ -3,6 +3,7 @@
 import { createKeyCheckRun, GitHubError, parseKeyDispatch } from "../../../packages/github-app/src/index.ts";
 import { countPoint, githubClient, issuingKey, type Env } from "./env.ts";
 import { licenceFields, mintKey } from "./key.ts";
+import { queueIncident } from "./incidents.ts";
 import { linksFor, NO_LINKS, wantsLinks } from "./links.ts";
 import { REFUSAL_TEXT, resolvePlan } from "./plan.ts";
 import { enqueueWrites } from "./writes.ts";
@@ -29,7 +30,7 @@ export async function webhook(req: Request, env: Env, ctx: ExecutionContext): Pr
   const seen = { repoId: String(repo.id), ownerType: owner.type, engineVersion, path: "web" as const };
 
   const nowS = Math.floor(Date.now() / 1000);
-  const plan = await resolvePlan(env, { repoId: repo.id, visibility: repo.private ? "private" : "public", ownerId: owner.id, userId: sender.id, typ: "session" }, { installed: true });
+  const plan = await resolvePlan(env, { repoId: repo.id, visibility: repo.private ? "private" : "public", ownerId: owner.id, userId: sender.id, typ: "session" }, { installed: true, ctx, path: "web" });
   let outcome: string;
   let planName: string;
   let output: { title: string; summary: string; text?: string };
@@ -42,7 +43,7 @@ export async function webhook(req: Request, env: Env, ctx: ExecutionContext): Pr
     planName = plan.plan;
     enqueueWrites(env, ctx, plan.writes);
     const links = wantsLinks(plan)
-      ? await linksFor(env, { plan: plan.plan, ownerId: owner.id, ownerLogin: owner.login, ownerType: owner.type, repo: { id: repo.id, fullName: repo.fullName }, subscribed: plan.subscribed })
+      ? await linksFor(env, { plan: plan.plan, ownerId: owner.id, ownerLogin: owner.login, ownerType: owner.type, repo: { id: repo.id, fullName: repo.fullName }, subscribed: plan.subscribed }, ctx)
       : NO_LINKS;
     const { seed, cert } = issuingKey(env);
     const key = await mintKey(seed, cert, { typ: "session", repoId: repo.id, ownerId: owner.id, ownerType: owner.type, ownerLogin: owner.login, userId: sender.id, nonce, ...licenceFields(plan, links) }, nowS);
@@ -55,6 +56,7 @@ export async function webhook(req: Request, env: Env, ctx: ExecutionContext): Pr
   } catch (err) {
     if (!(err instanceof GitHubError)) throw err;
     console.error(JSON.stringify({ githubError: err.call, status: err.status, body: err.body, marker: err.secondaryRateLimit ? "secondary-rate-limit" : undefined, delivery }));
+    if (err.secondaryRateLimit) queueIncident(env, ctx, "secondary-rate-limit", err.call);
     countPoint(env, { ...seen, plan: planName, outcome: "github-error" });
     return new Response(`github-error: ${err.call} ${err.status}`, { status: 502 });
   }

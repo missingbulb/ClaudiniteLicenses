@@ -39,6 +39,28 @@ export function certBody(env: Env): { keyId: string; notAfter: string } {
 
 export type Path = "web" | "desktop" | "actions" | "grant";
 
+export type TrustRoots = { roots: string[] } | { invalid: string };
+
+let rootsParsed: { raw: string; value: TrustRoots } | null = null;
+
+/** TRUST_ROOTS parsed once per isolate: a JSON array of non-empty strings, or why it is not one. */
+export function trustRoots(env: { TRUST_ROOTS?: string }): TrustRoots {
+  const raw = env.TRUST_ROOTS ?? "";
+  if (rootsParsed?.raw === raw) return rootsParsed.value;
+  let value: TrustRoots;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    value =
+      Array.isArray(parsed) && parsed.length > 0 && parsed.every((r) => typeof r === "string" && r.length > 0)
+        ? { roots: parsed as string[] }
+        : { invalid: "not a non-empty JSON array of non-empty strings" };
+  } catch {
+    value = { invalid: "not JSON" };
+  }
+  rootsParsed = { raw, value };
+  return value;
+}
+
 /** One Analytics Engine point per answered request: index the repo id, blobs plan, outcome, owner type, engine version and path. */
 export function countPoint(env: Env, p: { repoId: string; plan: string; outcome: string; ownerType: string; engineVersion: string; path: Path }): void {
   env.KEY_COUNTS?.writeDataPoint({ indexes: [p.repoId], blobs: [p.plan, p.outcome, p.ownerType, p.engineVersion, p.path], doubles: [1] });

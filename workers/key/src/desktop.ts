@@ -3,6 +3,7 @@
 import { parseDesktopRequest, readDesktopCaller } from "../../../packages/github-app/src/index.ts";
 import { countPoint, issuingKey, refusal, withinOwnerLimit, type Env } from "./env.ts";
 import { licenceFields, mintKey } from "./key.ts";
+import { queueIncident } from "./incidents.ts";
 import { linksFor, NO_LINKS, wantsLinks } from "./links.ts";
 import { resolvePlan } from "./plan.ts";
 import { enqueueWrites } from "./writes.ts";
@@ -20,14 +21,15 @@ export async function sessionKey(req: Request, env: Env, ctx: ExecutionContext):
   const { user, repo, owner } = caller;
   if (!(await withinOwnerLimit(env, owner.login))) return refusal(429, "rate-limited");
   const seen = { repoId: String(repo.id), ownerType: owner.type, engineVersion, path: "desktop" as const };
-  const plan = await resolvePlan(env, { repoId: repo.id, visibility: repo.private ? "private" : "public", ownerId: owner.id, userId: user.id, typ: "session" });
+  const plan = await resolvePlan(env, { repoId: repo.id, visibility: repo.private ? "private" : "public", ownerId: owner.id, userId: user.id, typ: "session" }, { ctx, path: "desktop" });
   if ("refused" in plan) {
+    if (plan.refused === "app-not-installed") queueIncident(env, ctx, "app-not-installed", "desktop");
     countPoint(env, { ...seen, plan: "none", outcome: `refused-${plan.refused}` });
     return refusal(plan.refused === "server-error" ? 503 : 403, plan.refused);
   }
   enqueueWrites(env, ctx, plan.writes);
   const links = wantsLinks(plan)
-    ? await linksFor(env, { plan: plan.plan, ownerId: owner.id, ownerLogin: owner.login, ownerType: owner.type, repo: { id: repo.id, fullName: repo.fullName }, subscribed: plan.subscribed })
+    ? await linksFor(env, { plan: plan.plan, ownerId: owner.id, ownerLogin: owner.login, ownerType: owner.type, repo: { id: repo.id, fullName: repo.fullName }, subscribed: plan.subscribed }, ctx)
     : NO_LINKS;
   const { seed, cert } = issuingKey(env);
   const key = await mintKey(seed, cert, { typ: "session", repoId: repo.id, ownerId: owner.id, ownerType: owner.type, ownerLogin: owner.login, userId: user.id, nonce, ...licenceFields(plan, links) }, Math.floor(Date.now() / 1000));
