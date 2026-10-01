@@ -1,12 +1,13 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { signKey, verifyCertificate, verifyKey, type KeyPayload } from "../../packages/signing/src/index.ts";
-import { parseDevVars } from "../keys.mjs";
+import { parseDevVars, trustRoots } from "../keys.mjs";
 
-const KEYS = resolve(import.meta.dirname, "../keys.mjs");
+const ROOT = resolve(import.meta.dirname, "../..");
+const KEYS = resolve(ROOT, "tools/keys.mjs");
 const run = (...args: string[]) => execFileSync(process.execPath, [KEYS, ...args], { encoding: "utf8" });
 const tmp = () => mkdtempSync(join(tmpdir(), "acme-keys-"));
 const read = (p: string) => readFileSync(p, "utf8").trim();
@@ -58,5 +59,19 @@ describe("tools/keys.mjs", () => {
     const sync = parseDevVars(readFileSync(join(dir, "sync.dev.vars"), "utf8"));
     expect(sync).toMatchObject({ GITHUB_APP_ID: vars.GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY: vars.GITHUB_APP_PRIVATE_KEY });
     expect(sync.SYNC_ADMIN_TOKEN!.length).toBeGreaterThanOrEqual(32);
+  });
+
+  it("trust-roots prints the committed roots directory's keys, or the dev root while it does not exist, as the key Worker's committed TRUST_ROOTS holds", () => {
+    const dev = [read(join(ROOT, "keys/dev/roots/root.pub"))];
+    expect(trustRoots(ROOT)).toEqual(dev);
+    const config = JSON.parse(readFileSync(join(ROOT, "workers/key/wrangler.jsonc"), "utf8").replace(/^\s*\/\/.*$/gm, ""));
+    expect(JSON.parse(config.vars.TRUST_ROOTS)).toEqual(dev);
+    expect(JSON.parse(run("trust-roots").trim())).toEqual(dev);
+    const fake = tmp();
+    mkdirSync(join(fake, "packages/signing/roots"), { recursive: true });
+    writeFileSync(join(fake, "packages/signing/roots/b-standby.pub"), "bbb\n");
+    writeFileSync(join(fake, "packages/signing/roots/a-root.pub"), "aaa\n");
+    writeFileSync(join(fake, "packages/signing/roots/README.md"), "not a key\n");
+    expect(trustRoots(fake)).toEqual(["aaa", "bbb"]);
   });
 });

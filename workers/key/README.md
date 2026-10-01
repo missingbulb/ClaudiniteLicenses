@@ -88,6 +88,7 @@ Each repository secret `deploy.yml` reads, and the Worker secret it is stored as
 - `CLAUDINITE_GITHUB_APP_CLIENT_SECRET`, as `GITHUB_APP_CLIENT_SECRET` (optional: only `/v1/login/refresh` needs it)
 - `KEY_ISSUING_KEY_PRIVATE`, as `ISSUING_KEY_PRIVATE` (the `license` issuing key's seed file)
 - `KEY_ISSUING_KEY_CERT`, as `ISSUING_KEY_CERT` (its `license` certificate JSON)
+- `POLAR_SANDBOX_TOKEN`, as `POLAR_ACCESS_TOKEN` (the sandbox organization's token, until the commercial track flips both Workers to production)
 
 While both `KEY_ISSUING_KEY_*` secrets are unset, `deploy.yml` stores the dev `license` key in
 [`keys/dev`](../../keys/dev/README.md) instead and warns; with only one of them set it fails.

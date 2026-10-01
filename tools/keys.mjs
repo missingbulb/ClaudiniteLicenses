@@ -7,8 +7,9 @@
 //   node tools/keys.mjs gen-issuing --out <dir> [--name issuing]
 //   node tools/keys.mjs certify --root <root.key> --pub <issuing.pub> --purpose <use> --days <n>
 //   node tools/keys.mjs dev-chain --out <dir>
+//   node tools/keys.mjs trust-roots
 import { generateKeyPairSync, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { b64urlDecode, generateKeyPair, issueCertificate, keyId } from "../packages/signing/src/index.ts";
@@ -99,6 +100,19 @@ export async function devChain(out) {
   return { root, publicKeyVars, keyVars, syncVars, webhookSecret: secret, licenseCert: licCert };
 }
 
+/**
+ * The roots an Actions key must chain to before the key Worker grants on it: the committed
+ * `packages/signing/roots/*.pub` once that directory exists, the dev root until then.
+ * @param {string} [root] the repository root
+ * @returns {string[]}
+ */
+export function trustRoots(root = join(import.meta.dirname, "..")) {
+  const dir = join(root, "packages/signing/roots");
+  const pubs = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".pub")).sort() : [];
+  if (pubs.length > 0) return pubs.map((f) => readFileSync(join(dir, f), "utf8").trim());
+  return [readFileSync(join(root, "keys/dev/roots/root.pub"), "utf8").trim()];
+}
+
 async function main(argv) {
   const [cmd, ...rest] = argv;
   const { values } = parseArgs({
@@ -128,8 +142,11 @@ async function main(argv) {
       console.log(`dev chain in ${out}: root ${chain.root.keyId}; public-key.dev.vars, key.dev.vars, sync.dev.vars and router.dev.vars hold the Workers' dev secrets`);
       return;
     }
+    case "trust-roots":
+      console.log(JSON.stringify(trustRoots()));
+      return;
     default:
-      throw new Error("usage: keys.mjs gen-root|gen-issuing|certify|dev-chain ...");
+      throw new Error("usage: keys.mjs gen-root|gen-issuing|certify|dev-chain|trust-roots ...");
   }
 }
 

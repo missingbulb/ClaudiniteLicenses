@@ -194,4 +194,86 @@ describe("deploy.yml", () => {
     expect(run).toContain("audience=claudinite");
     expect(run).toContain("workflow-not-pinned");
   });
+
+  it("makes the writes queue and its dead-letter queue exist after the migrations and before the key and sync Workers deploy", () => {
+    const queue = stepAt((s) => /node tools\/ensure-queue\.mjs --name claudinite-licenses-writes --dlq/.test(s.run ?? ""));
+    const migrate = stepAt((s) => /wrangler d1 migrations apply/.test(s.run ?? ""));
+    expect(queue).toBeGreaterThan(migrate);
+    expect(queue).toBeLessThan(deployAt("key"));
+    expect(queue).toBeLessThan(deployAt("sync"));
+  });
+
+  const webhookStep = () => steps.find((s) => /node tools\/ensure-polar-webhook\.mjs/.test(s.run ?? ""))!;
+
+  it("makes the Polar webhook endpoint exist before the sync Worker's secrets, on the sandbox API both Workers point at", () => {
+    const at = steps.indexOf(webhookStep());
+    expect(at).toBeGreaterThan(-1);
+    expect(at).toBeLessThan(stepAt((s) => s.name === "Secrets for claudinite-sync"));
+    expect(webhookStep().run).toContain("--url https://license.claudinite.com/v1/sync/polar-webhook");
+    expect(webhookStep().env).toMatchObject({ POLAR_ACCESS_TOKEN: "${{ secrets.POLAR_SANDBOX_TOKEN }}" });
+    const parseJsonc = (w: string) => JSON.parse(readFileSync(join(ROOT, `workers/${w}/wrangler.jsonc`), "utf8").replace(/^\s*\/\/.*$/gm, ""));
+    for (const w of ["key", "sync"]) expect(parseJsonc(w).vars.POLAR_API_BASE, w).toBe(webhookStep().env!.POLAR_API_BASE);
+    expect(workflow.on.workflow_dispatch.inputs.rotate_polar_webhook).toMatchObject({ type: "boolean", default: false });
+  });
+
+  // Runs the webhook step with a curl answering the live health and a node that records the tool's arguments.
+  function webhookArgs(health: string, rotate: string): string {
+    const dir = mkdtempSync(join(tmpdir(), "acme-webhook-"));
+    writeFileSync(join(dir, "curl"), `#!/usr/bin/env bash\nprintf '%s' '${health}'\n`);
+    writeFileSync(join(dir, "node"), `#!/usr/bin/env bash\nif [ "$1" = tools/ensure-polar-webhook.mjs ]; then echo "$@" > "${dir}/args"; else exec "${process.execPath}" "$@"; fi\n`);
+    chmodSync(join(dir, "curl"), 0o755);
+    chmodSync(join(dir, "node"), 0o755);
+    const res = runStep({ ...webhookStep(), env: { ...webhookStep().env, ROTATE: rotate } }, { POLAR_SANDBOX_TOKEN: "t" }, { PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir });
+    expect(res.status, res.stderr).toBe(0);
+    return readFileSync(join(dir, "args"), "utf8").trim();
+  }
+
+  it("rotates the endpoint when the live sync Worker reports no secret or the dispatch input asks, and keeps it otherwise", () => {
+    expect(webhookStep().env!.ROTATE).toBe("${{ inputs.rotate_polar_webhook }}");
+    expect(webhookArgs('{"polar_webhook_secret":true}', "")).not.toContain("--rotate");
+    expect(webhookArgs('{"polar_webhook_secret":false}', "")).toMatch(/--rotate$/);
+    expect(webhookArgs('{"ok":true}', "")).toMatch(/--rotate$/);
+    expect(webhookArgs("not json", "")).toMatch(/--rotate$/);
+    expect(webhookArgs('{"polar_webhook_secret":true}', "true")).toMatch(/--rotate$/);
+    expect(webhookArgs('{"polar_webhook_secret":true}', "false")).toMatch(/--secret-out \S+polar-webhook-secret$/);
+  });
+
+  it("stores POLAR_WEBHOOK_SECRET only when the webhook step wrote its file", () => {
+    const values = Object.fromEntries(secrets.map((s) => [s, `value-of-${s}`]));
+    expect(bulkSecrets("sync", values).bulk).not.toHaveProperty("POLAR_WEBHOOK_SECRET");
+    const dir = mkdtempSync(join(tmpdir(), "acme-bulk-"));
+    writeFileSync(join(dir, "npx"), `#!/usr/bin/env bash\ncp "$4" "${dir}/bulk.json"\n`);
+    chmodSync(join(dir, "npx"), 0o755);
+    writeFileSync(join(dir, "polar-webhook-secret"), "whsec_acme");
+    const res = runStep(steps.find((s) => s.name === "Secrets for claudinite-sync")!, values, { PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir });
+    expect(res.status, res.stderr).toBe(0);
+    expect(JSON.parse(readFileSync(join(dir, "bulk.json"), "utf8")).POLAR_WEBHOOK_SECRET).toBe("whsec_acme");
+    expect(existsSync(join(dir, "polar-webhook-secret"))).toBe(false);
+  });
+
+  it("deploys the key Worker with TRUST_ROOTS from tools/keys.mjs trust-roots", () => {
+    const dir = mkdtempSync(join(tmpdir(), "acme-deploy-"));
+    writeFileSync(join(dir, "npx"), `#!/usr/bin/env bash\nprintf '%s\\n' "$@" > "${dir}/args"\n`);
+    chmodSync(join(dir, "npx"), 0o755);
+    const res = runStep(steps[deployAt("key")]!, {}, { PATH: `${dir}:${process.env.PATH}` });
+    expect(res.status, res.stderr).toBe(0);
+    const args = readFileSync(join(dir, "args"), "utf8").trim().split("\n");
+    const v = args[args.indexOf("--var") + 1]!;
+    expect(v.split(":")[0]).toBe("TRUST_ROOTS");
+    expect(JSON.parse(v.slice("TRUST_ROOTS:".length))).toEqual([readFileSync(join(ROOT, "keys/dev/roots/root.pub"), "utf8").trim()]);
+  });
+
+  it("reads back the queue, Polar, the Polar reconcile and a live checkout whose checkout.created delivery reaches the sync Worker", () => {
+    const step = steps.find((s) => s.name === "Read back the live Workers")!;
+    const run = step.run!;
+    expect(run).toContain('b.queue==="bound"');
+    expect(run).toContain('b.polar==="configured"');
+    expect(run).toContain("b.polar_webhook_secret===true");
+    expect(run).toContain("https://license.claudinite.com/v1/sync/polar-reconcile");
+    expect(run).toContain("b.last_polar_reconcile_at>=$started");
+    expect(run).toMatch(/node tools\/polar-checkout\.mjs --plan private-repo --owner-id "\$GITHUB_REPOSITORY_OWNER_ID" --owner-login "\$GITHUB_REPOSITORY_OWNER" --owner-type "\$OWNER_TYPE" --repo-id "\$GITHUB_REPOSITORY_ID" --repo "\$GITHUB_REPOSITORY"/);
+    expect(run).toContain("b.last_polar_webhook_at>=$started");
+    expect(run.indexOf("polar-checkout.mjs")).toBeLessThan(run.indexOf("b.last_polar_webhook_at>=$started"));
+    expect(step.env).toMatchObject({ POLAR_ACCESS_TOKEN: "${{ secrets.POLAR_SANDBOX_TOKEN }}", OWNER_TYPE: "${{ github.event.repository.owner.type }}" });
+  });
 });
