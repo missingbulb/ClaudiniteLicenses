@@ -40,7 +40,7 @@ signed by the issuing key the certificate certifies. The payload:
 | `state` | `ok`, `grace`, `degraded` or `unverified` |
 | `grace_until` | unix seconds, `null` unless `state` is `grace` |
 | `features` | names from `work-checks`, `forced-skill-loading`, `in-session-growth`, `claudinite-tasks`, `updates`, `fleet`; a Public key carries all but `fleet` |
-| `release` | `{"held": [], "revoked": [], "security_fixes": [], "pack_index_serial": 0, "pack_keys": []}` |
+| `release` | `{"held": [], "revoked": [], "security_fixes": [], "pack_index_serial": 0, "pack_keys": []}`: `held`, `revoked` and `security_fixes` are engine version strings, `pack_index_serial` a non-negative integer, and `pack_keys` the key ids of the accepted pack-index signing certificates |
 
 ## Verifying a key
 
