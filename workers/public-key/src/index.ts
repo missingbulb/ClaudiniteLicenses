@@ -1,8 +1,10 @@
 // The public key Worker: answers a public repo's `claudinite-key-public` dispatch, forwarded by the
-// router, with a signed Public session key in a `Claudinite key` check run. No database; one
-// Analytics Engine data point per answered request is its whole record.
+// router, with a signed Public session key in a `Claudinite key` check run, and a desktop's
+// request with one in the answer. No database; one Analytics Engine data point per answered
+// request is its whole record.
 import { b64urlDecode, type Certificate } from "../../../packages/signing/src/index.ts";
 import { createKeyCheckRun, GitHubError, parseKeyDispatch } from "../../../packages/github-app/src/index.ts";
+import { publicSessionKey } from "./desktop.ts";
 import { mintPublicSessionKey } from "./key.ts";
 
 export interface Env {
@@ -85,6 +87,7 @@ export default {
   async fetch(req: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
     if (req.method === "POST" && url.pathname === "/webhook") return webhook(req, env);
+    if (req.method === "POST" && url.pathname === "/v1/public/session-key") return publicSessionKey(req, env);
     if (req.method === "GET" && url.pathname === "/v1/public/health") {
       const body = certBody(env);
       return Response.json({ ok: true, kid: body.keyId, cert_exp: body.notAfter });

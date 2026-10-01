@@ -8,12 +8,20 @@ private repo gets a check run titled `Claudinite key refused` with the reason an
 sender, a malformed nonce or head, or a missing installation get a 4xx and no check run. A GitHub
 error answers 502, and a secondary rate limit is logged with the marker `secondary-rate-limit`.
 
-`GET /v1/public/health`, its one public route, answers `{ ok, kid, cert_exp }` from the issuing
-key's certificate without calling GitHub.
+`POST /v1/public/session-key` serves a desktop: `Authorization: Bearer <App user token>`, body
+`{ "repo": "owner/name", "nonce", "engine_version" }`. It reads `GET /user` and the repo with the
+caller's token, as the paid key Worker's `/v1/session-key` does, refusing the same way (400, 401
+`token-missing` or `token-invalid`, 403 `sender-not-user`, `repo-not-visible` or
+`no-push-access`, 502 `github-error`). A public repo answers `{ "key", "plan": "public", "state":
+"ok" }`, a private one 403 `{ "refused": "refused-private" }`.
+
+`GET /v1/public/health` answers `{ ok, kid, cert_exp }` from the issuing key's certificate without
+calling GitHub.
 
 Every answered request writes one Analytics Engine point to `KEY_COUNTS`: index the repo id, blobs
-plan, outcome (`issued`, `refused-private`, `refused-sender`, `github-error`), owner type, engine
-version and the path the request came by (`web`).
+plan, outcome (`issued`, `refused-private`, `refused-sender`, `refused-<reason>` on the desktop
+path, `github-error`), owner type, engine version and the path the request came by (`web` or
+`desktop`).
 
 ## Secrets
 
