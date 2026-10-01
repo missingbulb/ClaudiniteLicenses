@@ -46,7 +46,9 @@ signed by the issuing key the certificate certifies. The payload:
 
 In order, the first failure naming the reason:
 
-1. `shape`: the envelope, payload JSON or certificate body is malformed.
+1. `shape`: the envelope, payload JSON or certificate body is malformed, or a payload field is
+   outside the Keys table: `v`, `typ`, `plan` or `state` not one of its values, `features` not
+   distinct names from its list, or `release` not exactly its five fields with their element types.
 2. The certificate, as Engine verifies it, against any trusted root (`untrusted-root`,
    `cert-key-id`, `cert-validity`, `cert-not-yet-valid`, `cert-expired`).
 3. `kid-mismatch`: the payload's `kid` is not the certificate's `keyId`.

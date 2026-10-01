@@ -99,6 +99,8 @@ export async function generateVectors(): Promise<string> {
     { name: "expired certificate", key: await signKey(seeds.licensePublic, await certify(seeds.root, "license-public", new Date("2025-10-01T00:00:00Z"), new Date("2025-12-01T00:00:00Z")), base), valid: false, reason: "cert-expired" },
     { name: "iat five minutes ahead of now", key: await signKey(seeds.licensePublic, certificates["license-public"], { ...base, iat: Date.parse(now) / 1000 + 300, exp: Date.parse(now) / 1000 + 300 + 7 * 86400 }), valid: true },
     { name: "iat past the five-minute leeway", key: await signKey(seeds.licensePublic, certificates["license-public"], { ...base, iat: Date.parse(now) / 1000 + 301, exp: Date.parse(now) / 1000 + 301 + 7 * 86400 }), valid: false, reason: "key-not-yet-valid" },
+    { name: "unknown feature name", key: await signKey(seeds.licensePublic, certificates["license-public"], { ...base, features: [...base.features, "acme-feature"] }), valid: false, reason: "shape" },
+    { name: "pack_keys entry is not a key id", key: await signKey(seeds.licensePublic, certificates["license-public"], { ...base, release: { ...release, pack_keys: ["acme"] } }), valid: false, reason: "shape" },
     { name: "kid is not the certificate's key id", key: await signKey(seeds.licensePublic, certificates["license-public"], base, { kid: "0000000000000000" }), valid: false, reason: "kid-mismatch" },
     { name: "flipped payload byte", key: flip(pubKey, "payload"), valid: false, reason: "bad-signature" },
     { name: "flipped signature byte", key: flip(pubKey, "signature"), valid: false, reason: "bad-signature" },

@@ -20,6 +20,9 @@ export type Plan = (typeof PLANS)[number];
 export const FEATURES = ["work-checks", "forced-skill-loading", "in-session-growth", "claudinite-tasks", "updates", "fleet"] as const;
 export type Feature = (typeof FEATURES)[number];
 
+export const KEY_TYPES = ["session", "actions", "grant"] as const;
+export const STATES = ["ok", "grace", "degraded", "unverified"] as const;
+
 export interface Certificate {
   payload: string;
   signature: string;
@@ -45,7 +48,7 @@ export interface ReleaseStates {
 
 export interface KeyPayload {
   v: 1;
-  typ: "session" | "actions" | "grant";
+  typ: (typeof KEY_TYPES)[number];
   kid: string;
   repo_id: number;
   owner_id: number;
@@ -56,7 +59,7 @@ export interface KeyPayload {
   nonce?: string;
   iat: number;
   exp: number;
-  state: "ok" | "grace" | "degraded" | "unverified";
+  state: (typeof STATES)[number];
   grace_until: number | null;
   features: string[];
   release: ReleaseStates;
@@ -252,12 +255,38 @@ export async function signKey(issuingSeed: string, certificate: Certificate, pay
   return JSON.stringify(key);
 }
 
+const RELEASE_KEYS = ["held", "pack_index_serial", "pack_keys", "revoked", "security_fixes"];
+const KEY_ID = /^[0-9a-f]{16}$/;
+
+function isStringArray(v: unknown, each: (s: string) => boolean = (s) => s.length > 0): boolean {
+  return Array.isArray(v) && v.every((s) => typeof s === "string" && each(s));
+}
+
+function isFeatureList(v: unknown): boolean {
+  return isStringArray(v, (f) => (FEATURES as readonly string[]).includes(f)) && new Set(v as string[]).size === (v as string[]).length;
+}
+
+function isRelease(v: unknown): boolean {
+  if (!isObject(v) || Object.keys(v).sort().join() !== RELEASE_KEYS.join()) return false;
+  const serial = v.pack_index_serial;
+  return (
+    isStringArray(v.held) &&
+    isStringArray(v.revoked) &&
+    isStringArray(v.security_fixes) &&
+    typeof serial === "number" &&
+    Number.isSafeInteger(serial) &&
+    serial >= 0 &&
+    isStringArray(v.pack_keys, (k) => KEY_ID.test(k))
+  );
+}
+
 function useForPlan(plan: Plan): Use {
   return plan === "public" ? "license-public" : "license";
 }
 
 /**
- * Verifies a key's wire form, checking in order: shape, the certificate against `roots` and its
+ * Verifies a key's wire form, checking in order: shape (including typ, plan, state, features and
+ * the release states' element types), the certificate against `roots` and its
  * window, `kid` against the certificate, the key signature, the key's iat (less IAT_LEEWAY_S) and exp, and the purpose
  * (a `public` plan needs a `license-public` certificate, every other plan `license`).
  */
@@ -272,7 +301,17 @@ export async function verifyKey(key: string, opts: { roots: string[]; now: Date 
   const decoded = decodeJson(env.payload);
   if (!decoded || !isObject(decoded.value)) return { ok: false, reason: "shape" };
   const p = decoded.value;
-  if (p.v !== 1 || typeof p.kid !== "string" || typeof p.iat !== "number" || typeof p.exp !== "number" || !PLANS.includes(p.plan as Plan)) {
+  if (
+    p.v !== 1 ||
+    typeof p.kid !== "string" ||
+    typeof p.iat !== "number" ||
+    typeof p.exp !== "number" ||
+    !PLANS.includes(p.plan as Plan) ||
+    !KEY_TYPES.includes(p.typ as KeyPayload["typ"]) ||
+    !STATES.includes(p.state as KeyPayload["state"]) ||
+    !isFeatureList(p.features) ||
+    !isRelease(p.release)
+  ) {
     return { ok: false, reason: "shape" };
   }
   let sig: Bytes;

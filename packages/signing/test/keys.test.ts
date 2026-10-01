@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { b64urlDecode, b64urlEncode, issueCertificate, keyId, signKey, verifyCertificate, verifyKey } from "../src/index.ts";
+import { b64urlDecode, b64urlEncode, issueCertificate, keyId, signKey, verifyCertificate, verifyKey, type KeyPayload } from "../src/index.ts";
 import { DAY, devChain, NOW, NOW_S, payload } from "./chain.ts";
 
 describe("key ids", () => {
@@ -77,7 +77,9 @@ describe("verifyKey", () => {
 
     const env = JSON.parse(good);
     const body = b64urlDecode(env.payload);
-    body[10] = body[10]! ^ 1;
+    // A digit of repo_id, so the payload still parses and passes the shape checks.
+    const at = new TextDecoder().decode(body).indexOf('"repo_id":') + 11;
+    body[at] = body[at]! ^ 1;
     expect(await verifyKey(JSON.stringify({ ...env, payload: b64urlEncode(body) }), { roots, now: NOW })).toEqual({ ok: false, reason: "bad-signature" });
     const sig = b64urlDecode(env.signature);
     sig[0] = sig[0]! ^ 1;
@@ -97,6 +99,45 @@ describe("verifyKey", () => {
     const c = await devChain();
     const key = await signKey(c.issuing.seed, await c.certify(c.root, "license-public"), payload(), { kid: "0000000000000000" });
     expect(await verifyKey(key, { roots: [c.root.publicKey], now: NOW })).toEqual({ ok: false, reason: "kid-mismatch" });
+  });
+
+  it("refuses a payload whose typ, state, features or release is malformed", async () => {
+    const c = await devChain();
+    const cert = await c.certify(c.root, "license-public");
+    const release = payload().release;
+    const bad: Record<string, unknown>[] = [
+      { typ: "admin" },
+      { typ: undefined },
+      { state: "fine" },
+      { state: 1 },
+      { features: "work-checks" },
+      { features: ["work-checks", "teleport"] },
+      { features: ["work-checks", "work-checks"] },
+      { features: [1] },
+      { release: null },
+      { release: [] },
+      { release: { ...release, held: "2.0.0" } },
+      { release: { ...release, revoked: [2] } },
+      { release: { ...release, security_fixes: [null] } },
+      { release: { ...release, pack_index_serial: -1 } },
+      { release: { ...release, pack_index_serial: 1.5 } },
+      { release: { ...release, pack_index_serial: "3" } },
+      { release: { ...release, pack_keys: ["not-a-key-id"] } },
+      { release: { held: [], revoked: [], security_fixes: [], pack_index_serial: 0 } },
+      { release: { ...release, extra: [] } },
+    ];
+    for (const over of bad) {
+      const key = await signKey(c.issuing.seed, cert, { ...payload(), ...over } as KeyPayload);
+      expect(await verifyKey(key, { roots: [c.root.publicKey], now: NOW }), JSON.stringify(over)).toEqual({ ok: false, reason: "shape" });
+    }
+    const full = payload({
+      typ: "grant",
+      state: "grace",
+      grace_until: NOW_S + DAY,
+      features: [],
+      release: { held: ["2.1.0"], revoked: ["2.0.0"], security_fixes: ["2.0.1"], pack_index_serial: 7, pack_keys: ["0123456789abcdef"] },
+    });
+    expect((await verifyKey(await signKey(c.issuing.seed, cert, full), { roots: [c.root.publicKey], now: NOW })).ok).toBe(true);
   });
 
   it("refuses what is not a key", async () => {
