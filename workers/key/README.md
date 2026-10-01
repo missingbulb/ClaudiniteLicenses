@@ -29,6 +29,10 @@ a session key, today's `usage` row, and `packages/licensing`'s `resolveSeats` gi
 | Beyond it, grace over or spent within 30 days: a seated user | `ok` | `overused` | the plan's |
 | The same, a user ranked past the paid seats | `degraded` | `seat-refused` | none |
 
+Every key carries its notice in the signed payload as `notice` (`null` when there is none), and the
+HTTP answer and the check-run summary name the same word, so a binary reading any of the three sees
+one fact. A grant carries its Actions key's notice.
+
 The plan's features are every feature but `fleet` on Public and Private repo, every feature on the
 owner-wide plans. An Actions key has no user: its state is the licensee's from the seat rows alone,
 and it writes nothing.
@@ -84,8 +88,9 @@ The checks are the public key Worker's (a `User` sender, the nonce, the head, th
 payload's shapes); the webhook came through an installation, so a missing row is not a refusal
 here. The answer is one neutral `Claudinite key` check run whose external id is the nonce and whose
 text is a 7-day session key, its summary `<plan> key for @<login> (sender type User), state
-<state>[, <notice>], issued <time>`; or `Claudinite key refused` whose summary starts with the
-refusal.
+<state>[, <notice>], issued <time>`; or `Claudinite key refused` whose summary is
+`<refusal>: <text>`, spelled by `packages/github-app`'s `refusalSummary`, since the binary takes
+what precedes the first colon as the cause.
 
 **Desktop.** `POST /v1/session-key`, `Authorization: Bearer <App user token>`, body
 `{ "repo": "owner/name", "nonce", "engine_version" }`. The Worker reads `GET /user` (must be a
@@ -110,7 +115,10 @@ be present. Each failure is a 401 naming it (`token-missing`, `token-malformed`,
 `{repository}/.github/workflows/{name}.yml@refs/heads/{default branch}`, `name` one of
 `claudinite-scheduler`, `claudinite-executor` and `claudinite-update`, is `workflow-not-pinned`; no
 row is `app-not-installed`; a row whose default branch the sync Worker has not read yet is
-`repo-not-synced`. The key is a 6-hour `actions` key, no user or nonce, the owner type from the
+`repo-not-synced`. `claudinite-ci` is deliberately not pinned: it runs on `pull_request`, which is
+refused outright, and on a dispatch against the update PR's branch, which the default-branch half
+refuses whatever the name, so pinning it would mint nothing for that run and widen the files that
+can mint for every member. The key is a 6-hour `actions` key, no user or nonce, the owner type from the
 row, the visibility from the `repository_visibility` claim and the state the licensee's, answered
 as `{ "key", "plan", "state", "notice", "checkout_url", "portal_url" }`. An Actions key never fails open: without D1 the workflow pin cannot be
 checked, so an unreadable D1 answers 503 `server-error`. There is no per-`jti` replay store, so the
@@ -140,8 +148,12 @@ Worker writes: index the repo id, blobs plan (or `none`), outcome (`issued-<stat
 `refused-<reason>`, `github-error`), owner type, engine version and path (`web`, `desktop`,
 `actions`, `grant`).
 
+Every answer, on every route and status, carries `X-Claudinite-Version`, the id of the Cloudflare
+version that served it, from the `version_metadata` binding `CF_VERSION_METADATA`; the deploy's
+canary probe tells a split's two versions apart by it. The id is public by design.
+
 `GET /v1/key/health` answers `{ ok, kid, cert_exp, cert_days_left, d1, queue, polar, trust_roots,
-alerts }`: `cert_days_left` is the whole days to `cert_exp`, `d1` is `ok` or `unreadable` after one
+version, alerts }`, `version` the same id as the header: `cert_days_left` is the whole days to `cert_exp`, `d1` is `ok` or `unreadable` after one
 `SELECT 1`, `queue` is `bound` or `unbound`, `polar` is `configured` when both `POLAR_API_BASE`
 and `POLAR_ACCESS_TOKEN` are set, else `unconfigured`, and `trust_roots` is `ok` or `invalid`. It
 judges itself: while any of `cert-expiring` (fewer than 14 days left, the issuing keys' overlap),

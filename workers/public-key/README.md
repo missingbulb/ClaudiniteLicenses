@@ -2,9 +2,12 @@
 
 Issues Public session keys. The router forwards a `repository_dispatch` of type
 `claudinite-key-public` to `POST /webhook`; for a public repo and a `User` sender the Worker signs a
-7-day Public key (every feature but `fleet`, release states from `release-states.json`) and posts
+7-day Public key (every feature but `fleet`, release states from `release-states.json`, `notice: null`) and posts
 it as the text of a neutral `Claudinite key` check run whose external id is the session's nonce. A
-private repo gets a check run titled `Claudinite key refused` with the reason and no key; a Bot
+private repo gets a check run titled `Claudinite key refused` and no key, its summary
+`refused-private: this repo is private; the Public plan covers public repos only`, spelled by
+`packages/github-app`'s `refusalSummary` so the binary cuts the cause at the first colon, the same
+word the desktop route refuses with; a Bot
 sender, a malformed nonce or head, or a missing installation get a 4xx and no check run. A GitHub
 error answers 502, and a secondary rate limit is logged with the marker `secondary-rate-limit`.
 
@@ -15,7 +18,10 @@ caller's token, as the paid key Worker's `/v1/session-key` does, refusing the sa
 `no-push-access`, 502 `github-error`). A public repo answers `{ "key", "plan": "public", "state":
 "ok" }`, a private one 403 `{ "refused": "refused-private" }`.
 
-`GET /v1/public/health` answers `{ ok, kid, cert_exp, cert_days_left, alerts }` from the issuing
+Every answer carries `X-Claudinite-Version`, the serving Cloudflare version's id from the
+`version_metadata` binding `CF_VERSION_METADATA`, which the deploy's canary probe reads.
+
+`GET /v1/public/health` answers `{ ok, kid, cert_exp, cert_days_left, version, alerts }` from the issuing
 key's certificate without calling GitHub, and judges it: with fewer than 14 days left it answers
 503 with `ok: false` and `alerts: ["cert-expiring"]`, once expired `["cert-expired"]`, else 200
 with `alerts: []`.

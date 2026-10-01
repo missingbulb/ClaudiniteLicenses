@@ -12,13 +12,14 @@ The license server for Claudinite
 - `packages/licensing`: the seat, headroom, grace and paid-seat rules, and the writes queue's messages, bundled by the key and sync Workers.
 - `packages/polar`: the Polar client (checkouts, customer sessions, subscriptions, webhook endpoints) and the Standard Webhooks check.
 - `packages/github-app`: the Claudinite App's GitHub client (App JWT, installation tokens, the key check run), a source package each Worker that acts as the App bundles.
+- `packages/version`: the `X-Claudinite-Version` header every Worker puts on each answer, from its `version_metadata` binding.
 - `workers/router`: the App's one webhook address, forwarding each webhook to the Worker it is for.
 - `workers/public-key`: the public key Worker, Public keys for public repos on the web and desktop paths.
 - `workers/key`: the paid key Worker, the web, desktop and Actions key paths in every seat state, item grants, and `cn login`'s config and refresh.
 - `workers/sync`: the sync Worker, D1's only writer: repos from the App's installation webhooks and a nightly reconcile, subscriptions from Polar's webhooks and reconcile, seats and usage from the writes queue.
-- `db/`: the D1 schema and migrations; `deploy.yml` creates the database and applies them.
+- `db/`: the D1 schema and its additive migrations; `deploy.yml` creates the database and applies them.
 - `billing/plans.json`: the paid plans and their prices per seat, read by the Polar products tool.
-- `tools/`: dev key chains, the D1, queue, DNS and Polar webhook deploy helpers, a Polar checkout maker, the App webhook re-pointer, the Polar products tool, the outside probe (`tools/probe.mjs`), local GitHub and Polar API stubs, the local round trip and its route front (`tools/dev-routes`).
+- `tools/`: dev key chains, the D1, queue, DNS and Polar webhook deploy helpers, a Polar checkout maker, the App webhook re-pointer, the Polar products tool, the outside probe (`tools/probe.mjs`), the staged deploy's version tool (`tools/stage.mjs`), the D1 restore rehearsal (`tools/d1-restore-rehearsal.mjs`), local GitHub and Polar API stubs, the local round trip and its route front (`tools/dev-routes`).
 - `spike/`: the web key spike, run in a Claude Code web session; results in `docs/spikes/`.
 
 ## Local verification
@@ -36,6 +37,39 @@ writes queue and a local D1, then an incident, the alerts firing and clearing an
 the dev chain in `.dev` (`node tools/keys.mjs dev-chain --out .dev`) or a throwaway one. `npm run
 dev` serves the same set on port 8787 until interrupted.
 
+## Deploying
+
+`deploy.yml` runs on every push to `main`. It records D1's restore point before the migrations,
+uploads a new version of the public key, key and router Workers with their secrets without serving
+it, deploys the sync Worker at once and judges it by its health and alerts, then serves each new
+version to one tenth of requests. The canary probe (`tools/probe.mjs --expect-version`) reaches each
+new version through Cloudflare's version-affinity header and must pass on it; the versions are then
+promoted to all requests and every Worker's routes and crons applied. A failed canary, promotion or
+read-back rolls every staged Worker back to the version that was live when the run started, so a run
+ends either with the new versions passing from outside or with the previous ones live and the run
+red.
+
+The run summary carries the restore point as the exact dispatch that returns D1 to it, inside the
+Time Travel window of 7 days on Workers Free or 30 on Workers Paid:
+
+```
+gh workflow run d1-restore.yml -f bookmark=<bookmark from the summary>
+```
+
+A restore is in place and reverts every row written after the bookmark; see `db/README.md` before
+running it. The `rehearse_d1_restore` dispatch input runs the same restore command on a throwaway
+database first.
+
+Three rules keep this safe:
+
+- A change to the contract between the router and a Worker it binds promotes the callee first: two
+  deploys, or the callee's change behind a flag.
+- Migrations are additive, so the version a rollback returns to still reads the schema
+  (`db/test/migrations-additive.test.ts`).
+- A split left standing by an interrupted run is rolled back by hand before the next deploy, which
+  refuses to stack on it:
+  `node tools/stage.mjs rollback --config workers/<worker>/wrangler.jsonc --id <the version that should be live>`.
+
 ## The outside probe
 
 Each Worker judges its own health and the sync Worker judges the shared state, so four URLs on
@@ -49,7 +83,8 @@ workflow runs it at minutes 7, 22, 37 and 52 of every hour and on dispatch, and 
 issue titled `License server probe`, labelled `probe`: opened or commented on by a failing run,
 closed by the next passing one. GitHub fires a cron late or not at all under load and disables it
 after 60 days without repository activity, so it is the best-effort interim to a monitor polling
-every minute. `deploy.yml` runs the probe too, without the issue, after reading the alerts back.
+every minute. `deploy.yml` runs the probe too, without the issue: pinned to the new versions as its canary, and
+unpinned after reading the alerts back.
 
 ```
 node tools/probe.mjs --base https://license.claudinite.com
