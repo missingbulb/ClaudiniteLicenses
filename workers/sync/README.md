@@ -6,6 +6,15 @@ the Polar reconcile, and `seats`, `usage`, `overuse` and `incidents` from the wr
 Worker fills. It audits whether the App still covers every paying account and judges every alert at
 `GET /v1/sync/alerts`.
 
+It deploys at 100% with `wrangler deploy`, never through the split the request-path Workers take:
+which version a split hands a cron or a queue consumer is not documented, and its deploy never
+touches key issuance. Its own health and alerts judge it right after, and a failure rolls it back
+to the version that was live. Each `scheduled` and `queue` invocation logs
+`{ invocation, version }` at its start, every answer carries `X-Claudinite-Version` and the health
+body `version`, from the `version_metadata` binding `CF_VERSION_METADATA`. What the first staged
+deploy's logs show about cron and queue versions under a split is not yet recorded here; until it
+is, the sync Worker stays at 100%.
+
 ## Repos
 
 The router forwards the Claudinite App's `installation`, `installation_repositories` and
@@ -146,7 +155,7 @@ batch rather than read as the queue's live depth, which only Cloudflare's dashbo
 `GET /v1/sync/health` answers `{ ok, repos, subscriptions, seats, last_webhook_at,
 last_reconcile_at, last_reconcile_corrections, last_polar_webhook_at, last_polar_reconcile_at,
 last_polar_reconcile_corrections, last_polar_reconcile_error, last_queue_at, queue_lag_s,
-last_dead_letter_at, paying_uncovered, polar_webhook_secret }`. `seats` counts rows whose last key
+last_dead_letter_at, paying_uncovered, polar_webhook_secret, version }`. `seats` counts rows whose last key
 is within 30 days; each stamp is null where it was never written, `paying_uncovered` until the first
 audit; `polar_webhook_secret` says whether the secret
 is set, never its value, and is what `deploy.yml` reads to decide whether to make a new endpoint.
@@ -166,6 +175,9 @@ it creates the endpoint, and the job's token cannot write repository secrets. `d
 `tools/ensure-polar-webhook.mjs`, which keeps the existing endpoint, or, when the live Worker's
 health reports no secret or the dispatch input `rotate_polar_webhook` is on, makes a new one and
 writes its secret to a file the Worker's secrets step stores.
+
+Unlike the three request-path Workers, whose secrets travel with each uploaded version, the sync
+Worker's are stored with `wrangler secret bulk` before its `wrangler deploy`.
 
 `SYNC_ADMIN_TOKEN` is no repository secret: `deploy.yml` generates a fresh one on every run, stores
 it with the others and uses it once to run the reconcile in its read-back, so nobody holds a copy

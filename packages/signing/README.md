@@ -49,8 +49,9 @@ signed by the issuing key the certificate certifies. The payload:
 | `checkout_url` | optional: `null` or an `https` URL, the plan's checkout for this owner (and, under `private-repo`, this repo) |
 | `portal_url` | optional: `null` or an `https` URL, the owner's Polar customer portal |
 | `issue` | optional, grant keys only: a positive integer, the work item's issue number |
+| `notice` | optional: `null` or a non-empty string, what the licensee's seat state asks the binary to say; `over-within-headroom`, `overused` and `seat-refused` have a meaning (the key Worker README's table), and any other name is carried and ignored, as an unknown feature is, so the server may add a notice without an engine release |
 
-The four optional fields are absent or `null` on a key that has nothing to say; a verifier treats
+The five optional fields are absent or `null` on a key that has nothing to say; a verifier treats
 absence as `null`, so a key issued before they existed still verifies.
 
 ## Verifying a key
@@ -60,8 +61,8 @@ In order, the first failure naming the reason:
 1. `shape`: the envelope, payload JSON or certificate body is malformed, or a known payload field
    is outside the Keys table: `v`, `typ`, `plan` or `state` not one of its values, `features` not
    distinct non-empty strings, or `release` missing one of its five fields or holding one of the
-   wrong type, or `seats`, `checkout_url`, `portal_url` or `issue` present, not `null` and outside
-   the Keys table. An unknown feature name, release field or payload field is ignored, so the server
+   wrong type, or `seats`, `checkout_url`, `portal_url`, `issue` or `notice` present, not `null` and
+   outside the Keys table. An unknown feature name, release field or payload field is ignored, so the server
    may add one without an engine release; only a name from the Keys table turns a feature on.
 2. The certificate, as Engine verifies it, against any trusted root (`untrusted-root`,
    `cert-key-id`, `cert-validity`, `cert-not-yet-valid`, `cert-expired`).

@@ -31,6 +31,7 @@ export async function mintPublicSessionKey(issuingSeed: string, cert: Certificat
     grace_until: null,
     features: [...PUBLIC_FEATURES],
     release: releaseStates as ReleaseStates,
+    notice: null,
   };
   return signKey(issuingSeed, cert, payload);
 }

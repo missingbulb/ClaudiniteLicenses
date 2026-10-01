@@ -22,6 +22,7 @@ describe("POST /v1/session-key", () => {
     const p = await verified(out.key);
     expect(p).toMatchObject({ typ: "session", plan: "public", user_id: 3003, nonce: NONCE, repo_id: 1001, owner_id: 2002, owner_type: "User", owner_login: "acme-user", kid: certKeyId() });
     expect(p.exp - p.iat).toBe(7 * 86400);
+    expect(p.notice).toBeNull();
     expect(certUse(out.key)).toBe("license");
     expect(world.points).toEqual([{ indexes: ["1001"], blobs: ["public", "issued-ok", "User", "1.1.0", "desktop"], doubles: [1] }]);
   });
@@ -56,7 +57,7 @@ describe("POST /v1/session-key", () => {
     expect(res.status).toBe(200);
     const out = (await res.json()) as Record<string, unknown>;
     expect(out).toMatchObject({ plan: "private-repo", state: "grace", notice: "overused", checkout_url: CHECKOUT_URL, portal_url: null });
-    expect(await verified(out.key as string)).toMatchObject({ state: "grace", checkout_url: CHECKOUT_URL, portal_url: null });
+    expect(await verified(out.key as string)).toMatchObject({ state: "grace", checkout_url: CHECKOUT_URL, portal_url: null, notice: "overused" });
     expect(sentMessages().map((m) => m.kind)).toEqual(["usage", "grace-start"]);
   });
 
@@ -67,6 +68,7 @@ describe("POST /v1/session-key", () => {
     world.repo = () => Response.json(githubRepo({ private: true, visibility: "private" }));
     const out = (await (await ask(body())).json()) as Record<string, unknown>;
     expect(out).toMatchObject({ plan: "personal", state: "ok", notice: "over-within-headroom", checkout_url: CHECKOUT_URL, portal_url: PORTAL_URL });
+    expect((await verified(out.key as string)).notice).toBe("over-within-headroom");
   });
 
   it("calls Polar for no plain ok key", async () => {

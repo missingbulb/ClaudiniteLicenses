@@ -1,8 +1,9 @@
 // The Claudinite App's one webhook address: checks GitHub's signature, then hands each webhook to
 // the Worker it is for over a service binding and returns that Worker's answer, so the App's
 // delivery log shows the outcome.
+import { versionOf, withVersion, type VersionEnv } from "../../../packages/version/src/index.ts";
 
-export interface Env {
+export interface Env extends VersionEnv {
   GITHUB_APP_WEBHOOK_SECRET: string;
   PUBLIC_KEY?: Fetcher;
   KEY?: Fetcher;
@@ -59,36 +60,40 @@ async function forward(binding: Fetcher | undefined, host: string, route: string
   return new Response(res.body, { status: res.status, headers: res.headers });
 }
 
+async function route(req: Request, env: Env): Promise<Response> {
+  const url = new URL(req.url);
+  if (req.method !== "POST" || url.pathname !== "/github-webhook") return new Response("not found", { status: 404 });
+  const body = await readCapped(req);
+  if (body === null) return new Response("payload too large", { status: 413 });
+  if (!(await signatureMatches(env.GITHUB_APP_WEBHOOK_SECRET, body, req.headers.get("X-Hub-Signature-256")))) {
+    return new Response("bad signature", { status: 401 });
+  }
+  const event = req.headers.get("X-GitHub-Event") ?? "";
+  switch (event) {
+    case "ping":
+      return new Response("pong", { status: 200 });
+    case "repository_dispatch": {
+      let action: unknown;
+      try {
+        action = (JSON.parse(new TextDecoder().decode(body)) as { action?: unknown }).action;
+      } catch {
+        return new Response("malformed payload", { status: 400 });
+      }
+      if (action === "claudinite-key-public") return forward(env.PUBLIC_KEY, "public-key", `${event}/${action}`, req, body);
+      if (action === "claudinite-key") return forward(env.KEY, "key", `${event}/${action}`, req, body);
+      return new Response(null, { status: 204 });
+    }
+    case "installation":
+    case "installation_repositories":
+    case "repository":
+      return forward(env.SYNC, "sync", event, req, body);
+    default:
+      return new Response(null, { status: 204 });
+  }
+}
+
 export default {
   async fetch(req: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
-    const url = new URL(req.url);
-    if (req.method !== "POST" || url.pathname !== "/github-webhook") return new Response("not found", { status: 404 });
-    const body = await readCapped(req);
-    if (body === null) return new Response("payload too large", { status: 413 });
-    if (!(await signatureMatches(env.GITHUB_APP_WEBHOOK_SECRET, body, req.headers.get("X-Hub-Signature-256")))) {
-      return new Response("bad signature", { status: 401 });
-    }
-    const event = req.headers.get("X-GitHub-Event") ?? "";
-    switch (event) {
-      case "ping":
-        return new Response("pong", { status: 200 });
-      case "repository_dispatch": {
-        let action: unknown;
-        try {
-          action = (JSON.parse(new TextDecoder().decode(body)) as { action?: unknown }).action;
-        } catch {
-          return new Response("malformed payload", { status: 400 });
-        }
-        if (action === "claudinite-key-public") return forward(env.PUBLIC_KEY, "public-key", `${event}/${action}`, req, body);
-        if (action === "claudinite-key") return forward(env.KEY, "key", `${event}/${action}`, req, body);
-        return new Response(null, { status: 204 });
-      }
-      case "installation":
-      case "installation_repositories":
-      case "repository":
-        return forward(env.SYNC, "sync", event, req, body);
-      default:
-        return new Response(null, { status: 204 });
-    }
+    return withVersion(await route(req, env), versionOf(env));
   },
 };

@@ -2,8 +2,9 @@
 // the App's GitHub client, Polar's, and the one usage point each answered request writes.
 import type { GitHubClient } from "../../../packages/github-app/src/index.ts";
 import { b64urlDecode, type Certificate } from "../../../packages/signing/src/index.ts";
+import type { VersionEnv } from "../../../packages/version/src/index.ts";
 
-export interface Env {
+export interface Env extends VersionEnv {
   DB: D1Database;
   KEY_COUNTS?: AnalyticsEngineDataset;
   OWNER_LIMIT: RateLimit;

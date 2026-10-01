@@ -133,4 +133,14 @@ export async function createKeyCheckRun(
   );
 }
 
+/**
+ * The summary of a `Claudinite key refused` check run, `<reason>: <text>`: the binary takes what
+ * precedes the first colon as the cause, so the reason is one word and the text holds no colon.
+ */
+export function refusalSummary(reason: string, text: string): string {
+  if (!/^[a-z0-9-]+$/.test(reason)) throw new Error(`refusal reason ${JSON.stringify(reason)} is not one lower-case word`);
+  if (text.includes(":")) throw new Error(`refusal text for ${reason} holds a colon, which would move the binary's cut`);
+  return `${reason}: ${text}`;
+}
+
 export * from "./session.ts";

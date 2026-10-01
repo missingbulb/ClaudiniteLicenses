@@ -134,3 +134,31 @@ describe("router", () => {
     expect((await deliver({}, "ping", {}, { url: "https://license.claudinite.com/anything" })).status).toBe(404);
   });
 });
+
+describe("version", () => {
+  const ROUTER_ID = "acme0000-0000-4000-8000-00000000000a";
+  const versioned = { CF_VERSION_METADATA: { id: ROUTER_ID } } as Partial<Env>;
+
+  it("names its own version on every answer, 2xx, 4xx and 5xx alike, and over a callee's", async () => {
+    const callee = { async fetch() { return new Response("issued", { status: 201, headers: { "X-Claudinite-Version": "callee-id" } }); } } as unknown as Fetcher;
+    const failing = stub(503, "down");
+    const answers = [
+      await deliver({ ...versioned, PUBLIC_KEY: callee }, "repository_dispatch", { action: "claudinite-key-public" }),
+      await deliver({ ...versioned, KEY: failing.fetcher }, "repository_dispatch", { action: "claudinite-key" }),
+      await deliver(versioned, "ping", {}),
+      await deliver(versioned, "repository_dispatch", { action: "claudinite-key" }),
+      await deliver(versioned, "issues", {}),
+      await deliver(versioned, "ping", {}, { signature: null }),
+      await deliver(versioned, "ping", "x".repeat(1024 * 1024 + 1)),
+      await deliver(versioned, "ping", {}, { method: "GET" }),
+      await deliver(versioned, "repository_dispatch", "{not json"),
+    ];
+    expect(answers.map((r) => r.status)).toEqual([201, 503, 200, 202, 204, 401, 413, 404, 400]);
+    expect(answers.map((r) => r.headers.get("X-Claudinite-Version"))).toEqual(answers.map(() => ROUTER_ID));
+  });
+
+  it("declares the version_metadata binding the header reads", () => {
+    const config = JSON.parse(wranglerConfig.replace(/^\s*\/\/.*$/gm, ""));
+    expect(config.version_metadata).toEqual({ binding: "CF_VERSION_METADATA" });
+  });
+});

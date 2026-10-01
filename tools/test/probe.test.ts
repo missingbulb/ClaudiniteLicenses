@@ -24,8 +24,27 @@ interface Stub {
   issues: Issue[];
   labels: string[];
   seen: string[];
+  /** Each Worker's live version, and the one a split serves to one version key in ten. */
+  versions: Record<string, { old: string; new?: string }>;
+  /** Answers the new version gives instead of the route's. */
+  newRoutes: Stub["routes"];
+  /** The version keys the probe sent, in order. */
+  keys: string[];
   close: () => Promise<void>;
 }
+
+const WORKER_OF: Record<string, string> = {
+  "GET /v1/public/health": "public-key",
+  "GET /v1/key/health": "key",
+  "POST /v1/session-key": "key",
+  "POST /v1/actions-key": "key",
+  "GET /v1/sync/health": "sync",
+  "GET /v1/sync/alerts": "sync",
+  "POST /github-webhook": "router",
+};
+
+// One key in ten reaches the new version, as a 10% split hashes them: canary-7, canary-17, ...
+const reachesNew = (key: string | undefined) => key !== undefined && /^canary-\d*7$/.test(key);
 
 const HEALTHY: Stub["routes"] = {
   "GET /v1/public/health": () => ({ status: 200, body: { ok: true, alerts: [] } }),
@@ -38,7 +57,15 @@ const HEALTHY: Stub["routes"] = {
 };
 
 async function startStub(): Promise<Stub> {
-  const stub = { routes: { ...HEALTHY }, issues: [] as Issue[], labels: [] as string[], seen: [] as string[] } as Stub;
+  const stub = {
+    routes: { ...HEALTHY },
+    issues: [] as Issue[],
+    labels: [] as string[],
+    seen: [] as string[],
+    versions: { "public-key": { old: "pk-old" }, key: { old: "key-old" }, sync: { old: "sync-old" }, router: { old: "router-old" } },
+    newRoutes: {},
+    keys: [] as string[],
+  } as unknown as Stub;
   const read = async (req: IncomingMessage) => {
     let raw = "";
     for await (const c of req) raw += c;
@@ -48,8 +75,13 @@ async function startStub(): Promise<Stub> {
     const url = new URL(req.url ?? "/", "http://stub");
     const route = `${req.method} ${url.pathname}`;
     stub.seen.push(`${route} ${req.headers.authorization ?? ""}`.trim());
+    const key = req.headers["cloudflare-workers-version-key"] as string | undefined;
+    if (key !== undefined) stub.keys.push(key);
+    const worker = WORKER_OF[route];
+    const v = worker ? stub.versions[worker]! : null;
+    const version = v ? (v.new && reachesNew(key) ? v.new : v.old) : null;
     const send = (status: number, body: unknown) => {
-      res.writeHead(status, { "Content-Type": typeof body === "string" ? "text/plain" : "application/json" });
+      res.writeHead(status, { "Content-Type": typeof body === "string" ? "text/plain" : "application/json", ...(version ? { "X-Claudinite-Version": version } : {}) });
       res.end(typeof body === "string" ? body : JSON.stringify(body));
     };
     let m: RegExpExecArray | null;
@@ -59,7 +91,7 @@ async function startStub(): Promise<Stub> {
         if (req.headers.authorization !== "Bearer probe" || typeof body.repo !== "string" || typeof body.nonce !== "string") return send(400, { refused: "bad-request" });
       }
       if (route === "POST /v1/actions-key" && req.headers.authorization !== "Bearer acme-oidc-token") return send(401, { refused: "token-invalid" });
-      const { status, body } = stub.routes[route]!();
+      const { status, body } = (version === v?.new && stub.newRoutes[route] ? stub.newRoutes[route] : stub.routes[route])!();
       return send(status, body);
     }
     if (req.headers.authorization !== "Bearer acme-gh-token") return send(401, { message: "Bad credentials" });
@@ -240,5 +272,77 @@ describe("tools/probe.mjs", () => {
     stub.routes["GET /v1/sync/alerts"] = () => ({ status: 503, body: { ok: false, alerts: [] } });
     expect((await probe(withIssue, ghEnv)).status).toBe(1);
     expect(stub.issues.map((i) => [i.number, i.comments.length])).toEqual([[1, 0], [2, 0], [3, 0]]);
+  });
+});
+
+describe("tools/probe.mjs --expect-version", () => {
+  const pinned = "public-key=pk-new,key=key-new,router=router-new";
+  type Row = { name: string; ok: boolean; version: string | null; detail?: string };
+  const rows = (json: string) => (JSON.parse(readFileSync(json, "utf8")) as { checks: Row[] }).checks;
+
+  it("reports the version that answered every check, with no pin", async () => {
+    const json = join(dir, "probe.json");
+    expect((await probe(["--json", json])).status).toBe(0);
+    expect(rows(json).map((c) => [c.name, c.version])).toEqual([
+      ["public-health", "pk-old"],
+      ["key-health", "key-old"],
+      ["sync-health", "sync-old"],
+      ["sync-alerts", "sync-old"],
+      ["router-signature", "router-old"],
+      ["session-key-upstream", "key-old"],
+    ]);
+    expect(stub.keys).toEqual([]);
+  });
+
+  it("reaches each pinned Worker's new version through the version key within the budget, and judges that answer", async () => {
+    stub.versions["public-key"]!.new = "pk-new";
+    stub.versions.key!.new = "key-new";
+    stub.versions.router!.new = "router-new";
+    const json = join(dir, "probe.json");
+    const res = await probe(["--oidc-token-env", "ACME_OIDC", "--expect-version", pinned, "--json", json], { ACME_OIDC: "acme-oidc-token" });
+    expect(res.status, res.stdout + res.stderr).toBe(0);
+    expect(rows(json).map((c) => [c.name, c.ok, c.version])).toEqual([
+      ["public-health", true, "pk-new"],
+      ["key-health", true, "key-new"],
+      ["sync-health", true, "sync-old"],
+      ["sync-alerts", true, "sync-old"],
+      ["router-signature", true, "router-new"],
+      ["session-key-upstream", true, "key-new"],
+      ["actions-key-oidc", true, "key-new"],
+    ]);
+    // Five pinned checks, each walking canary-1 to canary-7; the unpinned sync checks send no key.
+    expect(stub.keys).toEqual(Array.from({ length: 5 }, () => Array.from({ length: 7 }, (_, i) => `canary-${i + 1}`)).flat());
+  });
+
+  it("fails a check the new version answers wrongly, naming the version, while the old version is healthy", async () => {
+    stub.versions.key!.new = "key-new";
+    stub.newRoutes["GET /v1/key/health"] = () => ({ status: 503, body: { ok: false, alerts: ["d1-unreadable"] } });
+    const json = join(dir, "probe.json");
+    const res = await probe(["--expect-version", "key=key-new", "--json", json]);
+    expect(res.status).toBe(1);
+    const health = rows(json).find((c) => c.name === "key-health")!;
+    expect(health).toMatchObject({ ok: false, version: "key-new" });
+    expect(health.detail).toMatch(/^version key-new: want 200/);
+    expect(rows(json).find((c) => c.name === "session-key-upstream")).toMatchObject({ ok: true, version: "key-new" });
+  });
+
+  it("fails a pinned check whose version is never served, and runs the others unpinned", async () => {
+    const json = join(dir, "probe.json");
+    const res = await probe(["--expect-version", "key=key-new", "--json", json]);
+    expect(res.status).toBe(1);
+    const health = rows(json).find((c) => c.name === "key-health")!;
+    expect(health).toMatchObject({ ok: false, version: "key-old" });
+    expect(health.detail).toMatch(/^version key-new not reached in 60 keys/);
+    expect(rows(json).find((c) => c.name === "public-health")).toMatchObject({ ok: true, version: "pk-old" });
+    expect(stub.keys.filter((k) => k === "canary-60")).toHaveLength(2);
+    expect(stub.keys).not.toContain("canary-61");
+  });
+
+  it("refuses a Worker name no check is answered by, and a malformed pin", async () => {
+    for (const pin of ["keys=abc", "key", "key=", "key=a,key=b"]) {
+      const res = await probe(["--expect-version", pin]);
+      expect(res.status, pin).toBe(2);
+      expect(res.stderr, pin).toMatch(/--expect-version/);
+    }
   });
 });

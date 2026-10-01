@@ -36,6 +36,7 @@ describe("POST /v1/actions-key", () => {
     expect(p).not.toHaveProperty("user_id");
     expect(p).not.toHaveProperty("nonce");
     expect(p.exp - p.iat).toBe(6 * 3600);
+    expect(p.notice).toBeNull();
     expect([...p.features].sort()).toEqual(FEATURES.filter((f) => f !== "fleet").sort());
     expect(certUse(out.key)).toBe("license");
     expect(world.points).toEqual([{ indexes: ["1001"], blobs: ["public", "issued-ok", "User", "1.1.0", "actions"], doubles: [1] }]);
@@ -73,6 +74,15 @@ describe("POST /v1/actions-key", () => {
     }
   });
 
+  // claudinite-ci is not pinned: it runs on pull_request and on a dispatch against the update PR's
+  // branch, which the trigger and default-branch halves refuse whatever the name.
+  it("refuses claudinite-ci on the default branch beside a pinned name that passes", async () => {
+    await seedRepo();
+    const ref = (name: string) => `acme-user/acme-repo/.github/workflows/${name}.yml@refs/heads/main`;
+    expect((await ask(await issuer.sign(actionsClaims({ event_name: "workflow_dispatch", job_workflow_ref: ref("claudinite-update") })))).status).toBe(200);
+    await refusedWith(await issuer.sign(actionsClaims({ event_name: "workflow_dispatch", job_workflow_ref: ref("claudinite-ci") })), 403, "workflow-not-pinned");
+  });
+
   it("refuses a repo whose default branch the sync Worker has not read yet, rather than guessing", async () => {
     await seedRepo({ default_branch: null });
     await refusedWith(await issuer.sign(actionsClaims()), 403, "repo-not-synced");
@@ -90,11 +100,11 @@ describe("POST /v1/actions-key", () => {
     const token = async () => issuer.sign(actionsClaims({ repository_visibility: "private" }));
     const grace = (await (await ask(await token())).json()) as Record<string, unknown>;
     expect(grace).toMatchObject({ plan: "personal", state: "grace", notice: "overused" });
-    expect(await verified(grace.key as string)).toMatchObject({ typ: "actions", state: "grace", seats: { paid: 5, counted: 7, headroom: 1 } });
+    expect(await verified(grace.key as string)).toMatchObject({ typ: "actions", state: "grace", seats: { paid: 5, counted: 7, headroom: 1 }, notice: "overused" });
     await env().DB.prepare("UPDATE overuse SET grace_started_at = ?").bind(nowS() - 8 * DAY).run();
     const degraded = (await (await ask(await token())).json()) as Record<string, unknown>;
     expect(degraded).toMatchObject({ state: "degraded", notice: "seat-refused" });
-    expect((await verified(degraded.key as string)).features).toEqual([]);
+    expect(await verified(degraded.key as string)).toMatchObject({ features: [], notice: "seat-refused" });
     expect(world.sent).toEqual([]);
     expect(world.points.map((p) => p.blobs?.[1])).toEqual(["issued-grace", "issued-degraded"]);
   });

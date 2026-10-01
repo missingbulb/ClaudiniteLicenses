@@ -2,6 +2,7 @@ import { createExecutionContext, env as testEnv } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { b64urlDecode, verifyKey, FEATURES } from "../../../packages/signing/src/index.ts";
 import worker, { type Env } from "../src/index.ts";
+import indexSource from "../src/index.ts?raw";
 
 const HEAD = "0123456789abcdef0123456789abcdef01234567";
 const NONCE = "acme-nonce-0123456789abcdef";
@@ -82,6 +83,7 @@ describe("public key webhook", () => {
     const p = verdict.payload;
     expect(p).toMatchObject({ typ: "session", plan: "public", state: "ok", user_id: 3003, nonce: NONCE, repo_id: 1001, owner_id: 2002, owner_type: "User", owner_login: "acme-user" });
     expect(p.exp - p.iat).toBe(7 * 86400);
+    expect(p.notice).toBeNull();
     expect([...p.features].sort()).toEqual(FEATURES.filter((f) => f !== "fleet").sort());
     expect(points).toEqual([{ indexes: ["1001"], blobs: ["public", "issued", "User", "1.1.0", "web"], doubles: [1] }]);
   });
@@ -116,7 +118,9 @@ describe("public key webhook", () => {
     expect(res.status).toBe(201);
     const run = calls[1]!.body as { output: Record<string, string> };
     expect(run.output.title).toBe("Claudinite key refused");
-    expect(run.output.summary).toMatch(/private/);
+    expect(run.output.summary).toBe("refused-private: this repo is private; the Public plan covers public repos only");
+    expect(run.output.summary).toMatch(/^refused-private: /);
+    expect(indexSource).toMatch(/import \{[^}]*\brefusalSummary\b[^}]*\} from "..\/..\/..\/packages\/github-app\/src\/index\.ts"/);
     expect(run.output).not.toHaveProperty("text");
     expect(points.map((p) => p.blobs?.[1])).toEqual(["refused-private"]);
   });
@@ -167,7 +171,7 @@ describe("health", () => {
   it("names the issuing key, its certificate's expiry and days left without calling GitHub", async () => {
     const body = certBody();
     const days = Math.floor((Date.parse(body.notAfter) - Date.now()) / 86_400_000);
-    expect(await health()).toEqual({ status: 200, body: { ok: true, kid: body.keyId, cert_exp: body.notAfter, cert_days_left: days, alerts: [] } });
+    expect(await health()).toEqual({ status: 200, body: { ok: true, kid: body.keyId, cert_exp: body.notAfter, cert_days_left: days, version: (testEnv as unknown as { CF_VERSION_METADATA: { id: string } }).CF_VERSION_METADATA.id, alerts: [] } });
     expect(calls).toHaveLength(0);
   });
 

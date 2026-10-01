@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { refusalSummary } from "../../../packages/github-app/src/index.ts";
 import { FEATURES } from "../../../packages/signing/src/index.ts";
+import { REFUSAL_TEXT } from "../src/plan.ts";
+import webSource from "../src/web.ts?raw";
 import { call, certKeyId, certUse, CHECKOUT_URL, DAY, env, freshDatabase, HEAD, NONCE, nowS, POLAR, resetWorld, seedRepo, sentMessages, verified, world } from "./helpers.ts";
 
 function dispatch(over: Record<string, unknown> = {}) {
@@ -44,7 +47,7 @@ describe("web path", () => {
     expect(p.exp - p.iat).toBe(7 * 86400);
     expect([...p.features].sort()).toEqual(FEATURES.filter((f) => f !== "fleet").sort());
     expect(world.points).toEqual([{ indexes: ["1001"], blobs: ["public", "issued-ok", "User", "1.1.0", "web"], doubles: [1] }]);
-    expect(p).toMatchObject({ seats: null, checkout_url: null, portal_url: null });
+    expect(p).toMatchObject({ seats: null, checkout_url: null, portal_url: null, notice: null });
     expect(world.calls.filter((c) => c.url.startsWith(POLAR))).toEqual([]);
     expect(world.sent).toEqual([]);
   });
@@ -59,7 +62,8 @@ describe("web path", () => {
     expect(run.output.title).toBe("Claudinite key");
     expect(run.output.summary).toMatch(/^private-repo key for @acme-dev \(sender type User\), state grace, overused, issued \d{4}-/);
     const p = await verified(run.output.text!);
-    expect(p).toMatchObject({ plan: "private-repo", state: "grace", seats: { paid: 0, counted: 1, headroom: 0 }, checkout_url: CHECKOUT_URL, portal_url: null });
+    expect(p).toMatchObject({ plan: "private-repo", state: "grace", seats: { paid: 0, counted: 1, headroom: 0 }, checkout_url: CHECKOUT_URL, portal_url: null, notice: "overused" });
+    expect(run.output.summary).toContain(`, ${p.notice},`);
     expect(p.grace_until! - nowS()).toBeGreaterThan(7 * DAY - 10);
     const checkout = JSON.parse(world.calls.find((c) => c.url === `${POLAR}/v1/checkouts/`)!.body);
     expect(checkout).toMatchObject({ external_customer_id: "2002", metadata: { claudinite_plan: "private-repo", github_repo_id: "1001", github_repo_full_name: "acme-user/acme-repo" } });
@@ -112,6 +116,19 @@ describe("web path", () => {
     expect(world.calls.filter((c) => c.url.startsWith(POLAR))).toEqual([]);
     expect([...p.features].sort()).toEqual([...FEATURES].sort());
     expect(run.output.summary).toMatch(/unverified/);
+  });
+
+  it("writes a refusal summary the binary cuts at its first colon, through the one shared spelling", async () => {
+    const res = await post(dispatch(), env({ brokenDb: true, FAIL_OPEN: "false" }));
+    expect(res.status).toBe(201);
+    const run = checkRun();
+    expect(run.output.title).toBe("Claudinite key refused");
+    expect(run.output.summary).toBe(`server-error: ${REFUSAL_TEXT["server-error"]}`);
+    expect(run.output.summary).toMatch(/^server-error: [^:]+$/);
+    // app-not-installed cannot reach the web path, whose webhook proves the installation; it still composes.
+    for (const [reason, text] of Object.entries(REFUSAL_TEXT)) expect(refusalSummary(reason, text)).toMatch(new RegExp(`^${reason}: [^:]+$`));
+    expect(webSource).toMatch(/import \{[^}]*\brefusalSummary\b[^}]*\} from "..\/..\/..\/packages\/github-app\/src\/index\.ts"/);
+    expect(webSource).not.toMatch(/`\$\{plan\.refused\}: /);
   });
 
   it("refuses a Bot sender with 403 and no GitHub call", async () => {

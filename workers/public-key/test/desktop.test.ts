@@ -45,6 +45,7 @@ describe("POST /v1/public/session-key", () => {
     if (!v.ok) return;
     expect(v.payload).toMatchObject({ typ: "session", plan: "public", user_id: 3003, nonce: NONCE, repo_id: 1001, owner_id: 2002 });
     expect(v.payload.exp - v.payload.iat).toBe(7 * 86400);
+    expect(v.payload.notice).toBeNull();
     expect([...v.payload.features].sort()).toEqual(FEATURES.filter((f) => f !== "fleet").sort());
     const cert = JSON.parse(new TextDecoder().decode(b64urlDecode(JSON.parse(out.key).certificate.payload)));
     expect(cert.use).toBe("license-public");

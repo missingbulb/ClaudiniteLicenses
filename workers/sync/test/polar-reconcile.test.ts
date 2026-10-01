@@ -131,6 +131,7 @@ describe("GET /v1/sync/health", () => {
       last_dead_letter_at: null,
       paying_uncovered: null,
       polar_webhook_secret: true,
+      version: (env as unknown as { CF_VERSION_METADATA: { id: string } }).CF_VERSION_METADATA.id,
     });
     const { POLAR_WEBHOOK_SECRET: _unset, ...noSecret } = env;
     expect(await (await fetchPath("/v1/sync/health", undefined, noSecret)).json()).toMatchObject({ polar_webhook_secret: false });

@@ -6,26 +6,41 @@
 // fails. With --issue it keeps one standing issue, titled and labelled below: a failing run opens
 // it or comments on the open one, a passing run closes it. The schedule and the deploy both run it.
 //
+// Every check reports the version that answered it, read from the Worker's version header. With
+// --expect-version, a check answered by a named Worker is pinned to that version id: the deploy's
+// canary probe judges a new version while it serves one tenth of requests. A pinned request carries
+// Cloudflare's version-affinity header, `Cloudflare-Workers-Version-Key`, whose value the platform
+// hashes against the deployment's percentages so one key always lands on one version
+// (developers.cloudflare.com/workers/versions-and-deployments/gradual-deployments/version-affinity/,
+// read 2026-10-01); the probe walks keys canary-1, canary-2, ... until the answer names the id.
+//
 //   node tools/probe.mjs --base <url> [--oidc-token-env NAME] [--issue --repo owner/name --token-env GITHUB_TOKEN] [--json <path>] [--attempts N]
+//                        [--expect-version <worker>=<id>[,<worker>=<id>...]]
 import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
+import { VERSION_HEADER } from "../packages/version/src/index.ts";
 
 export const ISSUE_TITLE = "License server probe";
 export const ISSUE_LABEL = "probe";
 const TIMEOUT_MS = 20_000;
 const RETRY_DELAY_MS = 5_000;
+export const AFFINITY_HEADER = "Cloudflare-Workers-Version-Key";
+/** One key in ten lands on a 10% version, so missing it in this many keys is a 0.2% event. */
+export const VERSION_KEYS = 60;
+export const WORKERS = ["public-key", "key", "sync", "router"];
 
 /**
- * @typedef {{ status: number | null, body: any, text: string, error?: string, latency_ms: number }} Answer
- * @typedef {{ name: string, ok: boolean, status: number | null, latency_ms: number, alerts?: { id: string, since?: number | null, detail?: string | null }[], detail?: string }} Check
+ * @typedef {{ status: number | null, body: any, text: string, version: string | null, error?: string, latency_ms: number }} Answer
+ * @typedef {{ name: string, ok: boolean, status: number | null, version: string | null, latency_ms: number, alerts?: { id: string, since?: number | null, detail?: string | null }[], detail?: string }} Check
+ * @typedef {(extra?: Record<string, string>) => Promise<Answer>} Request
  */
 
-/** @param {string} url @param {RequestInit} [init] @returns {Promise<Answer>} */
-async function ask(url, init = {}) {
+/** @param {string} url @param {RequestInit & { headers?: Record<string, string> }} [init] @param {Record<string, string>} [extra] @returns {Promise<Answer>} */
+async function ask(url, init = {}, extra = {}) {
   const started = performance.now();
   try {
-    const res = await fetch(url, { ...init, signal: AbortSignal.timeout(TIMEOUT_MS) });
+    const res = await fetch(url, { ...init, headers: { ...init.headers, ...extra }, signal: AbortSignal.timeout(TIMEOUT_MS) });
     const text = await res.text();
     let body = null;
     try {
@@ -33,24 +48,25 @@ async function ask(url, init = {}) {
     } catch {
       // A plain-text answer, such as the router's refusal.
     }
-    return { status: res.status, body, text, latency_ms: Math.round(performance.now() - started) };
+    return { status: res.status, body, text, version: res.headers.get(VERSION_HEADER), latency_ms: Math.round(performance.now() - started) };
   } catch (err) {
-    return { status: null, body: null, text: "", error: String(err instanceof Error && err.cause ? err.cause : err), latency_ms: Math.round(performance.now() - started) };
+    return { status: null, body: null, text: "", version: null, error: String(err instanceof Error && err.cause ? err.cause : err), latency_ms: Math.round(performance.now() - started) };
   }
 }
 
 /**
  * The checks in order, each a request and what its answer must be.
  * @param {string} base @param {string | null} oidc
- * @returns {{ name: string, request: () => Promise<Answer>, judge: (a: Answer) => string | null }[]}
+ * @returns {{ name: string, worker: string, request: Request, judge: (a: Answer) => string | null }[]}
  */
 function checks(base, oidc) {
   const status = (/** @type {number} */ want) => (/** @type {Answer} */ a) => (a.status === want ? null : `want ${want}`);
   const list = [
-    { name: "public-health", request: () => ask(`${base}/v1/public/health`), judge: status(200) },
+    { name: "public-health", worker: "public-key", request: (extra) => ask(`${base}/v1/public/health`, {}, extra), judge: status(200) },
     {
       name: "key-health",
-      request: () => ask(`${base}/v1/key/health`),
+      worker: "key",
+      request: (extra) => ask(`${base}/v1/key/health`, {}, extra),
       judge: (/** @type {Answer} */ a) => {
         if (a.status !== 200) return "want 200";
         const b = a.body ?? {};
@@ -60,22 +76,28 @@ function checks(base, oidc) {
         return wrong.length ? wrong.join("; ") : null;
       },
     },
-    { name: "sync-health", request: () => ask(`${base}/v1/sync/health`), judge: status(200) },
-    { name: "sync-alerts", request: () => ask(`${base}/v1/sync/alerts`), judge: status(200) },
+    { name: "sync-health", worker: "sync", request: (extra) => ask(`${base}/v1/sync/health`, {}, extra), judge: status(200) },
+    { name: "sync-alerts", worker: "sync", request: (extra) => ask(`${base}/v1/sync/alerts`, {}, extra), judge: status(200) },
     {
       name: "router-signature",
-      request: () => ask(`${base}/github-webhook`, { method: "POST", headers: { "Content-Type": "application/json", "X-GitHub-Event": "ping" }, body: "{}" }),
+      worker: "router",
+      request: (extra) => ask(`${base}/github-webhook`, { method: "POST", headers: { "Content-Type": "application/json", "X-GitHub-Event": "ping" }, body: "{}" }, extra),
       judge: status(401),
     },
     {
       // The key Worker asks GitHub who `probe` is and GitHub refuses: the desktop path's upstream answers.
       name: "session-key-upstream",
-      request: () =>
-        ask(`${base}/v1/session-key`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: "Bearer probe" },
-          body: JSON.stringify({ repo: "missingbulb/probe", nonce: randomBytes(16).toString("hex"), engine_version: "probe" }),
-        }),
+      worker: "key",
+      request: (extra) =>
+        ask(
+          `${base}/v1/session-key`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: "Bearer probe" },
+            body: JSON.stringify({ repo: "missingbulb/probe", nonce: randomBytes(16).toString("hex"), engine_version: "probe" }),
+          },
+          extra,
+        ),
       judge: (/** @type {Answer} */ a) => (a.status === 401 && a.body?.refused === "token-invalid" ? null : "want 401 token-invalid"),
     },
   ];
@@ -83,8 +105,9 @@ function checks(base, oidc) {
     list.push({
       // A real token through the JWKS fetch, the verifier and the repos read; the pin refuses it.
       name: "actions-key-oidc",
-      request: () =>
-        ask(`${base}/v1/actions-key`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${oidc}` }, body: JSON.stringify({ engine_version: "probe" }) }),
+      worker: "key",
+      request: (extra) =>
+        ask(`${base}/v1/actions-key`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${oidc}` }, body: JSON.stringify({ engine_version: "probe" }) }, extra),
       judge: (/** @type {Answer} */ a) => (a.status === 403 && a.body?.refused === "workflow-not-pinned" ? null : "want 403 workflow-not-pinned"),
     });
   }
@@ -92,24 +115,65 @@ function checks(base, oidc) {
 }
 
 /**
- * Runs every check, retrying a failing one up to `attempts` times in all.
- * @param {{ base: string, oidc?: string | null, attempts?: number, retryDelayMs?: number }} opts
+ * Parses `<worker>=<id>[,<worker>=<id>...]`, each Worker named once and answering some check.
+ * @param {string} spec @returns {Record<string, string>}
+ */
+export function parseExpectVersion(spec) {
+  /** @type {Record<string, string>} */
+  const out = {};
+  for (const part of spec.split(",")) {
+    const m = /^([a-z-]+)=(\S+)$/.exec(part.trim());
+    if (!m) throw new Error(`--expect-version: ${JSON.stringify(part)} is not <worker>=<id>`);
+    if (!WORKERS.includes(m[1])) throw new Error(`--expect-version: no check is answered by ${m[1]} (want one of ${WORKERS.join(", ")})`);
+    if (m[1] in out) throw new Error(`--expect-version: ${m[1]} is named twice`);
+    out[m[1]] = m[2];
+  }
+  return out;
+}
+
+/**
+ * One answer from `id`: the request sent with version keys canary-1, canary-2, ... until the answer
+ * names it, or the last answer and why when no key in the budget reached it.
+ * @param {Request} request @param {string} id @returns {Promise<{ answer: Answer, wrong: string | null }>}
+ */
+async function reachVersion(request, id) {
+  /** @type {Answer} */
+  let answer = { status: null, body: null, text: "", version: null, latency_ms: 0 };
+  for (let k = 1; k <= VERSION_KEYS; k++) {
+    answer = await request({ [AFFINITY_HEADER]: `canary-${k}` });
+    if (answer.version === id) return { answer, wrong: null };
+  }
+  return { answer, wrong: `version ${id} not reached in ${VERSION_KEYS} keys` };
+}
+
+/**
+ * Runs every check, retrying a failing one up to `attempts` times in all. A check whose Worker has
+ * an id in `expect` is judged on that version's answer only.
+ * @param {{ base: string, oidc?: string | null, attempts?: number, retryDelayMs?: number, expect?: Record<string, string> }} opts
  * @returns {Promise<{ base: string, checked_at: string, ok: boolean, checks: Check[] }>}
  */
-export async function runProbe({ base, oidc = null, attempts = 1, retryDelayMs = RETRY_DELAY_MS }) {
+export async function runProbe({ base, oidc = null, attempts = 1, retryDelayMs = RETRY_DELAY_MS, expect = {} }) {
   /** @type {Check[]} */
   const results = [];
   for (const c of checks(base.replace(/\/$/, ""), oidc)) {
+    const pin = expect[c.worker] ?? null;
     let a;
     let wrong;
     for (let i = 1; ; i++) {
-      a = await c.request();
-      wrong = a.error ? a.error : c.judge(a);
+      if (pin) {
+        const reached = await reachVersion(c.request, pin);
+        a = reached.answer;
+        wrong = reached.wrong ?? (a.error ? a.error : c.judge(a));
+        if (wrong && !reached.wrong) wrong = `version ${pin}: ${wrong}`;
+      } else {
+        a = await c.request();
+        wrong = a.error ? a.error : c.judge(a);
+      }
       if (!wrong || i >= attempts) break;
       await new Promise((ok) => setTimeout(ok, retryDelayMs));
     }
     /** @type {Check} */
-    const check = { name: c.name, ok: !wrong, status: a.status, latency_ms: a.latency_ms };
+    const check = { name: c.name, ok: !wrong, status: a.status, version: a.version, latency_ms: a.latency_ms };
     if (Array.isArray(a.body?.alerts) && a.body.alerts.length > 0) check.alerts = a.body.alerts;
     if (wrong) check.detail = `${wrong}; got ${a.status ?? "no answer"} ${a.text.slice(0, 200)}`.trim();
     results.push(check);
@@ -119,7 +183,7 @@ export async function runProbe({ base, oidc = null, attempts = 1, retryDelayMs =
 
 /** @param {Check} c */
 function lines(c) {
-  const head = `${c.ok ? "ok" : "FAIL"} ${c.name} ${c.status ?? "-"} ${c.latency_ms} ms${c.detail ? `: ${c.detail}` : ""}`;
+  const head = `${c.ok ? "ok" : "FAIL"} ${c.name} ${c.status ?? "-"} ${c.latency_ms} ms${c.version ? ` ${c.version}` : ""}${c.detail ? `: ${c.detail}` : ""}`;
   return [head, ...(c.alerts ?? []).map((a) => `  alert ${typeof a === "string" ? a : `${a.id}${a.detail ? `: ${a.detail}` : ""}`}`)];
 }
 
@@ -175,9 +239,21 @@ if (import.meta.filename === process.argv[1]) {
       "token-env": { type: "string" },
       json: { type: "string" },
       attempts: { type: "string" },
+      "expect-version": { type: "string" },
     },
   });
-  if (!values.base) {
+  /** @type {Record<string, string>} */
+  let expect = {};
+  let badPin = null;
+  try {
+    if (values["expect-version"] !== undefined) expect = parseExpectVersion(values["expect-version"]);
+  } catch (err) {
+    badPin = err instanceof Error ? err.message : String(err);
+  }
+  if (badPin) {
+    console.error(`probe: ${badPin}`);
+    process.exitCode = 2;
+  } else if (!values.base) {
     console.error("probe: --base is required");
     process.exitCode = 2;
   } else if (values.issue && !values.repo) {
@@ -187,7 +263,7 @@ if (import.meta.filename === process.argv[1]) {
     const oidcName = values["oidc-token-env"];
     const oidc = oidcName ? process.env[oidcName] || null : null;
     if (oidcName && !oidc) console.log(`probe: ${oidcName} is empty, so the Actions check is skipped`);
-    const summary = await runProbe({ base: values.base, oidc, attempts: Number(values.attempts ?? 1) });
+    const summary = await runProbe({ base: values.base, oidc, attempts: Number(values.attempts ?? 1), expect });
     for (const c of summary.checks) for (const l of lines(c)) console.log(l);
     console.log(JSON.stringify(summary));
     if (values.json) writeFileSync(values.json, JSON.stringify(summary, null, 2) + "\n");

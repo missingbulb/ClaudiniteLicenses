@@ -22,6 +22,7 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { ensureWebhookEndpoint, polarClient, POLAR_VERSION, WEBHOOK_EVENTS } from "../packages/polar/src/index.ts";
 import { verifyKey } from "../packages/signing/src/index.ts";
+import { VERSION_HEADER } from "../packages/version/src/index.ts";
 import { DEFAULT_WORLD, startStub } from "./github-stub.mjs";
 import { devChain, formatDevVars, parseDevVars } from "./keys.mjs";
 import { desiredProducts, readPlans } from "./polar-products.mjs";
@@ -133,7 +134,7 @@ async function call(path, init) {
   } catch {
     json = undefined;
   }
-  return { status: res.status, text, json };
+  return { status: res.status, text, json, version: res.headers.get(VERSION_HEADER) };
 }
 
 /**
@@ -150,7 +151,7 @@ async function verified(label, key, use, started, want = {}) {
     const ok = v instanceof RegExp ? typeof got === "string" && v.test(got) : JSON.stringify(got) === JSON.stringify(v);
     if (!ok) return fail(`${label}: ${k} is ${JSON.stringify(got)}, want ${v instanceof RegExp ? v : JSON.stringify(v)}`);
   }
-  const extra = [p.state !== "ok" || p.seats ? `state ${p.state}` : "", p.seats ? `seats ${p.seats.counted}/${p.seats.paid}+${p.seats.headroom}` : "", p.checkout_url ? "checkout link" : "", p.portal_url ? "portal link" : "", p.issue ? `issue ${p.issue}` : ""].filter(Boolean);
+  const extra = [p.state !== "ok" || p.seats ? `state ${p.state}` : "", `notice ${JSON.stringify(p.notice ?? null)}`, p.seats ? `seats ${p.seats.counted}/${p.seats.paid}+${p.seats.headroom}` : "", p.checkout_url ? "checkout link" : "", p.portal_url ? "portal link" : "", p.issue ? `issue ${p.issue}` : ""].filter(Boolean);
   console.log(`${label}: ${p.typ} key verified in ${Math.round(performance.now() - started)} ms, plan ${p.plan}, ${use} key ${p.kid}, repo ${p.repo_id}${"user_id" in p ? `, user ${p.user_id}` : ""}${extra.length ? `, ${extra.join(", ")}` : ""}`);
   return p;
 }
@@ -256,7 +257,35 @@ for (const [action, use] of /** @type {const} */ ([["claudinite-key", "license"]
     if (Date.now() > deadline) await fail(`${action}: no check run carries the nonce`);
     await sleep(50);
   }
-  await verified(`web ${action}`, run?.output?.text ?? "", use, started);
+  await verified(`web ${action}`, run?.output?.text ?? "", use, started, { notice: null });
+}
+
+// The public Worker refuses a private repo with a summary the binary cuts at its first colon.
+{
+  const nonce = randomBytes(16).toString("hex");
+  const delivered = await webhook("repository_dispatch", {
+    action: "claudinite-key-public",
+    repository: { id: PRIVATE.id, name: PRIVATE.name, full_name: PRIVATE.full_name, private: true, owner: inst.account },
+    installation: { id: inst.id },
+    sender: { id: user.id, login: user.login, type: "User" },
+    client_payload: { nonce, engine_version: "local-roundtrip", head: HEAD },
+  });
+  if (delivered.status !== 201) await fail(`claudinite-key-public on the private repo: the router answered ${delivered.status}: ${delivered.text}`);
+  let run;
+  while (!(run = (stub.state.checkRuns[HEAD] ?? []).find((r) => r.external_id === nonce))) {
+    if (Date.now() > deadline) await fail("claudinite-key-public on the private repo: no check run carries the nonce");
+    await sleep(50);
+  }
+  if (run?.output?.title !== "Claudinite key refused" || !/^refused-private: [^:]+$/.test(run?.output?.summary ?? "") || run?.output?.text) await fail(`the public refusal: ${JSON.stringify(run?.output)}`);
+  console.log(`web claudinite-key-public, private repo: ${run.output.title}, summary "${run.output.summary}"`);
+}
+
+// Every Worker names its version on every answer, and each health body the same id.
+for (const [worker, path, init] of /** @type {const} */ ([["public-key", "/v1/public/health", undefined], ["key", "/v1/key/health", undefined], ["sync", "/v1/sync/health", undefined], ["router", "/github-webhook", { method: "POST", body: "{}" }]])) {
+  const res = await call(path, init);
+  if (!res.version) await fail(`${worker}: ${path} answered ${res.status} without ${VERSION_HEADER}`);
+  if (res.json && "version" in res.json && res.json.version !== res.version) await fail(`${worker}: ${path} names version ${res.json.version} in its body and ${res.version} in its header`);
+  console.log(`version: ${worker} ${path} ${res.status}, ${VERSION_HEADER} ${res.version}`);
 }
 
 // The desktop path, both Workers: the App user token and the repo, read from GitHub as the caller.
@@ -295,7 +324,7 @@ const [[tokenA], [tokenB], [tokenC], [tokenD]] = SEAT_USERS;
 const checkoutLink = new RegExp(`^${polar.linkOrigin}/checkout/`);
 
 // No plan: a Private repo key in grace, with the checkout link, and the grace clock started.
-await desktopKey("private repo, no plan, user A", tokenA, PRIVATE.id, { plan: "private-repo", state: "grace", seats: { paid: 0, counted: 1, headroom: 0 }, checkout_url: checkoutLink, portal_url: null });
+await desktopKey("private repo, no plan, user A", tokenA, PRIVATE.id, { plan: "private-repo", state: "grace", seats: { paid: 0, counted: 1, headroom: 0 }, checkout_url: checkoutLink, portal_url: null, notice: "overused" });
 const graceSeat = await healthUntil("the first seat", (h) => h.seats === 1 && typeof h.last_queue_at === "number");
 console.log(`queue: seats ${graceSeat.seats}, last_queue_at ${graceSeat.last_queue_at}, queue_lag_s ${graceSeat.queue_lag_s}`);
 
@@ -308,7 +337,7 @@ console.log(`polar webhook: subscription.created written, subscriptions ${subscr
 
 // Two users within the 2 paid seats: ok, and A's key asks for the grace clock to be cleared.
 // Each key waits for the one before it to be consumed, since a seat counts once the queue writes it.
-await desktopKey("personal, user A", tokenA, PRIVATE.id, { plan: "personal", state: "ok", seats: { paid: 2, counted: 1, headroom: 1 } });
+await desktopKey("personal, user A", tokenA, PRIVATE.id, { plan: "personal", state: "ok", seats: { paid: 2, counted: 1, headroom: 1 }, notice: null });
 await healthUntil("the seat for A under the owner", (h) => h.seats === 2);
 await desktopKey("personal, user B", tokenB, PRIVATE.id, { plan: "personal", state: "ok", seats: { paid: 2, counted: 2, headroom: 1 } });
 const seated = await healthUntil("the seat for B", (h) => h.seats === 3);
@@ -320,18 +349,18 @@ await healthUntil("the seat for C", (h) => h.seats === 4);
 
 // The fourth is beyond it. The grace started without a plan was spent less than 30 days ago, so no
 // new grace starts: the seated keep their seats and D is refused one.
-await desktopKey("personal, user D", tokenD, PRIVATE.id, { plan: "personal", state: "degraded", features: [], seats: { paid: 2, counted: 4, headroom: 1 } });
+await desktopKey("personal, user D", tokenD, PRIVATE.id, { plan: "personal", state: "degraded", features: [], seats: { paid: 2, counted: 4, headroom: 1 }, notice: "seat-refused" });
 await healthUntil("the seat for D", (h) => h.seats === 5);
 
 // The Actions key takes its licensee's state; an item grant carries it with the work item's issue.
 const actionsStarted = performance.now();
 const actions = await call("/v1/actions-key", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${oidcFor(PRIVATE)}` }, body: JSON.stringify({ engine_version: "local-roundtrip" }) });
 if (actions.status !== 200 || typeof actions.json?.key !== "string") await fail(`/v1/actions-key for the private repo answered ${actions.status}: ${actions.text}`);
-await verified("actions, private repo", actions.json.key, "license", actionsStarted, { typ: "actions", plan: "personal", state: "degraded" });
+await verified("actions, private repo", actions.json.key, "license", actionsStarted, { typ: "actions", plan: "personal", state: "degraded", notice: "seat-refused" });
 const grantStarted = performance.now();
 const granted = await call("/v1/item-grant", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${actions.json.key}` }, body: JSON.stringify({ issue: 42 }) });
 if (granted.status !== 200 || typeof granted.json?.grant !== "string") await fail(`/v1/item-grant answered ${granted.status}: ${granted.text}`);
-await verified("item grant", granted.json.grant, "license", grantStarted, { typ: "grant", issue: 42, plan: "personal", state: "degraded" });
+await verified("item grant", granted.json.grant, "license", grantStarted, { typ: "grant", issue: 42, plan: "personal", state: "degraded", notice: "seat-refused" });
 
 // The Polar reconcile, with the admin token.
 const beforePolar = (await call("/v1/sync/health")).json;
@@ -447,7 +476,7 @@ console.log("coverage: the repos returned, paying_uncovered 0, alerts 200");
 
 // The outside probe, as the schedule runs it, against the local set: no issue, no OIDC token.
 const probed = await new Promise((ok) => {
-  const child = spawn(process.execPath, ["tools/probe.mjs", "--base", origin], { cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, ["tools/probe.mjs", "--base", origin, "--json", join(SCRATCH, "probe.json")], { cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"] });
   let out = "";
   child.stdout.on("data", (c) => (out += c));
   child.stderr.on("data", (c) => (out += c));
@@ -455,6 +484,9 @@ const probed = await new Promise((ok) => {
 });
 const { code: probeCode, out: probeOut } = /** @type {{ code: number | null, out: string }} */ (probed);
 if (probeCode !== 0) await fail(`the outside probe exited ${probeCode}:\n${probeOut}`);
-console.log(`probe: exit 0, ${probeOut.split("\n").filter((l) => l.startsWith("ok ")).length} checks passed`);
+const probeChecks = /** @type {{ name: string, version: string | null }[]} */ (JSON.parse(readFileSync(join(SCRATCH, "probe.json"), "utf8")).checks);
+const unversioned = probeChecks.filter((c) => !c.version).map((c) => c.name);
+if (unversioned.length) await fail(`the outside probe read no version on ${unversioned.join(", ")}`);
+console.log(`probe: exit 0, ${probeOut.split("\n").filter((l) => l.startsWith("ok ")).length} checks passed, each naming the version that answered (${[...new Set(probeChecks.map((c) => c.version))].length} versions)`);
 
 await shutdown();

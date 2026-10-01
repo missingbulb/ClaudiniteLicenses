@@ -78,7 +78,13 @@ export interface KeyPayload {
   portal_url?: string | null;
   /** Grant keys only: the work item's issue number. */
   issue?: number;
+  /** Absent or null, or a notice name; NOTICES are the names with a meaning, any other is carried and ignored. */
+  notice?: string | null;
 }
+
+/** The notice names a key may carry with a meaning; a verifier carries any other name and ignores it. */
+export const NOTICES = ["over-within-headroom", "overused", "seat-refused"] as const;
+export type Notice = (typeof NOTICES)[number];
 
 export interface LicenseKey {
   certificate: Certificate;
@@ -330,6 +336,10 @@ function isIssue(v: unknown): boolean {
   return v === undefined || v === null || (typeof v === "number" && Number.isSafeInteger(v) && v > 0);
 }
 
+function isNotice(v: unknown): boolean {
+  return v === undefined || v === null || (typeof v === "string" && v.length > 0);
+}
+
 /** The features a key turns on: its names from FEATURES, in the key's order; an unknown name turns nothing on. */
 export function knownFeatures(payload: Pick<KeyPayload, "features">): Feature[] {
   return payload.features.filter((f): f is Feature => (FEATURES as readonly string[]).includes(f));
@@ -342,7 +352,7 @@ function useSignsPlan(use: Use, plan: Plan): boolean {
 /**
  * Verifies a key's wire form, checking in order: shape (v, typ, plan and state from their closed
  * sets, features as distinct non-empty names, the five release fields' types, and, when present and
- * not null, seats, the two https links and a positive integer issue; a feature name,
+ * not null, seats, the two https links, a positive integer issue and a non-empty notice; a feature name,
  * release field or payload field it does not know is ignored), the certificate against `roots` and its
  * window, `kid` against the certificate, the key signature, the key's iat (less IAT_LEEWAY_S) and exp, and the purpose
  * (a `license` certificate signs any plan, a `license-public` certificate only the `public` plan).
@@ -371,7 +381,8 @@ export async function verifyKey(key: string, opts: { roots: string[]; now: Date 
     !isSeats(p.seats) ||
     !isLink(p.checkout_url) ||
     !isLink(p.portal_url) ||
-    !isIssue(p.issue)
+    !isIssue(p.issue) ||
+    !isNotice(p.notice)
   ) {
     return { ok: false, reason: "shape" };
   }
