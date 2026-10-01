@@ -49,6 +49,12 @@ read-back rolls every staged Worker back to the version that was live when the r
 ends either with the new versions passing from outside or with the previous ones live and the run
 red.
 
+The account gets a real percentage split: the first staged deploy (run 36927209537) served each new
+version at 10% beside the live one at 90%, never `stage.mjs split`'s 100% fallback, and the canary
+reached all three new versions before promotion. The sync Worker deploys at 100%; its cron and
+queue `version` lines are in its Cloudflare logs, not the job log, and whether it can join the
+split is still open (`workers/sync/README.md`).
+
 The run summary carries the restore point as the exact dispatch that returns D1 to it, inside the
 Time Travel window of 7 days on Workers Free or 30 on Workers Paid:
 
