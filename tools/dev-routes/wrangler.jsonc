@@ -1,0 +1,17 @@
+{
+  // Local only, never deployed: wrangler dev serves only the first Worker of a multi-config session
+  // and emulates no zone routes, so this one takes the port and hands each request to the Worker
+  // whose route matches. tools/local-roundtrip.mjs writes the route table into .dev.vars from the
+  // Workers' own wrangler.jsonc files.
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "claudinite-dev-routes",
+  "main": "index.mjs",
+  "compatibility_date": "2026-08-15",
+  "workers_dev": false,
+  "services": [
+    { "binding": "CLAUDINITE_ROUTER", "service": "claudinite-router" },
+    { "binding": "CLAUDINITE_PUBLIC_KEY", "service": "claudinite-public-key" },
+    { "binding": "CLAUDINITE_KEY", "service": "claudinite-key" },
+    { "binding": "CLAUDINITE_SYNC", "service": "claudinite-sync" }
+  ]
+}

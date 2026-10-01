@@ -1,10 +1,13 @@
 #!/usr/bin/env node
 // A local stand-in for the GitHub API calls the license tools and Workers make: installation
 // tokens, check runs (recorded on create, served back on the commit's check-runs listing), the
-// App's webhook config, and, for the spike client, a repo, its default-branch commit and
-// dispatches that a scripted responder answers with a check run after a delay.
+// App's webhook config, the App's installations and their repos, the caller read with a user
+// token, an Actions OIDC issuer (its JWKS, and tokens it signs), and, for the spike client, a
+// repo, its default-branch commit and dispatches that a scripted responder answers with a check
+// run after a delay.
 //
 //   node tools/github-stub.mjs --port <n>
+import { createSign, generateKeyPairSync, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import { parseArgs } from "node:util";
 
@@ -18,14 +21,44 @@ import { parseArgs } from "node:util";
  *   checkRunBody?: string,
  *   headSha?: string,
  *   defaultBranch?: string,
+ *   world?: World,
  * }} StubOptions
+ * @typedef {{ id: number, name: string, full_name: string, private: boolean, default_branch: string }} WorldRepo
+ * @typedef {{ id: number, account: { id: number, login: string, type: string }, repos: WorldRepo[] }} WorldInstallation
+ * @typedef {{ installations: WorldInstallation[], users: Record<string, { id: number, login: string, type: string }> }} World
  */
+
+/** One installation on a user account holding one public repo, and one user token that can push to it. @type {World} */
+export const DEFAULT_WORLD = {
+  installations: [
+    {
+      id: 5005,
+      account: { id: 2002, login: "acme-user", type: "User" },
+      repos: [{ id: 1001, name: "acme-repo", full_name: "acme-user/acme-repo", private: false, default_branch: "main" }],
+    },
+  ],
+  users: { ghu_acme_dev: { id: 3003, login: "acme-dev", type: "User" } },
+};
+
+const b64url = (/** @type {Buffer | string} */ v) => Buffer.from(v).toString("base64url");
 
 /**
  * @param {{ port?: number } & StubOptions} [opts]
  */
 export async function startStub(opts = {}) {
   const headSha = opts.headSha ?? "0123456789abcdef0123456789abcdef01234567";
+  const world = opts.world ?? DEFAULT_WORLD;
+  const oidcKid = `stub-${randomBytes(4).toString("hex")}`;
+  const oidc = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const jwk = { ...oidc.publicKey.export({ format: "jwk" }), kid: oidcKid, alg: "RS256", use: "sig" };
+  /** @param {string} full */
+  const repoOf = (full) => {
+    for (const inst of world.installations) {
+      const repo = inst.repos.find((r) => r.full_name.toLowerCase() === full.toLowerCase());
+      if (repo) return { inst, repo };
+    }
+    return null;
+  };
   const state = {
     /** @type {Record<string, CheckRun[]>} */
     checkRuns: {},
@@ -50,6 +83,7 @@ export async function startStub(opts = {}) {
     const body = raw ? JSON.parse(raw) : {};
     const url = new URL(req.url ?? "/", "http://stub");
     const path = url.pathname;
+    const bearer = /^(?:Bearer|token) (\S+)$/.exec(req.headers.authorization ?? "")?.[1] ?? "";
     state.requests.push(`${req.method} ${path}`);
     /** @param {number} status @param {unknown} [data] */
     const send = (status, data) => {
@@ -98,8 +132,27 @@ export async function startStub(opts = {}) {
       return send(204);
     }
     if (req.method === "GET" && (m = /^\/repos\/([^/]+\/[^/]+)$/.exec(path))) {
-      return send(200, { full_name: m[1], default_branch: opts.defaultBranch ?? "main", private: false });
+      const found = repoOf(m[1]);
+      if (!found) return send(200, { full_name: m[1], default_branch: opts.defaultBranch ?? "main", private: false });
+      const { inst, repo } = found;
+      return send(200, { ...repo, visibility: repo.private ? "private" : "public", owner: inst.account, permissions: { push: bearer in world.users, pull: true } });
     }
+    if (req.method === "GET" && path === "/user") {
+      const user = world.users[bearer];
+      return user ? send(200, user) : send(401, { message: "Bad credentials" });
+    }
+    if (req.method === "GET" && path === "/app/installations") {
+      const page = Number(url.searchParams.get("page") ?? "1");
+      return send(200, page === 1 ? world.installations.map((i) => ({ id: i.id, account: i.account })) : []);
+    }
+    if (req.method === "GET" && path === "/installation/repositories") {
+      const inst = world.installations.find((i) => bearer === `ghs_stub_${i.id}`);
+      if (!inst) return send(401, { message: "Bad credentials" });
+      const page = Number(url.searchParams.get("page") ?? "1");
+      const repos = page === 1 ? inst.repos.map((r) => ({ ...r, visibility: r.private ? "private" : "public", owner: inst.account })) : [];
+      return send(200, { total_count: inst.repos.length, repositories: repos });
+    }
+    if (req.method === "GET" && path === "/.well-known/jwks") return send(200, { keys: [jwk] });
     if (path === "/app/hook/config" && req.method === "PATCH") {
       state.hookPatches.push(body);
       Object.assign(state.hookConfig, body);
@@ -112,10 +165,17 @@ export async function startStub(opts = {}) {
   await new Promise((ok) => server.listen(opts.port ?? 0, "127.0.0.1", () => ok(undefined)));
   const address = server.address();
   const port = typeof address === "object" && address ? address.port : 0;
+  const base = `http://127.0.0.1:${port}`;
   return {
     port,
-    base: `http://127.0.0.1:${port}`,
+    base,
     state,
+    world,
+    /** Signs an Actions OIDC token as this stub's issuer, `iss` set to the stub's base unless the claims name one. @param {Record<string, unknown>} claims */
+    signOidcToken(claims) {
+      const input = `${b64url(JSON.stringify({ alg: "RS256", typ: "JWT", kid: oidcKid }))}.${b64url(JSON.stringify({ iss: base, ...claims }))}`;
+      return `${input}.${createSign("RSA-SHA256").update(input).sign(oidc.privateKey).toString("base64url")}`;
+    },
     close: () =>
       new Promise((ok) => {
         for (const t of timers) clearTimeout(t);
