@@ -156,7 +156,7 @@ describe("everything else", () => {
 });
 
 describe("a GitHub error reading the default branch", () => {
-  it("still writes the row with a null default branch and answers 202 so GitHub redelivers", async () => {
+  it("still writes the row with a null default branch and answers 202, leaving the branch to the reconcile", async () => {
     gh.repoReadStatus = 500;
     const res = await deliver("installation_repositories", { action: "added", installation: { id: 5005, account: ACCOUNT }, repositories_added: [listed(1)], repositories_removed: [] });
     expect(res.status).toBe(202);

@@ -3,7 +3,8 @@ import { vi } from "vitest";
 import type { Env } from "../src/index.ts";
 
 // A fetch spy standing in for GitHub: installation tokens, a repo read per full name, and the
-// App's installations with their repositories, each list paged the way GitHub pages it.
+// App's installations with their repositories, each list paged the way GitHub pages it. A
+// suspended installation is listed with its suspended_at, and its token request answers 403.
 export interface GitHubRepo {
   id: number;
   name: string;
@@ -18,7 +19,7 @@ export interface FakeGitHub {
   calls: string[];
   tokenBodies: unknown[];
   repoReadStatus: number;
-  installations: { id: number; account: { id: number; login: string; type: string }; repos: GitHubRepo[] }[];
+  installations: { id: number; account: { id: number; login: string; type: string }; repos: GitHubRepo[]; suspended_at?: string | null }[];
 }
 
 export const env = testEnv as unknown as Env & { TEST_MIGRATIONS: D1Migration[] };
@@ -48,10 +49,11 @@ export function fakeGitHub(): FakeGitHub {
     let m: RegExpExecArray | null;
     if (req.method === "POST" && (m = /^\/app\/installations\/(\d+)\/access_tokens$/.exec(url.pathname))) {
       gh.tokenBodies.push(await req.json());
+      if (gh.installations.find((i) => i.id === Number(m![1]))?.suspended_at) return Response.json({ message: "This installation has been suspended" }, { status: 403 });
       return Response.json({ token: `ghs_inst_${m[1]}` }, { status: 201 });
     }
     if (req.method === "GET" && url.pathname === "/app/installations") {
-      return Response.json(page(gh.installations.map((i) => ({ id: i.id, account: i.account })), url));
+      return Response.json(page(gh.installations.map((i) => ({ id: i.id, account: i.account, suspended_at: i.suspended_at ?? null })), url));
     }
     if (req.method === "GET" && url.pathname === "/installation/repositories") {
       const id = Number(/^Bearer ghs_inst_(\d+)$/.exec(req.headers.get("Authorization") ?? "")?.[1]);

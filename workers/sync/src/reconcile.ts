@@ -33,10 +33,12 @@ export async function reconcileInstallations(env: Env, nowS: number): Promise<{ 
   const gh = githubClient(env);
   const jwt = await appJwt(gh.appId, gh.privateKey, nowS);
   const installations = await pages(
-    (page) => githubCall(gh, "GET", `/app/installations?per_page=${PER_PAGE}&page=${page}`, jwt, undefined, "installations") as Promise<{ id: number }[]>,
+    (page) => githubCall(gh, "GET", `/app/installations?per_page=${PER_PAGE}&page=${page}`, jwt, undefined, "installations") as Promise<{ id: number; suspended_at?: string | null }[]>,
   );
   const wanted = new Map<number, RepoRow>();
   for (const inst of installations) {
+    // A suspended installation refuses a token; its repos are left out, so their rows go.
+    if (inst.suspended_at) continue;
     const token = await installationToken(gh, inst.id, { permissions: { metadata: "read" } }, nowS);
     const repos = await pages(async (page) => {
       const answer = (await githubCall(gh, "GET", `/installation/repositories?per_page=${PER_PAGE}&page=${page}`, token, undefined, "installation repositories")) as { repositories: ListedRepo[] };

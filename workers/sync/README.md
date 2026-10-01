@@ -20,12 +20,14 @@ Visibility is `private` when the payload says `private`, `internal` only when it
 `public`. Every upsert reads the repo's default branch with an installation token holding
 `metadata: read` on exactly those repos, so a row is complete before its first key. When that read
 fails the row is still written, its default branch left as it was (null for a new row), and the
-answer is 202 so GitHub redelivers. A write that completes answers 200 and stamps
+answer is 202. GitHub redelivers nothing on its own, whatever the answer: the 202 marks the
+delivery in the App's log, and the next reconcile fills the branch. A write that completes answers 200 and stamps
 `sync_state.last_webhook_at`. Writes are last-write-wins; the reconcile repairs any order a burst
 of webhooks got wrong.
 
 The reconcile lists every installation of the App with the App JWT and every repo each covers with
-a `metadata: read` installation token, upserts each row that differs, deletes each row no
+a `metadata: read` installation token, skipping a suspended installation (it would refuse the
+token) so its rows are deleted, upserts each row that differs, deletes each row no
 installation lists, and stamps `last_reconcile_at` and `last_reconcile_corrections` (the number of
 rows it wrote or deleted). It writes nothing unless every listing was read. It runs on the cron
 `17 3 * * *` and on `POST /v1/sync/reconcile` with `Authorization: Bearer $SYNC_ADMIN_TOKEN`, which

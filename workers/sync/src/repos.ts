@@ -175,6 +175,7 @@ export async function applyWebhook(env: WebhookEnv, gh: GitHubClient, event: str
     const err = githubError as GitHubError;
     if (writes.length > 0) await db.batch(writes);
     console.error(JSON.stringify({ githubError: err.call, status: err.status, delivery, event, action }));
+    // GitHub never redelivers on its own; the 202 marks the delivery in the App's log and the reconcile fills the branch.
     return new Response(`written without default branch; ${err.call} answered ${err.status}`, { status: 202 });
   }
   writes.push(stamp(db, "last_webhook_at", nowS));

@@ -53,6 +53,18 @@ describe("reconcileInstallations", () => {
     expect(gh.tokenBodies).toEqual([{ permissions: { metadata: "read" } }]);
   });
 
+  it("skips a suspended installation, asking it for no token and deleting its rows, and reconciles the rest", async () => {
+    gh.installations = [
+      { id: 7007, account: ORG, repos: [repo(7, { owner: ORG })], suspended_at: "2026-09-30T12:00:00Z" },
+      { id: 5005, account: ACCOUNT, repos: [repo(1)] },
+    ];
+    await seed({ repo_id: 7, owner_id: 8008, owner_type: "Organization", owner_login: "acme-org", visibility: "public", installation_id: 7007, full_name: "acme-org/acme-repo-7", default_branch: "main" });
+    expect(await reconcileInstallations(env, 1000)).toEqual({ repos: 1, corrections: 2 });
+    expect((await rows()).map((r) => r.repo_id)).toEqual([1]);
+    expect(gh.calls.filter((c) => c.startsWith("POST"))).toEqual(["POST /app/installations/5005/access_tokens"]);
+    expect((await healthy()).last_reconcile_at).toBe(1000);
+  });
+
   it("writes and deletes nothing when a listing fails part way", async () => {
     gh.installations = [{ id: 5005, account: ACCOUNT, repos: [repo(1)] }];
     await seed({ repo_id: 3, owner_id: 2002, owner_type: "User", owner_login: "acme-user", visibility: "public", installation_id: 5005, full_name: "acme-user/acme-repo-3", default_branch: "main" });
@@ -71,6 +83,20 @@ describe("scheduled", () => {
     await waitOnExecutionContext(ctx);
     expect((await rows()).map((r) => r.repo_id)).toEqual([1]);
     expect(await healthy()).toMatchObject({ repos: 1, last_reconcile_at: 1_790_000_000, last_reconcile_corrections: 1 });
+  });
+});
+
+describe("scheduled, when GitHub fails", () => {
+  it("logs reconcile: failed rather than leaving the rejection unhandled", async () => {
+    gh.installations = [{ id: 5005, account: ACCOUNT, repos: [repo(1)] }];
+    vi.mocked(globalThis.fetch).mockImplementation(async () => Response.json({ message: "boom" }, { status: 500 }));
+    const errors: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...a: unknown[]) => void errors.push(a.join(" ")));
+    const ctx = createExecutionContext();
+    await worker.scheduled(createScheduledController({ scheduledTime: new Date(1_790_000_000_000), cron: "17 3 * * *" }), env, ctx);
+    await waitOnExecutionContext(ctx);
+    expect(errors.some((e) => e.includes('"reconcile":"failed"'))).toBe(true);
+    expect((await healthy()).last_reconcile_at).toBeNull();
   });
 });
 

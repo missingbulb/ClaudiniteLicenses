@@ -75,6 +75,10 @@ export default {
   },
 
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(reconcileInstallations(env, Math.floor(controller.scheduledTime / 1000)).then((out) => console.log(JSON.stringify({ reconcile: "ok", cron: controller.cron, ...out }))));
+    ctx.waitUntil(
+      reconcileInstallations(env, Math.floor(controller.scheduledTime / 1000))
+        .then((out) => console.log(JSON.stringify({ reconcile: "ok", cron: controller.cron, ...out })))
+        .catch((err) => console.error(JSON.stringify({ reconcile: "failed", cron: controller.cron, error: String(err) }))),
+    );
   },
 };
