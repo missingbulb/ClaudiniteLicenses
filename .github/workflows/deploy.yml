@@ -9,6 +9,10 @@ on:
         description: Replace the Polar webhook endpoint, and with it the sync Worker's POLAR_WEBHOOK_SECRET
         type: boolean
         default: false
+      rehearse_d1_restore:
+        description: Rehearse the D1 Time Travel restore on a throwaway database the run creates and deletes
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -42,6 +46,8 @@ jobs:
       id-token: write
     env:
       WRANGLER_SEND_METRICS: "false"
+      # Each version's message, so `wrangler versions list` reads as a changelog of runs.
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       - id: gate
         name: Check deploy secrets
@@ -98,6 +104,20 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: node tools/ensure-d1.mjs --name claudinite-licenses --write
       - if: steps.gate.outputs.skip == 'false'
+        name: Record the D1 restore point
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx wrangler d1 time-travel info claudinite-licenses --json -c db/wrangler.jsonc > "$RUNNER_TEMP/restore-point.json"
+          bookmark=$(node -e 'const t=require("fs").readFileSync(process.argv[1],"utf8");const b=JSON.parse(t.slice(t.indexOf("{"))).bookmark;if(typeof b!=="string"||!b)process.exit(1);process.stdout.write(b)' "$RUNNER_TEMP/restore-point.json")
+          echo "D1 restore point before this run's migrations: $bookmark"
+          {
+            echo "## D1 restore point"
+            echo
+            echo "claudinite-licenses before this run's migrations is bookmark \`$bookmark\`. To return the database there, dispatch \`d1-restore\` with that bookmark: \`gh workflow run d1-restore.yml -f bookmark=$bookmark\`. The bookmark stays valid for 7 days on Workers Free, 30 on Workers Paid."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - if: steps.gate.outputs.skip == 'false'
         name: Apply the D1 migrations
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -109,8 +129,33 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: node tools/ensure-queue.mjs --name claudinite-licenses-writes --dlq
+      - if: steps.gate.outputs.skip == 'false' && inputs.rehearse_d1_restore
+        name: Rehearse the D1 restore on a throwaway database
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node tools/d1-restore-rehearsal.mjs
       - if: steps.gate.outputs.skip == 'false'
-        name: Secrets for claudinite-public-key
+        id: live
+        name: Read the live versions
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          # The version each Worker serves now is what a failure rolls it back to. A split an
+          # interrupted run left behind is rolled back by hand first; this run never stacks on one.
+          for w in public-key key sync router; do
+            node tools/stage.mjs status --config "workers/$w/wrangler.jsonc" --json "$RUNNER_TEMP/$w.status.json"
+            live=$(node -e 'const v=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).versions;if(v.length>1){console.error(v.map((x)=>x.id+"@"+x.percentage+"%").join(" "));process.exit(1)}process.stdout.write(v[0]?.id??"")' "$RUNNER_TEMP/$w.status.json") || {
+              echo "::error::claudinite-$w has a split standing; roll it back by hand with node tools/stage.mjs rollback --config workers/$w/wrangler.jsonc --id <the version that should be live>, then rerun"
+              exit 1
+            }
+            echo "claudinite-$w live: ${live:-none}"
+            echo "${w//-/_}=$live" >> "$GITHUB_OUTPUT"
+          done
+      - if: steps.gate.outputs.skip == 'false'
+        id: upload-public-key
+        name: Upload claudinite-public-key with its secrets
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -119,17 +164,15 @@ jobs:
           ISSUING_KEY_PRIVATE: ${{ secrets.ISSUING_KEY_PRIVATE }}
           ISSUING_KEY_CERT: ${{ secrets.ISSUING_KEY_CERT }}
         run: |
+          # The secrets travel with the version, so none reaches the live code before its own does.
+          trap 'rm -f "$RUNNER_TEMP/public-key.secrets.json"' EXIT
+          umask 077
           node -e 'const e=process.env,dev=(f)=>require("fs").readFileSync("keys/dev/"+f,"utf8"),useDev=!e.ISSUING_KEY_PRIVATE;console.log(JSON.stringify({GITHUB_APP_ID:e.GITHUB_APP_ID,GITHUB_APP_PRIVATE_KEY:e.GITHUB_APP_PRIVATE_KEY,ISSUING_KEY_PRIVATE:useDev?dev("license-public.key"):e.ISSUING_KEY_PRIVATE,ISSUING_KEY_CERT:useDev?dev("license-public.cert.json"):e.ISSUING_KEY_CERT}))' > "$RUNNER_TEMP/public-key.secrets.json"
-          npx wrangler secret bulk "$RUNNER_TEMP/public-key.secrets.json" -c workers/public-key/wrangler.jsonc
-          rm "$RUNNER_TEMP/public-key.secrets.json"
+          node tools/stage.mjs upload --config workers/public-key/wrangler.jsonc --secrets-file "$RUNNER_TEMP/public-key.secrets.json" --tag "${GITHUB_SHA::7}" --message "$RUN_URL" --json "$RUNNER_TEMP/public-key.upload.json"
+          echo "version_id=$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).version_id' "$RUNNER_TEMP/public-key.upload.json")" >> "$GITHUB_OUTPUT"
       - if: steps.gate.outputs.skip == 'false'
-        name: Deploy claudinite-public-key
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx wrangler deploy -c workers/public-key/wrangler.jsonc
-      - if: steps.gate.outputs.skip == 'false'
-        name: Secrets for claudinite-key
+        id: upload-key
+        name: Upload claudinite-key with its secrets
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -140,18 +183,13 @@ jobs:
           ISSUING_KEY_CERT: ${{ secrets.KEY_ISSUING_KEY_CERT }}
           POLAR_ACCESS_TOKEN: ${{ secrets.POLAR_SANDBOX_TOKEN }}
         run: |
+          trap 'rm -f "$RUNNER_TEMP/key.secrets.json"' EXIT
+          umask 077
           node -e 'const e=process.env,dev=(f)=>require("fs").readFileSync("keys/dev/"+f,"utf8"),useDev=!e.ISSUING_KEY_PRIVATE;console.log(JSON.stringify({GITHUB_APP_ID:e.GITHUB_APP_ID,GITHUB_APP_PRIVATE_KEY:e.GITHUB_APP_PRIVATE_KEY,...(e.GITHUB_APP_CLIENT_SECRET?{GITHUB_APP_CLIENT_SECRET:e.GITHUB_APP_CLIENT_SECRET}:{}),ISSUING_KEY_PRIVATE:useDev?dev("license.key"):e.ISSUING_KEY_PRIVATE,ISSUING_KEY_CERT:useDev?dev("license.cert.json"):e.ISSUING_KEY_CERT,POLAR_ACCESS_TOKEN:e.POLAR_ACCESS_TOKEN}))' > "$RUNNER_TEMP/key.secrets.json"
-          npx wrangler secret bulk "$RUNNER_TEMP/key.secrets.json" -c workers/key/wrangler.jsonc
-          rm "$RUNNER_TEMP/key.secrets.json"
-      - if: steps.gate.outputs.skip == 'false'
-        name: Deploy claudinite-key
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
           # The roots an Actions key must chain to for an item grant.
           roots=$(node tools/keys.mjs trust-roots)
-          npx wrangler deploy -c workers/key/wrangler.jsonc --var "TRUST_ROOTS:$roots"
+          node tools/stage.mjs upload --config workers/key/wrangler.jsonc --var "TRUST_ROOTS:$roots" --secrets-file "$RUNNER_TEMP/key.secrets.json" --tag "${GITHUB_SHA::7}" --message "$RUN_URL" --json "$RUNNER_TEMP/key.upload.json"
+          echo "version_id=$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).version_id' "$RUNNER_TEMP/key.upload.json")" >> "$GITHUB_OUTPUT"
       - if: steps.gate.outputs.skip == 'false'
         name: Make the Polar webhook endpoint exist
         env:
@@ -191,28 +229,114 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx wrangler deploy -c workers/sync/wrangler.jsonc
+          LIVE: ${{ steps.live.outputs.sync }}
+        run: |
+          # The sync Worker deploys at once: which version a split hands its cron and queue consumer
+          # is not documented, and it never touches key issuance. A failure rolls it back to LIVE.
+          mkdir -p "$RUNNER_TEMP/staged"
+          printf %s "$LIVE" > "$RUNNER_TEMP/staged/sync"
+          npx wrangler deploy -c workers/sync/wrangler.jsonc
       - if: steps.gate.outputs.skip == 'false'
-        name: Secrets for claudinite-router
+        name: Judge claudinite-sync by its own health and alerts
+        run: |
+          for i in 1 2 3 4 5 6; do
+            status=$(curl -sS -o "$RUNNER_TEMP/sync-health.json" -w '%{http_code}' --max-time 20 https://license.claudinite.com/v1/sync/health || true)
+            [ "$status" = 200 ] && break
+            sleep $((i * 5))
+          done
+          if [ "$status" != 200 ]; then
+            echo "::error::claudinite-sync answered $status on /v1/sync/health after its deploy: $(head -c 300 "$RUNNER_TEMP/sync-health.json")"
+            exit 1
+          fi
+          status=$(curl -sS -o "$RUNNER_TEMP/sync-alerts.json" -w '%{http_code}' --max-time 20 https://license.claudinite.com/v1/sync/alerts || true)
+          B="$(cat "$RUNNER_TEMP/sync-alerts.json")" S="$status" node -e '
+            let b = null;
+            try { b = JSON.parse(process.env.B); } catch {}
+            if (!(process.env.S === "200" || process.env.S === "503") || !b || !Array.isArray(b.alerts)) {
+              console.log(`::error::claudinite-sync answered ${process.env.S} on /v1/sync/alerts without the alerts shape after its deploy`);
+              process.exit(1);
+            }
+          '
+      - if: steps.gate.outputs.skip == 'false'
+        id: upload-router
+        name: Upload claudinite-router with its secrets
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           GITHUB_APP_WEBHOOK_SECRET: ${{ secrets.CLAUDINITE_GITHUB_APP_WEBHOOK_SECRET }}
         run: |
+          trap 'rm -f "$RUNNER_TEMP/router.secrets.json"' EXIT
+          umask 077
           node -e 'console.log(JSON.stringify({GITHUB_APP_WEBHOOK_SECRET:process.env.GITHUB_APP_WEBHOOK_SECRET}))' > "$RUNNER_TEMP/router.secrets.json"
-          npx wrangler secret bulk "$RUNNER_TEMP/router.secrets.json" -c workers/router/wrangler.jsonc
-          rm "$RUNNER_TEMP/router.secrets.json"
+          node tools/stage.mjs upload --config workers/router/wrangler.jsonc --secrets-file "$RUNNER_TEMP/router.secrets.json" --tag "${GITHUB_SHA::7}" --message "$RUN_URL" --json "$RUNNER_TEMP/router.upload.json"
+          echo "version_id=$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).version_id' "$RUNNER_TEMP/router.upload.json")" >> "$GITHUB_OUTPUT"
       - if: steps.gate.outputs.skip == 'false'
-        name: Deploy claudinite-router
+        id: split
+        name: Serve the new versions to one tenth of requests
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx wrangler deploy -c workers/router/wrangler.jsonc
+          PUBLIC_KEY_NEW: ${{ steps.upload-public-key.outputs.version_id }}
+          KEY_NEW: ${{ steps.upload-key.outputs.version_id }}
+          ROUTER_NEW: ${{ steps.upload-router.outputs.version_id }}
+          PUBLIC_KEY_LIVE: ${{ steps.live.outputs.public_key }}
+          KEY_LIVE: ${{ steps.live.outputs.key }}
+          ROUTER_LIVE: ${{ steps.live.outputs.router }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/staged"
+          for w in public-key key router; do
+            var=$(echo "$w" | tr a-z- A-Z_)
+            new=$(printenv "${var}_NEW")
+            # Written before the split, so a split that throws midway is still rolled back.
+            live=$(printenv "${var}_LIVE" || true)
+            printf %s "$live" > "$RUNNER_TEMP/staged/$w"
+            node tools/stage.mjs split --config "workers/$w/wrangler.jsonc" --new "$new" --percent 10 --json "$RUNNER_TEMP/$w.split.json"
+            echo "${w//-/_}_previous=$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).previous ?? ""' "$RUNNER_TEMP/$w.split.json")" >> "$GITHUB_OUTPUT"
+          done
       - if: steps.gate.outputs.skip == 'false'
         name: Make the route hostname resolve
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: node tools/ensure-dns.mjs --zone claudinite.com --name license.claudinite.com
+      - if: steps.gate.outputs.skip == 'false'
+        id: canary
+        name: Probe the new versions from outside
+        env:
+          PUBLIC_KEY_NEW: ${{ steps.upload-public-key.outputs.version_id }}
+          KEY_NEW: ${{ steps.upload-key.outputs.version_id }}
+          ROUTER_NEW: ${{ steps.upload-router.outputs.version_id }}
+        run: |
+          # Every check answered by a split Worker is judged on its new version's answer; the alerts
+          # check is reported by the read-back, never gated on here.
+          OIDC=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=claudinite" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>process.stdout.write(JSON.parse(s).value))')
+          echo "::add-mask::$OIDC"
+          export OIDC
+          set +e
+          node tools/probe.mjs --base https://license.claudinite.com --oidc-token-env OIDC --expect-version "public-key=$PUBLIC_KEY_NEW,key=$KEY_NEW,router=$ROUTER_NEW" --json "$RUNNER_TEMP/canary.json" --attempts 2
+          set -e
+          node -e '
+            const s = JSON.parse(require("fs").readFileSync(process.env.RUNNER_TEMP + "/canary.json", "utf8"));
+            const failed = s.checks.filter((c) => !c.ok && c.name !== "sync-alerts");
+            for (const c of failed) console.log(`::error::canary check ${c.name} failed on version ${c.version ?? "unknown"}: ${c.detail}`);
+            process.exit(failed.length ? 1 : 0);
+          '
+      - if: steps.gate.outputs.skip == 'false' && steps.canary.outcome == 'success'
+        name: Promote the new versions to all requests
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PUBLIC_KEY_NEW: ${{ steps.upload-public-key.outputs.version_id }}
+          KEY_NEW: ${{ steps.upload-key.outputs.version_id }}
+          ROUTER_NEW: ${{ steps.upload-router.outputs.version_id }}
+        run: |
+          for w in public-key key router; do
+            var=$(echo "$w" | tr a-z- A-Z_)
+            node tools/stage.mjs promote --config "workers/$w/wrangler.jsonc" --id "$(printenv "${var}_NEW")"
+          done
+          # A version upload applies bindings and vars but not routes or crons; this applies them.
+          for w in public-key key sync router; do
+            node tools/stage.mjs triggers --config "workers/$w/wrangler.jsonc"
+          done
       - if: steps.gate.outputs.skip == 'false'
         name: Read back the live Workers
         env:
@@ -297,3 +421,27 @@ jobs:
             for (const c of failed) console.log(`::error::probe check ${c.name} failed: ${c.detail}`);
             process.exit(failed.length ? 1 : 0);
           '
+      - if: failure() && steps.gate.outputs.skip == 'false'
+        name: Roll back to the versions that were live
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          # Every Worker this run staged goes back to the version it served before the run, whether
+          # the canary, the promotion, the read-back or an upload or split midway failed.
+          status=0
+          for w in public-key key sync router; do
+            [ -f "$RUNNER_TEMP/staged/$w" ] || continue
+            live=$(cat "$RUNNER_TEMP/staged/$w")
+            if [ -z "$live" ]; then
+              echo "::warning::claudinite-$w had no live version before this run, so there is nothing to roll it back to"
+              continue
+            fi
+            if node tools/stage.mjs rollback --config "workers/$w/wrangler.jsonc" --id "$live"; then
+              echo "::error::claudinite-$w rolled back to $live"
+            else
+              echo "::error::claudinite-$w could not be rolled back to $live; run node tools/stage.mjs rollback --config workers/$w/wrangler.jsonc --id $live by hand"
+              status=1
+            fi
+          done
+          exit $status
