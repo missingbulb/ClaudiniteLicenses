@@ -6,6 +6,9 @@
   "workers_dev": false,
   "observability": { "enabled": true },
   "routes": [{ "pattern": "license.claudinite.com/github-webhook", "zone_name": "claudinite.com" }],
-  // KEY and SYNC are added by the chunks that build those Workers.
-  "services": [{ "binding": "PUBLIC_KEY", "service": "claudinite-public-key" }]
+  "services": [
+    { "binding": "PUBLIC_KEY", "service": "claudinite-public-key" },
+    { "binding": "KEY", "service": "claudinite-key" },
+    { "binding": "SYNC", "service": "claudinite-sync" }
+  ]
 }

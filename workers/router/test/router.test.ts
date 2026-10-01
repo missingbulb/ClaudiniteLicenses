@@ -1,6 +1,7 @@
 import { createExecutionContext } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import worker, { type Env } from "../src/index.ts";
+import wranglerConfig from "../wrangler.jsonc?raw";
 
 const SECRET = "acme-webhook-secret";
 const URL_ = "https://license.claudinite.com/github-webhook";
@@ -60,6 +61,33 @@ describe("router", () => {
     expect((await deliver({ PUBLIC_KEY: pk.fetcher }, "repository_dispatch", payload, { signature: "sha256=zz" })).status).toBe(401);
     expect((await deliver({ PUBLIC_KEY: pk.fetcher }, "repository_dispatch", payload, { signature: null })).status).toBe(401);
     expect(pk.calls).toHaveLength(0);
+  });
+
+  it("forwards claudinite-key to KEY with the body and both headers, returning its answer", async () => {
+    const key = stub(201, "issued");
+    const pk = stub(201);
+    const payload = { action: "claudinite-key", client_payload: { nonce: "x" } };
+    const res = await deliver({ KEY: key.fetcher, PUBLIC_KEY: pk.fetcher }, "repository_dispatch", payload);
+    expect([res.status, await res.text()]).toEqual([201, "issued"]);
+    expect(key.calls).toEqual([{ url: "https://key/webhook", method: "POST", body: JSON.stringify(payload), event: "repository_dispatch", delivery: "acme-delivery-1" }]);
+    expect(pk.calls).toHaveLength(0);
+  });
+
+  it("forwards installation_repositories to SYNC with the body and both headers", async () => {
+    const sync = stub(200, "written");
+    const payload = { action: "added", repositories_added: [{ id: 1 }] };
+    const res = await deliver({ SYNC: sync.fetcher }, "installation_repositories", payload);
+    expect(res.status).toBe(200);
+    expect(sync.calls).toEqual([{ url: "https://sync/webhook", method: "POST", body: JSON.stringify(payload), event: "installation_repositories", delivery: "acme-delivery-1" }]);
+  });
+
+  it("binds PUBLIC_KEY, KEY and SYNC to the three Workers by name", () => {
+    const config = JSON.parse(wranglerConfig.replace(/^\s*\/\/.*$/gm, "")) as { services: { binding: string; service: string }[] };
+    expect(config.services).toEqual([
+      { binding: "PUBLIC_KEY", service: "claudinite-public-key" },
+      { binding: "KEY", service: "claudinite-key" },
+      { binding: "SYNC", service: "claudinite-sync" },
+    ]);
   });
 
   it("answers 202 unrouted for claudinite-key while KEY is unbound", async () => {
