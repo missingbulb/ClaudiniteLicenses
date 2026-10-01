@@ -37,7 +37,7 @@ describe("point-webhook.yml", () => {
   it("points the webhook at its default url with the App's repository secrets", async () => {
     stub = await startStub();
     const wf = parse(readFileSync(join(ROOT, ".github/workflows/point-webhook.yml"), "utf8"));
-    const step = (wf.jobs.point.steps as { run?: string; env?: Record<string, string> }[]).find((s) => s.run)!;
+    const step = (wf.jobs.point.steps as { run?: string; env?: Record<string, string> }[]).find((s) => s.run?.includes("point-app-webhook.mjs"))!;
     const context: Record<string, string> = {
       "secrets.CLAUDINITE_GITHUB_APP_ID": "1",
       "secrets.CLAUDINITE_GITHUB_APP_PRIVATE_KEY": privateKey,
