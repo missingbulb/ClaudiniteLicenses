@@ -171,4 +171,52 @@ describe("verifyKey", () => {
       expect(await verifyKey(junk, { roots: [c.root.publicKey], now: NOW })).toEqual({ ok: false, reason: "shape" });
     }
   });
+
+  it("verifies a key without seats, checkout_url, portal_url or issue, and one carrying each", async () => {
+    const c = await devChain();
+    const cert = await c.certify(c.root, "license");
+    const roots = { roots: [c.root.publicKey], now: NOW };
+    expect((await verifyKey(await signKey(c.issuing.seed, cert, payload()), roots)).ok).toBe(true);
+    const nulls = payload({ seats: null, checkout_url: null, portal_url: null });
+    expect((await verifyKey(await signKey(c.issuing.seed, cert, nulls), roots)).ok).toBe(true);
+    const full = payload({
+      plan: "private-repo",
+      state: "grace",
+      grace_until: NOW_S + 7 * DAY,
+      seats: { paid: 0, counted: 1, headroom: 0 },
+      checkout_url: "https://sandbox.polar.sh/checkout/acme",
+      portal_url: "https://sandbox.polar.sh/portal/acme",
+    });
+    const res = await verifyKey(await signKey(c.issuing.seed, cert, full), roots);
+    expect(res.ok && res.payload.seats).toEqual({ paid: 0, counted: 1, headroom: 0 });
+    const grant = payload({ typ: "grant", user_id: undefined, nonce: undefined, issue: 42 });
+    const g = await verifyKey(await signKey(c.issuing.seed, cert, grant), roots);
+    expect(g.ok && g.payload.issue).toBe(42);
+  });
+
+  it("refuses a malformed seats, a link that is not https, or an issue that is not a positive integer", async () => {
+    const c = await devChain();
+    const cert = await c.certify(c.root, "license");
+    const bad: Record<string, unknown>[] = [
+      { seats: { paid: -1, counted: 1, headroom: 0 } },
+      { seats: { paid: 1, counted: 1 } },
+      { seats: { paid: 1.5, counted: 1, headroom: 0 } },
+      { seats: { paid: "1", counted: 1, headroom: 0 } },
+      { seats: [1, 1, 0] },
+      { seats: 3 },
+      { checkout_url: "http://sandbox.polar.sh/checkout/acme" },
+      { checkout_url: "not a url" },
+      { checkout_url: 7 },
+      { portal_url: "javascript:alert(1)" },
+      { typ: "grant", issue: 0 },
+      { typ: "grant", issue: -3 },
+      { typ: "grant", issue: 4.2 },
+      { typ: "grant", issue: "42" },
+    ];
+    for (const over of bad) {
+      const key = await signKey(c.issuing.seed, cert, { ...payload(), ...over } as KeyPayload);
+      expect(await verifyKey(key, { roots: [c.root.publicKey], now: NOW }), JSON.stringify(over)).toEqual({ ok: false, reason: "shape" });
+    }
+  });
 });
+
