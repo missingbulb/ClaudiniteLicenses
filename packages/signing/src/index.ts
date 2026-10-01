@@ -284,8 +284,8 @@ export function knownFeatures(payload: Pick<KeyPayload, "features">): Feature[] 
   return payload.features.filter((f): f is Feature => (FEATURES as readonly string[]).includes(f));
 }
 
-function useForPlan(plan: Plan): Use {
-  return plan === "public" ? "license-public" : "license";
+function useSignsPlan(use: Use, plan: Plan): boolean {
+  return use === "license" || (use === "license-public" && plan === "public");
 }
 
 /**
@@ -293,7 +293,7 @@ function useForPlan(plan: Plan): Use {
  * sets, features as distinct non-empty names, and the five release fields' types; a feature name,
  * release field or payload field it does not know is ignored), the certificate against `roots` and its
  * window, `kid` against the certificate, the key signature, the key's iat (less IAT_LEEWAY_S) and exp, and the purpose
- * (a `public` plan needs a `license-public` certificate, every other plan `license`).
+ * (a `license` certificate signs any plan, a `license-public` certificate only the `public` plan).
  */
 export async function verifyKey(key: string, opts: { roots: string[]; now: Date }): Promise<Verdict<KeyPayload>> {
   let env: unknown;
@@ -334,6 +334,6 @@ export async function verifyKey(key: string, opts: { roots: string[]; now: Date 
   const nowS = opts.now.getTime() / 1000;
   if (nowS < p.iat - IAT_LEEWAY_S) return { ok: false, reason: "key-not-yet-valid" };
   if (nowS >= p.exp) return { ok: false, reason: "key-expired" };
-  if (cert.payload.use !== useForPlan(p.plan as Plan)) return { ok: false, reason: "purpose" };
+  if (!useSignsPlan(cert.payload.use, p.plan as Plan)) return { ok: false, reason: "purpose" };
   return { ok: true, payload: p as unknown as KeyPayload };
 }

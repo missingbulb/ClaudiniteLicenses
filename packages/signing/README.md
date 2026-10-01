@@ -57,8 +57,8 @@ In order, the first failure naming the reason:
 4. `bad-signature`: the key signature does not verify with the certificate's subject key.
 5. `key-not-yet-valid` more than 5 minutes (300 seconds) before `iat`, so a verifier whose clock
    runs behind the issuer's still accepts a fresh key; `key-expired` at or after `exp`.
-6. `purpose`: a `public` plan needs a `license-public` certificate, every other plan `license`;
-   `packs` and `manifest` certificates never sign a key.
+6. `purpose`: a `license-public` certificate signs only a `public` plan key; a `license`
+   certificate signs a key of any plan; `packs` and `manifest` certificates never sign a key.
 
 ## Vectors
 

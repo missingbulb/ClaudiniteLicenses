@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { b64urlDecode, b64urlEncode, issueCertificate, keyId, knownFeatures, signKey, verifyCertificate, verifyKey, type KeyPayload } from "../src/index.ts";
+import { b64urlDecode, b64urlEncode, issueCertificate, keyId, knownFeatures, PLANS, signKey, verifyCertificate, verifyKey, type KeyPayload } from "../src/index.ts";
 import { DAY, devChain, NOW, NOW_S, payload } from "./chain.ts";
 
 describe("key ids", () => {
@@ -58,17 +58,21 @@ describe("verifyKey", () => {
     expect((await verifyKey(key, { roots: [c.root.publicKey, c.standby.publicKey], now: NOW })).ok).toBe(true);
   });
 
-  it("matches the certificate's use to the key's plan", async () => {
+  it("lets a license certificate sign any plan and a license-public certificate only the public plan", async () => {
     const c = await devChain();
     const roots = { roots: [c.root.publicKey], now: NOW };
     const lic = await c.certify(c.root, "license");
     const pub = await c.certify(c.root, "license-public");
     const packs = await c.certify(c.root, "packs");
-    expect(await verifyKey(await signKey(c.issuing.seed, lic, payload({ plan: "public" })), roots)).toEqual({ ok: false, reason: "purpose" });
-    expect(await verifyKey(await signKey(c.issuing.seed, pub, payload({ plan: "personal" })), roots)).toEqual({ ok: false, reason: "purpose" });
-    expect(await verifyKey(await signKey(c.issuing.seed, packs, payload({ plan: "public" })), roots)).toEqual({ ok: false, reason: "purpose" });
-    expect(await verifyKey(await signKey(c.issuing.seed, packs, payload({ plan: "personal" })), roots)).toEqual({ ok: false, reason: "purpose" });
-    expect((await verifyKey(await signKey(c.issuing.seed, lic, payload({ plan: "personal" })), roots)).ok).toBe(true);
+    const manifest = await issueCertificate(c.root.seed, c.issuing.publicKey, "manifest", c.nb, c.na);
+    for (const plan of PLANS) {
+      expect((await verifyKey(await signKey(c.issuing.seed, lic, payload({ plan })), roots)).ok, plan).toBe(true);
+      const byPublic = await verifyKey(await signKey(c.issuing.seed, pub, payload({ plan })), roots);
+      expect(byPublic.ok ? "ok" : byPublic.reason, plan).toBe(plan === "public" ? "ok" : "purpose");
+      for (const other of [packs, manifest]) {
+        expect(await verifyKey(await signKey(c.issuing.seed, other, payload({ plan })), roots), plan).toEqual({ ok: false, reason: "purpose" });
+      }
+    }
   });
 
   it("names each window and tamper failure", async () => {
