@@ -2,7 +2,9 @@
 
 The only writer of D1. It holds no signing key, so it can never issue one. It writes `repos` from
 the Claudinite App's webhooks and the GitHub reconcile, `subscriptions` from Polar's webhooks and
-the Polar reconcile, and `seats`, `usage` and `overuse` from the writes queue the key Worker fills.
+the Polar reconcile, and `seats`, `usage`, `overuse` and `incidents` from the writes queue the key
+Worker fills. It audits whether the App still covers every paying account and judges every alert at
+`GET /v1/sync/alerts`.
 
 ## Repos
 
@@ -42,8 +44,10 @@ answers `{ ok, repos, corrections }`, or 502 when GitHub fails.
 `POST /v1/sync/polar-webhook` is public: Polar calls it. Each delivery is checked as Standard
 Webhooks with `POLAR_WEBHOOK_SECRET` (`packages/polar`'s `verifyWebhook`); a failure answers 401
 with the reason (`signature-missing`, `timestamp-skew`, `signature-mismatch`, `payload-malformed`,
-or `secret-unset`), writes nothing, stamps nothing and logs `{ "marker": "polar-webhook-refused" }`,
-so a secret that stops matching shows as a stale `last_polar_webhook_at`. A verified delivery
+or `secret-unset`), writes nothing but a `polar-webhook-refused` incident naming the reason (at
+most a hundred an hour, since anyone can post here), stamps nothing and logs
+`{ "marker": "polar-webhook-refused" }`, so a secret that stops matching shows as a stale
+`last_polar_webhook_at` and, repeated, as an alert. A verified delivery
 stamps `last_polar_webhook_at`; then `subscription.created`, `.updated`, `.active`, `.canceled`,
 `.uncanceled`, `.revoked` and `.past_due` upsert the subscription, and every other event,
 `checkout.created` included, answers 204 with no write.
@@ -86,20 +90,65 @@ message order, acked on success and retried whole when D1 throws:
 | --- | --- |
 | `usage` | the `usage` row for `(repo_id, user_id, day)` if missing; the seat of `(licenseeOf(plan, owner_id, repo_id), user_id)`: inserted at `at`, else `last_key_at` raised to `at`, and `first_key_at` reset to `at` when the old `last_key_at` is more than 30 days before it |
 | `grace-start` | the owner's `overuse` row: `grace_started_at` kept if set, else `at`; `grace_spent_until` raised to `at` + 30 days |
-| `grace-reset` | `grace_started_at` cleared, `grace_spent_until` kept |
+| `grace-reset` | `grace_started_at` cleared when it is no later than the message's `at`, `grace_spent_until` kept: delivery order is best-effort, so a reset delivered after a later `grace-start` leaves that start alone |
+| `incident` | an `incidents` row of `marker`, `at` and `detail` |
 
-Every statement is idempotent. A message this version cannot read is acked and logged
-`{ "marker": "write-malformed" }`. Each batch stamps `last_queue_at` and `queue_lag_s`, the age of
-its oldest message. A dead-letter batch writes nothing: each message is logged
-`{ "marker": "write-dead-lettered", kind, at }` and `last_dead_letter_at` is stamped.
+Every seat statement is idempotent; a redelivered incident is one more row, which only errs toward
+an alert. A message this version cannot read is acked and logged `{ "marker": "write-malformed" }`.
+Each batch stamps `last_queue_at` and `queue_lag_s`, the age of its oldest message. A dead-letter
+batch writes no seat: each message is logged `{ "marker": "write-dead-lettered", kind, at }` and
+written as a `write-dead-lettered` incident naming its kind, and `last_dead_letter_at` is stamped,
+in one D1 batch.
+
+The nightly cron deletes incidents older than 7 days, since no alert window is longer than a day
+and the record's job is the alert, not history.
+
+## Coverage
+
+The coverage audit lists the paying subscription rows (`status` `active`, `trialing` or
+`past_due`, `ended_at` null) and checks what the App must cover: under `private-repo` every repo in
+`repo_ids` needs a `repos` row; under `personal`, `organization` and `internal` the owner needs at
+least one. It stamps `sync_state.paying_uncovered` with the number of uncovered accounts (an owner
+under a plan) and logs one line per account, `{ "marker": "paying-uncovered", owner_id, plan,
+repo_ids }`, the missing repos under `private-repo`. The ids stay in the log, never in a public
+body. It runs at the end of the nightly cron after both reconciles, and at the end of each
+reconcile route, so a deploy's read-back re-judges it.
+
+## Alerts
+
+`GET /v1/sync/alerts` reads the stamps and, per marker, the incidents inside its window, and
+answers `{ ok: true, checked_at, alerts: [] }` with 200, or `{ ok: false, checked_at, alerts }`
+with 503, each alert `{ id, since, detail }`. A D1 read that throws answers 503 with the single
+alert `sync-d1-unreadable`.
+
+| Alert | Fires while |
+| --- | --- |
+| `polar-reconcile-stale` | `last_polar_reconcile_at` older than 26 h, or null and the Worker has run a day (`last_queue_at` or `last_webhook_at` older than 24 h) |
+| `polar-reconcile-failing` | `last_polar_reconcile_error` set |
+| `polar-reconcile-corrected` | `last_polar_reconcile_corrections > 0` on the latest reconcile (a webhook was lost; clears at the next clean reconcile) |
+| `github-reconcile-stale` | `last_reconcile_at` older than 26 h |
+| `polar-webhooks-refused` | 3 or more `polar-webhook-refused` in the last hour |
+| `queue-lagging` | `queue_lag_s > 900` on a `last_queue_at` within 24 h |
+| `writes-dead-lettered` | `last_dead_letter_at` within 24 h |
+| `d1-unreadable` | 1 or more in the last hour |
+| `polar-unreachable` | 3 or more in the last hour |
+| `app-not-installed` | 5 or more in the last hour |
+| `secondary-rate-limit` | 1 or more in the last hour |
+| `paying-uncovered` | `paying_uncovered > 0` |
+
+Every alert clears on its own as its window passes or its stamp moves; none needs an
+acknowledgement, so a status-only monitor can poll the route and a stale alert never pins it red.
+`queue_lag_s` is a reading taken at the last consumed batch, so its alert is bounded to a recent
+batch rather than read as the queue's live depth, which only Cloudflare's dashboard shows.
 
 ## Health
 
 `GET /v1/sync/health` answers `{ ok, repos, subscriptions, seats, last_webhook_at,
 last_reconcile_at, last_reconcile_corrections, last_polar_webhook_at, last_polar_reconcile_at,
 last_polar_reconcile_corrections, last_polar_reconcile_error, last_queue_at, queue_lag_s,
-last_dead_letter_at, polar_webhook_secret }`. `seats` counts rows whose last key is within 30
-days; each stamp is null where it was never written; `polar_webhook_secret` says whether the secret
+last_dead_letter_at, paying_uncovered, polar_webhook_secret }`. `seats` counts rows whose last key
+is within 30 days; each stamp is null where it was never written, `paying_uncovered` until the first
+audit; `polar_webhook_secret` says whether the secret
 is set, never its value, and is what `deploy.yml` reads to decide whether to make a new endpoint.
 
 ## Secrets
