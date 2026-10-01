@@ -19,12 +19,12 @@
 import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
+import { VERSION_HEADER } from "../packages/version/src/index.ts";
 
 export const ISSUE_TITLE = "License server probe";
 export const ISSUE_LABEL = "probe";
 const TIMEOUT_MS = 20_000;
 const RETRY_DELAY_MS = 5_000;
-export const VERSION_HEADER = "X-Claudinite-Version";
 export const AFFINITY_HEADER = "Cloudflare-Workers-Version-Key";
 /** One key in ten lands on a 10% version, so missing it in this many keys is a 0.2% event. */
 export const VERSION_KEYS = 60;
