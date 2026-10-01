@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { b64urlDecode, b64urlEncode, issueCertificate, keyId, signKey, verifyCertificate, verifyKey, type KeyPayload } from "../src/index.ts";
+import { b64urlDecode, b64urlEncode, issueCertificate, keyId, knownFeatures, signKey, verifyCertificate, verifyKey, type KeyPayload } from "../src/index.ts";
 import { DAY, devChain, NOW, NOW_S, payload } from "./chain.ts";
 
 describe("key ids", () => {
@@ -22,6 +22,14 @@ describe("certificates", () => {
     const cert = await c.certify(c.root, "license");
     expect((await verifyCertificate(cert, [c.root.publicKey], "license", NOW)).ok).toBe(true);
     expect(await verifyCertificate(cert, [c.stranger.publicKey], "license", NOW)).toEqual({ ok: false, reason: "untrusted-root" });
+  });
+});
+
+describe("knownFeatures", () => {
+  it("keeps the names from the Keys table, in the key's order, and drops the rest", () => {
+    expect(knownFeatures(payload({ features: ["fleet", "acme-feature", "updates", "work-checks"] }))).toEqual(["fleet", "updates", "work-checks"]);
+    expect(knownFeatures(payload({ features: ["acme-feature"] }))).toEqual([]);
+    expect(knownFeatures(payload({ features: [] }))).toEqual([]);
   });
 });
 
@@ -111,7 +119,7 @@ describe("verifyKey", () => {
       { state: "fine" },
       { state: 1 },
       { features: "work-checks" },
-      { features: ["work-checks", "teleport"] },
+      { features: ["work-checks", ""] },
       { features: ["work-checks", "work-checks"] },
       { features: [1] },
       { release: null },
@@ -124,7 +132,7 @@ describe("verifyKey", () => {
       { release: { ...release, pack_index_serial: "3" } },
       { release: { ...release, pack_keys: ["not-a-key-id"] } },
       { release: { held: [], revoked: [], security_fixes: [], pack_index_serial: 0 } },
-      { release: { ...release, extra: [] } },
+      { release: { ...release, held: undefined } },
     ];
     for (const over of bad) {
       const key = await signKey(c.issuing.seed, cert, { ...payload(), ...over } as KeyPayload);
@@ -138,6 +146,19 @@ describe("verifyKey", () => {
       release: { held: ["2.1.0"], revoked: ["2.0.0"], security_fixes: ["2.0.1"], pack_index_serial: 7, pack_keys: ["0123456789abcdef"] },
     });
     expect((await verifyKey(await signKey(c.issuing.seed, cert, full), { roots: [c.root.publicKey], now: NOW })).ok).toBe(true);
+  });
+
+  it("ignores feature names, release fields and payload fields it does not know", async () => {
+    const c = await devChain();
+    const cert = await c.certify(c.root, "license-public");
+    const release = { ...payload().release, acme_field: [1] };
+    const over = { features: ["work-checks", "acme-feature"], release, acme_field: { any: "thing" } };
+    const res = await verifyKey(await signKey(c.issuing.seed, cert, { ...payload(), ...over } as KeyPayload), { roots: [c.root.publicKey], now: NOW });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.payload.features).toEqual(["work-checks", "acme-feature"]);
+      expect(knownFeatures(res.payload)).toEqual(["work-checks"]);
+    }
   });
 
   it("refuses what is not a key", async () => {

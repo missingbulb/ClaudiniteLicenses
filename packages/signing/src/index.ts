@@ -255,7 +255,6 @@ export async function signKey(issuingSeed: string, certificate: Certificate, pay
   return JSON.stringify(key);
 }
 
-const RELEASE_KEYS = ["held", "pack_index_serial", "pack_keys", "revoked", "security_fixes"];
 const KEY_ID = /^[0-9a-f]{16}$/;
 
 function isStringArray(v: unknown, each: (s: string) => boolean = (s) => s.length > 0): boolean {
@@ -263,11 +262,11 @@ function isStringArray(v: unknown, each: (s: string) => boolean = (s) => s.lengt
 }
 
 function isFeatureList(v: unknown): boolean {
-  return isStringArray(v, (f) => (FEATURES as readonly string[]).includes(f)) && new Set(v as string[]).size === (v as string[]).length;
+  return isStringArray(v) && new Set(v as string[]).size === (v as string[]).length;
 }
 
 function isRelease(v: unknown): boolean {
-  if (!isObject(v) || Object.keys(v).sort().join() !== RELEASE_KEYS.join()) return false;
+  if (!isObject(v)) return false;
   const serial = v.pack_index_serial;
   return (
     isStringArray(v.held) &&
@@ -280,13 +279,19 @@ function isRelease(v: unknown): boolean {
   );
 }
 
+/** The features a key turns on: its names from FEATURES, in the key's order; an unknown name turns nothing on. */
+export function knownFeatures(payload: Pick<KeyPayload, "features">): Feature[] {
+  return payload.features.filter((f): f is Feature => (FEATURES as readonly string[]).includes(f));
+}
+
 function useForPlan(plan: Plan): Use {
   return plan === "public" ? "license-public" : "license";
 }
 
 /**
- * Verifies a key's wire form, checking in order: shape (including typ, plan, state, features and
- * the release states' element types), the certificate against `roots` and its
+ * Verifies a key's wire form, checking in order: shape (v, typ, plan and state from their closed
+ * sets, features as distinct non-empty names, and the five release fields' types; a feature name,
+ * release field or payload field it does not know is ignored), the certificate against `roots` and its
  * window, `kid` against the certificate, the key signature, the key's iat (less IAT_LEEWAY_S) and exp, and the purpose
  * (a `public` plan needs a `license-public` certificate, every other plan `license`).
  */
