@@ -83,7 +83,7 @@ describe("public key webhook", () => {
     expect(p).toMatchObject({ typ: "session", plan: "public", state: "ok", user_id: 3003, nonce: NONCE, repo_id: 1001, owner_id: 2002, owner_type: "User", owner_login: "acme-user" });
     expect(p.exp - p.iat).toBe(7 * 86400);
     expect([...p.features].sort()).toEqual(FEATURES.filter((f) => f !== "fleet").sort());
-    expect(points).toEqual([{ indexes: ["1001"], blobs: ["public", "issued", "User", "1.1.0"], doubles: [1] }]);
+    expect(points).toEqual([{ indexes: ["1001"], blobs: ["public", "issued", "User", "1.1.0", "web"], doubles: [1] }]);
   });
 
   it("asks for an installation token scoped to the repo with checks: write only", async () => {

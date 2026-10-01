@@ -12,8 +12,8 @@ error answers 502, and a secondary rate limit is logged with the marker `seconda
 key's certificate without calling GitHub.
 
 Every answered request writes one Analytics Engine point to `KEY_COUNTS`: index the repo id, blobs
-plan, outcome (`issued`, `refused-private`, `refused-sender`, `github-error`), owner type and engine
-version.
+plan, outcome (`issued`, `refused-private`, `refused-sender`, `github-error`), owner type, engine
+version and the path the request came by (`web`).
 
 ## Secrets
 
