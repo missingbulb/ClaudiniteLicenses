@@ -11,10 +11,9 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { API_BASES, MANAGED_BY, POLAR_VERSION, polarClient } from "../packages/polar/src/index.ts";
 
-export const POLAR_VERSION = "2026-10";
-export const API_BASES = { sandbox: "https://sandbox-api.polar.sh", production: "https://api.polar.sh" };
-export const MANAGED_BY = "claudinite-licenses";
+export { API_BASES, MANAGED_BY, POLAR_VERSION };
 const INTERVALS = /** @type {const} */ (["month", "year"]);
 const INTERVAL_WORD = { month: "monthly", year: "yearly" };
 
@@ -55,50 +54,6 @@ export function desiredProducts(plans) {
   );
 }
 
-/** @param {string} base @param {string} token */
-function polarClient(base, token) {
-  /** @type {string | null} */
-  let versionServed = null;
-  /**
-   * @param {string} method @param {string} path @param {unknown} [body]
-   * @returns {Promise<any>}
-   */
-  async function call(method, path, body) {
-    for (let attempt = 0; ; attempt++) {
-      const res = await fetch(`${base}${path}`, {
-        method,
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: "application/json",
-          "Polar-Version": POLAR_VERSION,
-          "User-Agent": "claudinite-licenses-tools",
-          ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-        },
-        body: body === undefined ? undefined : JSON.stringify(body),
-      });
-      if (res.status === 429 && attempt < 3) {
-        await new Promise((ok) => setTimeout(ok, 1000 * Number(res.headers.get("retry-after") ?? 1)));
-        continue;
-      }
-      versionServed ??= res.headers.get("polar-version");
-      const text = await res.text();
-      if (!res.ok) throw new Error(`${method} ${path} answered ${res.status}: ${text}`);
-      return text ? JSON.parse(text) : null;
-    }
-  }
-  /** @param {string} path */
-  async function listAll(path) {
-    const items = [];
-    for (let page = 1; ; page++) {
-      const sep = path.includes("?") ? "&" : "?";
-      const data = await call("GET", `${path}${sep}page=${page}&limit=100`);
-      items.push(...data.items);
-      if (page >= data.pagination.max_page) return items;
-    }
-  }
-  return { call, listAll, versionServed: () => versionServed };
-}
-
 /** @param {number} cents */
 const dollars = (cents) => `$${(cents / 100).toFixed(2)}`;
 
@@ -130,7 +85,7 @@ function describePrice(price) {
  * @param {{ base: string, token: string, plans: Plans, apply: boolean }} opts
  */
 export async function syncProducts({ base, token, plans, apply }) {
-  const polar = polarClient(base, token);
+  const polar = polarClient({ base, token, retries: 3, userAgent: "claudinite-licenses-tools" });
   const orgs = await polar.listAll("/v1/organizations/");
   if (orgs.length !== 1) throw new Error(`the token reaches ${orgs.length} organizations, not one: ${orgs.map((o) => o.name).join(", ")}`);
   const org = orgs[0];
