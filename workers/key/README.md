@@ -33,8 +33,8 @@ has no access), `no-push-access`, `app-not-installed` or `no-plan`, 502 `github-
 
 **Actions.** `POST /v1/actions-key`, `Authorization: Bearer <OIDC token>` requested with audience
 `claudinite`, body `{ "engine_version" }`. The token is verified RS256 against the key its `kid`
-names in `${OIDC_ISSUER}/.well-known/jwks` (cached in the isolate for an hour, refetched once on an
-unknown `kid`), with `iss` equal to `OIDC_ISSUER`, `aud` `claudinite`, and `exp`, `nbf` and `iat`
+names in `${OIDC_ISSUER}/.well-known/jwks` (cached in the isolate for an hour, refetched on an
+unknown `kid` at most once every 30 seconds), with `iss` equal to `OIDC_ISSUER`, `aud` `claudinite`, and `exp`, `nbf` and `iat`
 within the signing spec's 5 minutes of skew; then `repository_id`, `repository_owner_id`,
 `repository`, `repository_owner`, `repository_visibility`, `event_name` and `job_workflow_ref` must
 be present. Each failure is a 401 naming it (`token-missing`, `token-malformed`,

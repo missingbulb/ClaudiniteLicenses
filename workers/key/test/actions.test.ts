@@ -118,9 +118,30 @@ describe("POST /v1/actions-key", () => {
     world.jwks = () => Response.json({ keys: [issuer.jwk, rotated.jwk] });
     expect((await ask(await rotated.sign(actionsClaims()))).status).toBe(200);
     expect(jwksCalls()).toBe(2);
+  });
+
+  it("refetches the JWKS for an unknown kid at most once every 30 seconds", async () => {
+    await seedRepo();
     const unknown = await oidcIssuer("acme-kid-3");
-    await refusedWith(await unknown.sign(actionsClaims()), 401, "token-unknown-key");
-    expect(jwksCalls()).toBe(3);
+    const start = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(start);
+      await ask(await issuer.sign(actionsClaims()));
+      expect(jwksCalls()).toBe(1);
+      for (let i = 0; i < 20; i++) await refusedWith(await unknown.sign(actionsClaims()), 401, "token-unknown-key");
+      expect(jwksCalls()).toBe(2);
+      vi.setSystemTime(start + 29_000);
+      await refusedWith(await unknown.sign(actionsClaims()), 401, "token-unknown-key");
+      expect(jwksCalls()).toBe(2);
+      vi.setSystemTime(start + 31_000);
+      await refusedWith(await unknown.sign(actionsClaims()), 401, "token-unknown-key");
+      expect(jwksCalls()).toBe(3);
+      expect((await ask(await issuer.sign(actionsClaims()))).status).toBe(200);
+      expect(jwksCalls()).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("answers 503 server-error when D1 cannot be read, since the pin needs the repo's default branch", async () => {

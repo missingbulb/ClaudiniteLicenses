@@ -1,10 +1,12 @@
 // Verifies a GitHub Actions OIDC token: RS256 against the key the issuer's JWKS names by kid, then
 // the issuer, the audience, the times with the signing spec's skew, and the claims the license
-// design pins. The JWKS is cached in the isolate for an hour and refetched once on an unknown kid.
+// design pins. The JWKS is cached in the isolate for an hour and refetched on an unknown kid, at
+// most once every 30 seconds, so tokens naming made-up kids cannot turn into a fetch each.
 import { b64urlDecode, IAT_LEEWAY_S } from "../../../packages/signing/src/index.ts";
 
 export const AUDIENCE = "claudinite";
 const JWKS_TTL_S = 3600;
+const REFETCH_EVERY_S = 30;
 
 export type TokenRefusal =
   | "token-malformed"
@@ -28,9 +30,11 @@ export interface ActionsClaims {
 }
 
 let cache: { issuer: string; at: number; keys: Map<string, JsonWebKey> } | null = null;
+let lastRefetchS = -Infinity;
 
 export function resetJwksCache(): void {
   cache = null;
+  lastRefetchS = -Infinity;
 }
 
 async function fetchJwks(issuer: string, nowS: number): Promise<Map<string, JsonWebKey>> {
@@ -46,6 +50,10 @@ async function fetchJwks(issuer: string, nowS: number): Promise<Map<string, Json
 async function keyFor(issuer: string, kid: string, nowS: number): Promise<JsonWebKey | undefined> {
   const fresh = cache && cache.issuer === issuer && nowS - cache.at < JWKS_TTL_S;
   if (fresh && cache!.keys.has(kid)) return cache!.keys.get(kid);
+  if (fresh) {
+    if (nowS - lastRefetchS < REFETCH_EVERY_S) return undefined;
+    lastRefetchS = nowS;
+  }
   return (await fetchJwks(issuer, nowS)).get(kid);
 }
 
