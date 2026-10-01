@@ -9,14 +9,16 @@ The license server for Claudinite
 ## Layout
 
 - `packages/signing`: the license key format and its vectors; its README is the spec.
+- `packages/licensing`: the seat, headroom, grace and paid-seat rules, and the writes queue's messages, bundled by the key and sync Workers.
+- `packages/polar`: the Polar client (checkouts, customer sessions, subscriptions, webhook endpoints) and the Standard Webhooks check.
 - `packages/github-app`: the Claudinite App's GitHub client (App JWT, installation tokens, the key check run), a source package each Worker that acts as the App bundles.
 - `workers/router`: the App's one webhook address, forwarding each webhook to the Worker it is for.
 - `workers/public-key`: the public key Worker, Public keys for public repos on the web and desktop paths.
-- `workers/key`: the paid key Worker, the web, desktop and Actions key paths and `cn login`'s config and refresh.
-- `workers/sync`: the sync Worker, D1's only writer, from the App's installation webhooks and a nightly reconcile.
+- `workers/key`: the paid key Worker, the web, desktop and Actions key paths in every seat state, item grants, and `cn login`'s config and refresh.
+- `workers/sync`: the sync Worker, D1's only writer: repos from the App's installation webhooks and a nightly reconcile, subscriptions from Polar's webhooks and reconcile, seats and usage from the writes queue.
 - `db/`: the D1 schema and migrations; `deploy.yml` creates the database and applies them.
-- `billing/plans.json`: the paid plans and their prices per seat, read by the Polar products tool and later by the license server.
-- `tools/`: dev key chains, the D1 and DNS deploy helpers, the App webhook re-pointer, the Polar products tool, local GitHub and Polar API stubs, the local round trip and its route front (`tools/dev-routes`).
+- `billing/plans.json`: the paid plans and their prices per seat, read by the Polar products tool.
+- `tools/`: dev key chains, the D1, queue, DNS and Polar webhook deploy helpers, a Polar checkout maker, the App webhook re-pointer, the Polar products tool, local GitHub and Polar API stubs, the local round trip and its route front (`tools/dev-routes`).
 - `spike/`: the web key spike, run in a Claude Code web session; results in `docs/spikes/`.
 
 ## Local verification
@@ -29,7 +31,8 @@ npm run dry-run
 npm run e2e
 ```
 
-`npm run e2e` runs every key path against the GitHub stub, the four Workers and a local D1, with
+`npm run e2e` runs every key path against the GitHub and Polar stubs, the four Workers, the local
+writes queue and a local D1, with
 the dev chain in `.dev` (`node tools/keys.mjs dev-chain --out .dev`) or a throwaway one. `npm run
 dev` serves the same set on port 8787 until interrupted.
 
