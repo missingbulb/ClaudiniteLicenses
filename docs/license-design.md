@@ -79,8 +79,8 @@ The executor's agentic phase runs in a Claude Code Remote routine session. When 
 **Work notes: check by hand before building on this.** Each is a claim the session-start design rests on, checked in a real Claude Code web session and a real desktop session against a test repo; a failed check changes the design before any code depends on it.
 
 - [ ] A background process started by a web SessionStart hook keeps running after the hook returns, for at least the 2 minutes past the cut. If not, switch to the fallback of one GitHub read per hook while the key is pending.
-- [ ] A `repository_dispatch` sent from a web session passes the proxy, and its webhook's `sender` is the real user, not a Bot.
-- [ ] The web round trip, dispatch to a readable check run, takes a few seconds: record the median and the slowest of 50 tries, and confirm 10 seconds clears nearly all of them.
+- [x] A `repository_dispatch` sent from a web session passes the proxy, and its webhook's `sender` is the real user, not a Bot.
+- [x] The web round trip, dispatch to a readable check run, takes a few seconds: record the median and the slowest of 50 tries, and confirm 10 seconds clears nearly all of them.
 - [ ] A desktop key request answers in under a second.
 - [ ] After the VM is suspended and the session resumes, SessionStart runs again with source `resume`, the session id is unchanged, and the state file under `.claudinite/temp/` is still there.
 - [ ] GitHub refuses the dispatch at once, with a recognizable error, when the person lacks push access.
