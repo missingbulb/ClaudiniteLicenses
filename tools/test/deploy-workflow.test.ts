@@ -90,6 +90,13 @@ describe("deploy.yml", () => {
     expect(all.output).toBe("skip=false\n");
   });
 
+  it("cites ClaudiniteEngine#5 only when an issuing key is what is missing", () => {
+    const without = (...names: string[]) => runGate(Object.fromEntries(secrets.filter((s) => !names.includes(s)).map((s) => [s, "set"]))).stdout;
+    expect(without("ISSUING_KEY_PRIVATE")).toContain("ClaudiniteEngine#5");
+    expect(without("ISSUING_KEY_CERT", "CLOUDFLARE_API_TOKEN")).toContain("ClaudiniteEngine#5");
+    expect(without("CLOUDFLARE_API_TOKEN")).not.toContain("#");
+  });
+
   it("stores each repository secret as the Worker secret its README names", () => {
     const values = Object.fromEntries(secrets.map((s) => [s, `value-of-${s}`]));
     for (const worker of ["public-key", "router"]) {

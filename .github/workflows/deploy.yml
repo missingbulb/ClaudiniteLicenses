@@ -50,9 +50,12 @@ jobs:
             if [ -z "$(printenv "$name")" ]; then missing="$missing $name"; fi
           done
           if [ -n "$missing" ]; then
-            echo "deploy skipped: missing$missing (see #1, #2, ClaudiniteEngine#5)"
+            case "$missing" in
+              *ISSUING_KEY_*) echo "deploy skipped: missing$missing (production issuing keys wait on ClaudiniteEngine#5)" ;;
+              *) echo "deploy skipped: missing$missing" ;;
+            esac
             echo "skip=true" >> "$GITHUB_OUTPUT"
-            # Expected while those issues are open: a skipped deploy is not a failure.
+            # Expected until every secret is set: a skipped deploy is not a failure.
             exit 0
           fi
           echo "skip=false" >> "$GITHUB_OUTPUT"
