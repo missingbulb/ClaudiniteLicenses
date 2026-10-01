@@ -50,7 +50,7 @@ export function resetWorld(): World {
   };
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
     const req = new Request(input, init);
-    const body = await req.text();
+    const body = new TextDecoder().decode(await req.arrayBuffer());
     world.calls.push({ url: req.url, method: req.method, headers: req.headers, body });
     const url = new URL(req.url);
     if (url.pathname.endsWith("/access_tokens")) return Response.json({ token: "ghs_acme" }, { status: 201 });
