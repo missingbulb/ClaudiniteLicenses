@@ -9,6 +9,7 @@ The license server for Claudinite
 ## Layout
 
 - `packages/signing`: the license key format and its vectors; its README is the spec.
+- `packages/github-app`: the Claudinite App's GitHub client (App JWT, installation tokens, the key check run), a source package each Worker that acts as the App bundles.
 - `workers/router`, `workers/public-key`: the webhook router and the public key Worker.
 - `db/`: the D1 schema and migrations.
 - `billing/plans.json`: the paid plans and their prices per seat, read by the Polar products tool and later by the license server.

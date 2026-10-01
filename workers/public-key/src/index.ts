@@ -2,7 +2,7 @@
 // router, with a signed Public session key in a `Claudinite key` check run. No database; one
 // Analytics Engine data point per answered request is its whole record.
 import { b64urlDecode, type Certificate } from "../../../packages/signing/src/index.ts";
-import { createKeyCheckRun, GitHubError } from "./github.ts";
+import { createKeyCheckRun, GitHubError } from "../../../packages/github-app/src/index.ts";
 import { mintPublicSessionKey } from "./key.ts";
 
 export interface Env {
@@ -97,7 +97,7 @@ async function webhook(req: Request, env: Env): Promise<Response> {
 
   try {
     await createKeyCheckRun(
-      { base: env.GITHUB_API_BASE ?? "https://api.github.com", appId: env.GITHUB_APP_ID, privateKey: env.GITHUB_APP_PRIVATE_KEY },
+      { base: env.GITHUB_API_BASE ?? "https://api.github.com", userAgent: "claudinite-public-key", appId: env.GITHUB_APP_ID, privateKey: env.GITHUB_APP_PRIVATE_KEY },
       { installationId, repoName: repo.name, fullName: repo.full_name, head, nonce },
       output,
       nowS,
