@@ -24,6 +24,7 @@ const subject = {
   seats: { paid: 0, counted: 1, headroom: 0 },
   checkoutUrl: CHECKOUT_URL,
   portalUrl: null as string | null,
+  notice: "overused" as string | null,
 };
 
 async function actionsKey(over: Partial<typeof subject> = {}, at = Math.floor(Date.now() / 1000)) {
@@ -43,13 +44,23 @@ describe("POST /v1/item-grant", () => {
     const { grant } = (await res.json()) as { grant: string };
     const g = await verified(grant);
     const a = await verified(key);
-    expect(g).toMatchObject({ typ: "grant", issue: 42, repo_id: 1001, owner_id: 2002, owner_login: "acme-user", plan: "private-repo", state: "grace", grace_until: 1_900_000_000, seats: subject.seats, checkout_url: CHECKOUT_URL, portal_url: null });
+    expect(g).toMatchObject({ typ: "grant", issue: 42, repo_id: 1001, owner_id: 2002, owner_login: "acme-user", plan: "private-repo", state: "grace", grace_until: 1_900_000_000, seats: subject.seats, checkout_url: CHECKOUT_URL, portal_url: null, notice: "overused" });
     expect(g.features).toEqual(allButFleet);
     expect(g.exp).toBe(a.exp);
     expect(g.exp - g.iat).toBeLessThan(6 * 3600);
     expect(g).not.toHaveProperty("user_id");
     expect(g).not.toHaveProperty("nonce");
     expect(world.limited).toEqual({ "owner:acme-user": 1 });
+  });
+
+  it("carries a null notice under an Actions key issued before keys carried one", async () => {
+    const { seed, cert } = issuingKey(env());
+    const at = Math.floor(Date.now() / 1000);
+    const { notice: _none, ...rest } = await verified(await actionsKey({ notice: null }));
+    const old = await signKey(seed, cert, { ...rest, iat: at, exp: at + 3600 } as KeyPayload);
+    expect(JSON.parse(atob(JSON.parse(old).payload.replace(/-/g, "+").replace(/_/g, "/")))).not.toHaveProperty("notice");
+    const g = await verified(((await (await ask(old, { issue: 9 })).json()) as { grant: string }).grant);
+    expect(g.notice).toBeNull();
   });
 
   it("lives at most 6 hours from now", async () => {

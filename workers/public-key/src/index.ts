@@ -3,7 +3,7 @@
 // request with one in the answer. No database; one Analytics Engine data point per answered
 // request is its whole record.
 import { b64urlDecode, certStanding, type Certificate } from "../../../packages/signing/src/index.ts";
-import { createKeyCheckRun, GitHubError, parseKeyDispatch } from "../../../packages/github-app/src/index.ts";
+import { createKeyCheckRun, GitHubError, parseKeyDispatch, refusalSummary } from "../../../packages/github-app/src/index.ts";
 import { publicSessionKey } from "./desktop.ts";
 import { mintPublicSessionKey } from "./key.ts";
 
@@ -54,7 +54,7 @@ async function webhook(req: Request, env: Env): Promise<Response> {
   let output: { title: string; summary: string; text?: string };
   if (repo.private) {
     outcome = "refused-private";
-    output = { title: "Claudinite key refused", summary: "this repo is private; the Public plan covers public repos only" };
+    output = { title: "Claudinite key refused", summary: refusalSummary("refused-private", "this repo is private; the Public plan covers public repos only") };
   } else {
     outcome = "issued";
     const key = await mintPublicSessionKey(

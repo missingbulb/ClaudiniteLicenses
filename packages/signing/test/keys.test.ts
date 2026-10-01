@@ -221,6 +221,28 @@ describe("verifyKey", () => {
 });
 
 
+describe("notice", () => {
+  it("verifies a key without notice, with notice null, with a named notice and with an unknown one", async () => {
+    const c = await devChain();
+    const cert = await c.certify(c.root, "license");
+    const roots = { roots: [c.root.publicKey], now: NOW };
+    expect((await verifyKey(await signKey(c.issuing.seed, cert, payload()), roots)).ok).toBe(true);
+    for (const notice of [null, "overused", "over-within-headroom", "seat-refused", "later-name"]) {
+      const res = await verifyKey(await signKey(c.issuing.seed, cert, payload({ notice })), roots);
+      expect(res.ok && res.payload.notice, String(notice)).toBe(notice);
+    }
+  });
+
+  it("refuses a notice that is present, not null and not a non-empty string", async () => {
+    const c = await devChain();
+    const cert = await c.certify(c.root, "license");
+    for (const notice of ["", 7, true, ["overused"], { name: "overused" }]) {
+      const key = await signKey(c.issuing.seed, cert, { ...payload(), notice } as unknown as KeyPayload);
+      expect(await verifyKey(key, { roots: [c.root.publicKey], now: NOW }), JSON.stringify(notice)).toEqual({ ok: false, reason: "shape" });
+    }
+  });
+});
+
 describe("certStanding", () => {
   const notAfter = "2026-12-30T17:49:26Z";
   const at = (days: number) => new Date(Date.parse(notAfter) - days * DAY * 1000);

@@ -1,6 +1,6 @@
 // The web path: a web session's `claudinite-key` dispatch, forwarded by the router, answered with
 // one `Claudinite key` check run carrying the key, or `Claudinite key refused` naming why.
-import { createKeyCheckRun, GitHubError, parseKeyDispatch } from "../../../packages/github-app/src/index.ts";
+import { createKeyCheckRun, GitHubError, parseKeyDispatch, refusalSummary } from "../../../packages/github-app/src/index.ts";
 import { countPoint, githubClient, issuingKey, type Env } from "./env.ts";
 import { licenceFields, mintKey } from "./key.ts";
 import { queueIncident } from "./incidents.ts";
@@ -37,7 +37,7 @@ export async function webhook(req: Request, env: Env, ctx: ExecutionContext): Pr
   if ("refused" in plan) {
     outcome = `refused-${plan.refused}`;
     planName = "none";
-    output = { title: "Claudinite key refused", summary: `${plan.refused}: ${REFUSAL_TEXT[plan.refused]}` };
+    output = { title: "Claudinite key refused", summary: refusalSummary(plan.refused, REFUSAL_TEXT[plan.refused]) };
   } else {
     outcome = `issued-${plan.state}`;
     planName = plan.plan;

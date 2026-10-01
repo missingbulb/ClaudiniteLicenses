@@ -48,6 +48,7 @@ export async function itemGrant(req: Request, env: Env): Promise<Response> {
       seats: a.seats ?? null,
       checkoutUrl: a.checkout_url ?? null,
       portalUrl: a.portal_url ?? null,
+      notice: a.notice ?? null,
     },
     nowS,
   );

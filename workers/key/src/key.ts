@@ -17,6 +17,7 @@ interface Subject {
   seats: KeySeats | null;
   checkoutUrl: string | null;
   portalUrl: string | null;
+  notice: string | null;
 }
 
 export type KeySubject =
@@ -52,12 +53,13 @@ export async function mintKey(issuingSeed: string, cert: Certificate, s: KeySubj
     seats: s.seats,
     checkout_url: s.checkoutUrl,
     portal_url: s.portalUrl,
+    notice: s.notice,
     ...(s.typ === "grant" ? { issue: s.issue } : {}),
   };
   return signKey(issuingSeed, cert, payload);
 }
 
 /** The licence fields of a key, from its resolution and links. */
-export function licenceFields(r: { plan: Plan; state: KeyPayload["state"]; grace_until: number | null; features: string[]; seats: KeySeats | null }, links: { checkout_url: string | null; portal_url: string | null }) {
-  return { plan: r.plan, state: r.state, graceUntil: r.grace_until, features: r.features, seats: r.seats, checkoutUrl: links.checkout_url, portalUrl: links.portal_url };
+export function licenceFields(r: { plan: Plan; state: KeyPayload["state"]; grace_until: number | null; features: string[]; seats: KeySeats | null; notice: string | null }, links: { checkout_url: string | null; portal_url: string | null }) {
+  return { plan: r.plan, state: r.state, graceUntil: r.grace_until, features: r.features, seats: r.seats, checkoutUrl: links.checkout_url, portalUrl: links.portal_url, notice: r.notice };
 }
