@@ -54,6 +54,7 @@ describe("tools/keys.mjs", () => {
     expect((await verifyKey(paid, { roots, now: new Date() })).ok).toBe(true);
     expect(JSON.parse(keyVars.ISSUING_KEY_CERT!)).toEqual(lic);
     expect(keyVars.GITHUB_APP_PRIVATE_KEY).toBe(vars.GITHUB_APP_PRIVATE_KEY);
+    expect(JSON.parse(keyVars.TRUST_ROOTS!)).toEqual(roots);
     const sync = parseDevVars(readFileSync(join(dir, "sync.dev.vars"), "utf8"));
     expect(sync).toMatchObject({ GITHUB_APP_ID: vars.GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY: vars.GITHUB_APP_PRIVATE_KEY });
     expect(sync.SYNC_ADMIN_TOKEN!.length).toBeGreaterThanOrEqual(32);

@@ -2,9 +2,10 @@
 // visibility come from the token's claims alone; the workflow must be one of the member's three
 // Claudinite workflows on its default branch, and pull request triggers are refused.
 import { countPoint, issuingKey, refusal, withinOwnerLimit, type Env } from "./env.ts";
-import { mintKey } from "./key.ts";
+import { licenceFields, mintKey } from "./key.ts";
+import { linksFor, NO_LINKS, wantsLinks } from "./links.ts";
 import { verifyActionsToken } from "./oidc.ts";
-import { planFor, readRepo, type RepoRow } from "./plan.ts";
+import { readRepo, resolveForRow, type RepoRow } from "./plan.ts";
 
 /** The workflow file names the server pins; renaming one needs a server release that accepts the new name first. */
 export const PINNED_WORKFLOWS = ["claudinite-scheduler", "claudinite-executor", "claudinite-update"];
@@ -70,18 +71,18 @@ export async function actionsKey(req: Request, env: Env): Promise<Response> {
     point("none", "refused-workflow-not-pinned", row.owner_type);
     return refusal(403, "workflow-not-pinned");
   }
-  const plan = planFor(row, c.repositoryVisibility);
+  // The licensee's state, with no user of its own and nothing written.
+  const plan = await resolveForRow(env, { repoId: c.repositoryId, visibility: c.repositoryVisibility, ownerId: c.repositoryOwnerId, userId: null, typ: "actions" }, row);
   if ("refused" in plan) {
     point("none", `refused-${plan.refused}`, row.owner_type);
-    return refusal(403, plan.refused);
+    return refusal(503, plan.refused);
   }
+  const ownerType = row.owner_type;
+  const links = wantsLinks(plan)
+    ? await linksFor(env, { plan: plan.plan, ownerId: c.repositoryOwnerId, ownerLogin: c.repositoryOwner, ownerType, repo: { id: c.repositoryId, fullName: c.repository }, subscribed: plan.subscribed })
+    : NO_LINKS;
   const { seed, cert } = issuingKey(env);
-  const key = await mintKey(
-    seed,
-    cert,
-    { typ: "actions", repoId: c.repositoryId, ownerId: c.repositoryOwnerId, ownerType: row.owner_type, ownerLogin: c.repositoryOwner, plan: plan.plan, state: plan.state, features: plan.features },
-    nowS,
-  );
-  point(plan.plan, "issued", row.owner_type);
-  return Response.json({ key, plan: plan.plan, state: plan.state });
+  const key = await mintKey(seed, cert, { typ: "actions", repoId: c.repositoryId, ownerId: c.repositoryOwnerId, ownerType, ownerLogin: c.repositoryOwner, ...licenceFields(plan, links) }, nowS);
+  point(plan.plan, `issued-${plan.state}`, ownerType);
+  return Response.json({ key, plan: plan.plan, state: plan.state, notice: plan.notice, ...links });
 }

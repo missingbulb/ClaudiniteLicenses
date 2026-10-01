@@ -1,5 +1,5 @@
 // What every path of the key Worker reads from its environment: the bindings, the issuing key,
-// the App's GitHub client, and the one usage point each answered request writes.
+// the App's GitHub client, Polar's, and the one usage point each answered request writes.
 import type { GitHubClient } from "../../../packages/github-app/src/index.ts";
 import { b64urlDecode, type Certificate } from "../../../packages/signing/src/index.ts";
 
@@ -17,6 +17,12 @@ export interface Env {
   GITHUB_API_BASE?: string;
   GITHUB_WEB_BASE?: string;
   FAIL_OPEN?: string;
+  /** The writes queue; the sync Worker consumes it as D1's only writer. */
+  WRITES?: Queue;
+  POLAR_API_BASE?: string;
+  POLAR_ACCESS_TOKEN?: string;
+  /** A JSON array of the root public keys an Actions key must chain to before it buys a grant. */
+  TRUST_ROOTS: string;
 }
 
 export function githubClient(env: Env): GitHubClient {
@@ -31,7 +37,7 @@ export function certBody(env: Env): { keyId: string; notAfter: string } {
   return JSON.parse(new TextDecoder().decode(b64urlDecode(issuingKey(env).cert.payload)));
 }
 
-export type Path = "web" | "desktop" | "actions";
+export type Path = "web" | "desktop" | "actions" | "grant";
 
 /** One Analytics Engine point per answered request: index the repo id, blobs plan, outcome, owner type, engine version and path. */
 export function countPoint(env: Env, p: { repoId: string; plan: string; outcome: string; ownerType: string; engineVersion: string; path: Path }): void {

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { call, certKeyId, certUse, env, freshDatabase, githubRepo, NONCE, resetWorld, seedRepo, verified, world } from "./helpers.ts";
+import { call, certKeyId, certUse, CHECKOUT_URL, env, freshDatabase, githubRepo, NONCE, PORTAL_URL, resetWorld, seedRepo, seedSeats, seedSubscription, sentMessages, verified, world } from "./helpers.ts";
 
 const ask = (body: unknown, e = env(), token: string | null = "ghu_acme") =>
   call("/v1/session-key", { method: "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body) }, e);
@@ -18,12 +18,12 @@ describe("POST /v1/session-key", () => {
     const res = await ask(body());
     expect(res.status).toBe(200);
     const out = (await res.json()) as { key: string; plan: string; state: string };
-    expect(out).toMatchObject({ plan: "public", state: "ok" });
+    expect(out).toEqual({ key: out.key, plan: "public", state: "ok", notice: null, checkout_url: null, portal_url: null });
     const p = await verified(out.key);
     expect(p).toMatchObject({ typ: "session", plan: "public", user_id: 3003, nonce: NONCE, repo_id: 1001, owner_id: 2002, owner_type: "User", owner_login: "acme-user", kid: certKeyId() });
     expect(p.exp - p.iat).toBe(7 * 86400);
     expect(certUse(out.key)).toBe("license");
-    expect(world.points).toEqual([{ indexes: ["1001"], blobs: ["public", "issued", "User", "1.1.0", "desktop"], doubles: [1] }]);
+    expect(world.points).toEqual([{ indexes: ["1001"], blobs: ["public", "issued-ok", "User", "1.1.0", "desktop"], doubles: [1] }]);
   });
 
   it("calls GitHub twice, as the caller", async () => {
@@ -49,11 +49,35 @@ describe("POST /v1/session-key", () => {
     expect(await (await ask(body())).json()).toEqual({ refused: "no-push-access" });
   });
 
-  it("refuses a private repo with no-plan and a repo without a row with app-not-installed", async () => {
-    await seedRepo({ visibility: "public" });
+  it("answers a private repo with no plan with a grace key, its notice and the checkout link, and no portal link", async () => {
+    await seedRepo({ visibility: "private" });
     world.repo = () => Response.json(githubRepo({ private: true, visibility: "private" }));
-    const priv = await ask(body());
-    expect([priv.status, await priv.json()]).toEqual([403, { refused: "no-plan" }]);
+    const res = await ask(body());
+    expect(res.status).toBe(200);
+    const out = (await res.json()) as Record<string, unknown>;
+    expect(out).toMatchObject({ plan: "private-repo", state: "grace", notice: "overused", checkout_url: CHECKOUT_URL, portal_url: null });
+    expect(await verified(out.key as string)).toMatchObject({ state: "grace", checkout_url: CHECKOUT_URL, portal_url: null });
+    expect(sentMessages().map((m) => m.kind)).toEqual(["usage", "grace-start"]);
+  });
+
+  it("carries the portal link once the owner has a subscription row", async () => {
+    await seedRepo({ visibility: "private" });
+    await seedSubscription({ plan: "personal", seats: 1 });
+    await seedSeats(2002, 1);
+    world.repo = () => Response.json(githubRepo({ private: true, visibility: "private" }));
+    const out = (await (await ask(body())).json()) as Record<string, unknown>;
+    expect(out).toMatchObject({ plan: "personal", state: "ok", notice: "over-within-headroom", checkout_url: CHECKOUT_URL, portal_url: PORTAL_URL });
+  });
+
+  it("calls Polar for no plain ok key", async () => {
+    await seedRepo({ visibility: "private" });
+    await seedSubscription({ plan: "personal", seats: 5 });
+    world.repo = () => Response.json(githubRepo({ private: true, visibility: "private" }));
+    expect(await (await ask(body())).json()).toMatchObject({ plan: "personal", state: "ok", notice: null, checkout_url: null, portal_url: null });
+    expect(world.calls.filter((c) => c.url.startsWith("https://polar-api.test"))).toEqual([]);
+  });
+
+  it("refuses a repo without a row with app-not-installed", async () => {
     world.repo = () => Response.json(githubRepo({ id: 4040 }));
     expect(await (await ask(body())).json()).toEqual({ refused: "app-not-installed" });
   });

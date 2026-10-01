@@ -68,7 +68,7 @@ export function parseDevVars(text) {
 export async function devChain(out) {
   mkdirSync(out, { recursive: true });
   const root = await genPair(out, "root");
-  await genPair(out, "standby");
+  const standby = await genPair(out, "standby");
   const pub = await genPair(out, "license-public");
   const lic = await genPair(out, "license");
   const pubCert = await certify(root.seed, pub.publicKey, "license-public", 90);
@@ -89,6 +89,7 @@ export async function devChain(out) {
     GITHUB_APP_PRIVATE_KEY: privateKey,
     ISSUING_KEY_PRIVATE: lic.seed,
     ISSUING_KEY_CERT: JSON.stringify(licCert),
+    TRUST_ROOTS: JSON.stringify([root.publicKey, standby.publicKey]),
   };
   const syncVars = { GITHUB_APP_ID: "1", GITHUB_APP_PRIVATE_KEY: privateKey, SYNC_ADMIN_TOKEN: randomBytes(32).toString("hex") };
   writeNew(join(out, "public-key.dev.vars"), formatDevVars(publicKeyVars), 0o600);

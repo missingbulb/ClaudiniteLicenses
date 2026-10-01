@@ -2,15 +2,17 @@
 // one `Claudinite key` check run carrying the key, or `Claudinite key refused` naming why.
 import { createKeyCheckRun, GitHubError, parseKeyDispatch } from "../../../packages/github-app/src/index.ts";
 import { countPoint, githubClient, issuingKey, type Env } from "./env.ts";
-import { mintKey } from "./key.ts";
+import { licenceFields, mintKey } from "./key.ts";
+import { linksFor, NO_LINKS, wantsLinks } from "./links.ts";
 import { REFUSAL_TEXT, resolvePlan } from "./plan.ts";
+import { enqueueWrites } from "./writes.ts";
 
 function refuse(status: number, reason: string, delivery: string | null): Response {
   console.log(JSON.stringify({ refused: reason, delivery }));
   return new Response(reason, { status });
 }
 
-export async function webhook(req: Request, env: Env): Promise<Response> {
+export async function webhook(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const delivery = req.headers.get("X-GitHub-Delivery");
   let payload: unknown;
   try {
@@ -27,7 +29,7 @@ export async function webhook(req: Request, env: Env): Promise<Response> {
   const seen = { repoId: String(repo.id), ownerType: owner.type, engineVersion, path: "web" as const };
 
   const nowS = Math.floor(Date.now() / 1000);
-  const plan = await resolvePlan(env, { repoId: repo.id, visibility: repo.private ? "private" : "public" }, { installed: true });
+  const plan = await resolvePlan(env, { repoId: repo.id, visibility: repo.private ? "private" : "public", ownerId: owner.id, userId: sender.id, typ: "session" }, { installed: true });
   let outcome: string;
   let planName: string;
   let output: { title: string; summary: string; text?: string };
@@ -36,17 +38,16 @@ export async function webhook(req: Request, env: Env): Promise<Response> {
     planName = "none";
     output = { title: "Claudinite key refused", summary: `${plan.refused}: ${REFUSAL_TEXT[plan.refused]}` };
   } else {
-    outcome = "issued";
+    outcome = `issued-${plan.state}`;
     planName = plan.plan;
+    enqueueWrites(env, ctx, plan.writes);
+    const links = wantsLinks(plan)
+      ? await linksFor(env, { plan: plan.plan, ownerId: owner.id, ownerLogin: owner.login, ownerType: owner.type, repo: { id: repo.id, fullName: repo.fullName }, subscribed: plan.subscribed })
+      : NO_LINKS;
     const { seed, cert } = issuingKey(env);
-    const key = await mintKey(
-      seed,
-      cert,
-      { typ: "session", repoId: repo.id, ownerId: owner.id, ownerType: owner.type, ownerLogin: owner.login, userId: sender.id, nonce, plan: plan.plan, state: plan.state, features: plan.features },
-      nowS,
-    );
-    const state = plan.state === "ok" ? "" : ` (${plan.state})`;
-    output = { title: "Claudinite key", summary: `${plan.plan} key${state} for @${sender.login} (sender type User), issued ${new Date(nowS * 1000).toISOString()}`, text: key };
+    const key = await mintKey(seed, cert, { typ: "session", repoId: repo.id, ownerId: owner.id, ownerType: owner.type, ownerLogin: owner.login, userId: sender.id, nonce, ...licenceFields(plan, links) }, nowS);
+    const notice = plan.notice ? `, ${plan.notice}` : "";
+    output = { title: "Claudinite key", summary: `${plan.plan} key for @${sender.login} (sender type User), state ${plan.state}${notice}, issued ${new Date(nowS * 1000).toISOString()}`, text: key };
   }
 
   try {
