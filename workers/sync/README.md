@@ -11,9 +11,14 @@ which version a split hands a cron or a queue consumer is not documented, and it
 touches key issuance. Its own health and alerts judge it right after, and a failure rolls it back
 to the version that was live. Each `scheduled` and `queue` invocation logs
 `{ invocation, version }` at its start, every answer carries `X-Claudinite-Version` and the health
-body `version`, from the `version_metadata` binding `CF_VERSION_METADATA`. What the first staged
-deploy's logs show about cron and queue versions under a split is not yet recorded here; until it
-is, the sync Worker stays at 100%.
+body `version`, from the `version_metadata` binding `CF_VERSION_METADATA`. The first staged
+deploy (run 36927209537) split the three request-path Workers 90/10 with no fallback, so the
+account does get percentage splits. The sync Worker itself was deployed at 100%
+(`3bb69d3d-3cbe-45f5-af5e-936f754b6087`), and its `scheduled` and `queue` version lines are
+Worker logs, absent from the deploy's job log; they still need reading from Cloudflare's logs, and
+since the sync Worker never stood under a split they can only confirm that one version. Which
+version a split hands a cron or a queue consumer is therefore still unknown, and until it is read
+from a split of this Worker the sync Worker stays at 100%.
 
 ## Repos
 
