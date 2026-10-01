@@ -108,6 +108,11 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npx wrangler deploy -c workers/router/wrangler.jsonc
       - if: steps.gate.outputs.skip == 'false'
+        name: Make the route hostname resolve
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: node tools/ensure-dns.mjs --zone claudinite.com --name license.claudinite.com
+      - if: steps.gate.outputs.skip == 'false'
         name: Read back the live Workers
         run: |
           probe() {
