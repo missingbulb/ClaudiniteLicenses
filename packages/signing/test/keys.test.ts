@@ -73,7 +73,7 @@ describe("verifyKey", () => {
     expect(await verifyKey(await signKey(c.issuing.seed, expiredCert, payload()), { roots, now: NOW })).toEqual({ ok: false, reason: "cert-expired" });
     expect(await verifyKey(good, { roots, now: new Date("2026-05-01T00:00:00Z") })).toEqual({ ok: false, reason: "cert-not-yet-valid" });
     expect(await verifyKey(await signKey(c.issuing.seed, cert, payload({ exp: NOW_S - 1 })), { roots, now: NOW })).toEqual({ ok: false, reason: "key-expired" });
-    expect(await verifyKey(await signKey(c.issuing.seed, cert, payload({ iat: NOW_S + 60 })), { roots, now: NOW })).toEqual({ ok: false, reason: "key-not-yet-valid" });
+    expect(await verifyKey(await signKey(c.issuing.seed, cert, payload({ iat: NOW_S + 301 })), { roots, now: NOW })).toEqual({ ok: false, reason: "key-not-yet-valid" });
 
     const env = JSON.parse(good);
     const body = b64urlDecode(env.payload);
@@ -82,6 +82,15 @@ describe("verifyKey", () => {
     const sig = b64urlDecode(env.signature);
     sig[0] = sig[0]! ^ 1;
     expect(await verifyKey(JSON.stringify({ ...env, signature: b64urlEncode(sig) }), { roots, now: NOW })).toEqual({ ok: false, reason: "bad-signature" });
+  });
+
+  it("accepts an iat up to five minutes ahead of its clock, and no further", async () => {
+    const c = await devChain();
+    const cert = await c.certify(c.root, "license-public");
+    const at = (iat: number) => signKey(c.issuing.seed, cert, payload({ iat, exp: iat + DAY }));
+    expect((await verifyKey(await at(NOW_S + 60), { roots: [c.root.publicKey], now: NOW })).ok).toBe(true);
+    expect((await verifyKey(await at(NOW_S + 300), { roots: [c.root.publicKey], now: NOW })).ok).toBe(true);
+    expect(await verifyKey(await at(NOW_S + 301), { roots: [c.root.publicKey], now: NOW })).toEqual({ ok: false, reason: "key-not-yet-valid" });
   });
 
   it("refuses a key whose kid is not its certificate's key id", async () => {

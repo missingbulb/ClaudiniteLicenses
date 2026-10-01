@@ -6,6 +6,8 @@ export const CERT_DOMAIN = "claudinite-cert-v1\n";
 export const LICENSE_DOMAIN = "claudinite-license-v1\n";
 
 const DAY_MS = 86_400_000;
+/** How far ahead of the verifier's clock a key's `iat` may be, in seconds. */
+export const IAT_LEEWAY_S = 300;
 const ABSOLUTE_MAX_VALIDITY_MS = 400 * DAY_MS;
 
 export type Use = "manifest" | "packs" | "license" | "license-public";
@@ -256,7 +258,7 @@ function useForPlan(plan: Plan): Use {
 
 /**
  * Verifies a key's wire form, checking in order: shape, the certificate against `roots` and its
- * window, `kid` against the certificate, the key signature, the key's iat/exp, and the purpose
+ * window, `kid` against the certificate, the key signature, the key's iat (less IAT_LEEWAY_S) and exp, and the purpose
  * (a `public` plan needs a `license-public` certificate, every other plan `license`).
  */
 export async function verifyKey(key: string, opts: { roots: string[]; now: Date }): Promise<Verdict<KeyPayload>> {
@@ -286,7 +288,7 @@ export async function verifyKey(key: string, opts: { roots: string[]; now: Date 
     return { ok: false, reason: "bad-signature" };
   }
   const nowS = opts.now.getTime() / 1000;
-  if (nowS < p.iat) return { ok: false, reason: "key-not-yet-valid" };
+  if (nowS < p.iat - IAT_LEEWAY_S) return { ok: false, reason: "key-not-yet-valid" };
   if (nowS >= p.exp) return { ok: false, reason: "key-expired" };
   if (cert.payload.use !== useForPlan(p.plan as Plan)) return { ok: false, reason: "purpose" };
   return { ok: true, payload: p as unknown as KeyPayload };

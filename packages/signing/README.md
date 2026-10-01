@@ -51,7 +51,8 @@ In order, the first failure naming the reason:
    `cert-key-id`, `cert-validity`, `cert-not-yet-valid`, `cert-expired`).
 3. `kid-mismatch`: the payload's `kid` is not the certificate's `keyId`.
 4. `bad-signature`: the key signature does not verify with the certificate's subject key.
-5. `key-not-yet-valid` before `iat`, `key-expired` at or after `exp`.
+5. `key-not-yet-valid` more than 5 minutes (300 seconds) before `iat`, so a verifier whose clock
+   runs behind the issuer's still accepts a fresh key; `key-expired` at or after `exp`.
 6. `purpose`: a `public` plan needs a `license-public` certificate, every other plan `license`;
    `packs` and `manifest` certificates never sign a key.
 
