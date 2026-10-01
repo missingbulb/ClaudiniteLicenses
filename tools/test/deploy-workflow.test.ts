@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -36,6 +36,7 @@ function resolveEnv(env: Record<string, string> | undefined, secrets: Record<str
 
 function runStep(step: Step, secrets: Record<string, string>, extra: Record<string, string> = {}) {
   return spawnSync("bash", ["-e", "-c", step.run!], {
+    cwd: ROOT,
     env: { PATH: process.env.PATH!, ...resolveEnv(job.env, secrets), ...resolveEnv(step.env, secrets), ...extra },
     encoding: "utf8",
   });
@@ -44,7 +45,7 @@ function runStep(step: Step, secrets: Record<string, string>, extra: Record<stri
 function runGate(secrets: Record<string, string>) {
   const out = join(mkdtempSync(join(tmpdir(), "acme-gate-")), "output");
   const res = runStep(gate, secrets, { GITHUB_OUTPUT: out });
-  return { status: res.status, stdout: res.stdout, output: readFileSync(out, "utf8") };
+  return { status: res.status, stdout: res.stdout, stderr: res.stderr, output: existsSync(out) ? readFileSync(out, "utf8") : "" };
 }
 
 // Runs a "Secrets for <worker>" step with an npx that keeps the file `wrangler secret bulk` was handed.
@@ -69,14 +70,19 @@ describe("deploy.yml", () => {
     expect(deployAt("public-key")).toBeLessThan(deployAt("router"));
   });
 
-  it("gates on every secret the Workers' READMEs list", () => {
+  const ISSUING = ["ISSUING_KEY_PRIVATE", "ISSUING_KEY_CERT"];
+  const allBut = (...names: string[]) => Object.fromEntries(secrets.filter((s) => !names.includes(s)).map((s) => [s, "set"]));
+
+  it("skips on each missing secret the Workers' READMEs list, other than the issuing keys", () => {
     expect(readmeSecrets("public-key").length).toBeGreaterThanOrEqual(4);
     expect(readmeSecrets("router").length).toBeGreaterThanOrEqual(1);
-    for (const name of secrets) {
-      const res = runGate(Object.fromEntries(secrets.filter((s) => s !== name).map((s) => [s, "set"])));
-      expect(res.status, name).toBe(0);
-      expect(res.stdout, name).toContain(`deploy skipped: missing ${name}`);
-      expect(res.output, name).toBe("skip=true\n");
+    for (const name of secrets.filter((s) => !ISSUING.includes(s))) {
+      for (const issuing of [[], ISSUING]) {
+        const res = runGate(allBut(name, ...issuing));
+        expect(res.status, name).toBe(0);
+        expect(res.stdout, name).toContain(`deploy skipped: missing ${name}`);
+        expect(res.output, name).toBe("skip=true\n");
+      }
     }
   });
 
@@ -84,17 +90,32 @@ describe("deploy.yml", () => {
     const none = runGate({});
     expect(none.status).toBe(0);
     expect(none.output).toBe("skip=true\n");
-    const all = runGate(Object.fromEntries(secrets.map((s) => [s, "set"])));
+    const all = runGate(allBut());
     expect(all.status).toBe(0);
     expect(all.stdout).not.toContain("skipped");
+    expect(all.stdout).not.toContain("::warning::");
     expect(all.output).toBe("skip=false\n");
   });
 
-  it("cites ClaudiniteEngine#5 only when an issuing key is what is missing", () => {
-    const without = (...names: string[]) => runGate(Object.fromEntries(secrets.filter((s) => !names.includes(s)).map((s) => [s, "set"]))).stdout;
-    expect(without("ISSUING_KEY_PRIVATE")).toContain("ClaudiniteEngine#5");
-    expect(without("ISSUING_KEY_CERT", "CLOUDFLARE_API_TOKEN")).toContain("ClaudiniteEngine#5");
-    expect(without("CLOUDFLARE_API_TOKEN")).not.toContain("#");
+  it("proceeds on the committed dev issuing key, with a warning citing ClaudiniteEngine#5, when both issuing keys are unset", () => {
+    const res = runGate(allBut(...ISSUING));
+    expect(res.status).toBe(0);
+    expect(res.output).toBe("skip=false\n");
+    expect(res.stdout).toMatch(/^::warning::.*ClaudiniteEngine#5/m);
+    const bulk = bulkSecrets("public-key", { ...allBut(...ISSUING), ISSUING_KEY_PRIVATE: "", ISSUING_KEY_CERT: "" });
+    expect(bulk.ISSUING_KEY_PRIVATE).toBe(readFileSync(join(ROOT, "keys/dev/license-public.key"), "utf8"));
+    expect(bulk.ISSUING_KEY_CERT).toBe(readFileSync(join(ROOT, "keys/dev/license-public.cert.json"), "utf8"));
+  });
+
+  it("fails when only one issuing key is set, whatever else is missing", () => {
+    for (const name of ISSUING) {
+      for (const also of [[], ["CLOUDFLARE_API_TOKEN"]]) {
+        const res = runGate(allBut(name, ...also));
+        expect(res.status, name).not.toBe(0);
+        expect(res.stdout + res.stderr, name).toContain(name);
+        expect(res.output, name).toBe("");
+      }
+    }
   });
 
   it("stores each repository secret as the Worker secret its README names", () => {

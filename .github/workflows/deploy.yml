@@ -45,18 +45,22 @@ jobs:
           ISSUING_KEY_PRIVATE: ${{ secrets.ISSUING_KEY_PRIVATE }}
           ISSUING_KEY_CERT: ${{ secrets.ISSUING_KEY_CERT }}
         run: |
+          if [ -n "$ISSUING_KEY_PRIVATE$ISSUING_KEY_CERT" ] && { [ -z "$ISSUING_KEY_PRIVATE" ] || [ -z "$ISSUING_KEY_CERT" ]; }; then
+            echo "::error::only one of ISSUING_KEY_PRIVATE and ISSUING_KEY_CERT is set: set both, or neither to deploy with the dev key in keys/dev"
+            exit 1
+          fi
           missing=""
-          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLAUDINITE_GITHUB_APP_ID CLAUDINITE_GITHUB_APP_PRIVATE_KEY CLAUDINITE_GITHUB_APP_WEBHOOK_SECRET ISSUING_KEY_PRIVATE ISSUING_KEY_CERT; do
+          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLAUDINITE_GITHUB_APP_ID CLAUDINITE_GITHUB_APP_PRIVATE_KEY CLAUDINITE_GITHUB_APP_WEBHOOK_SECRET; do
             if [ -z "$(printenv "$name")" ]; then missing="$missing $name"; fi
           done
           if [ -n "$missing" ]; then
-            case "$missing" in
-              *ISSUING_KEY_*) echo "deploy skipped: missing$missing (production issuing keys wait on ClaudiniteEngine#5)" ;;
-              *) echo "deploy skipped: missing$missing" ;;
-            esac
+            echo "deploy skipped: missing$missing"
             echo "skip=true" >> "$GITHUB_OUTPUT"
             # Expected until every secret is set: a skipped deploy is not a failure.
             exit 0
+          fi
+          if [ -z "$ISSUING_KEY_PRIVATE$ISSUING_KEY_CERT" ]; then
+            echo "::warning::ISSUING_KEY_PRIVATE and ISSUING_KEY_CERT are unset: claudinite-public-key signs with the dev key in keys/dev, trusted by no released binary, until ClaudiniteEngine#5"
           fi
           echo "skip=false" >> "$GITHUB_OUTPUT"
       - if: steps.gate.outputs.skip == 'false'
@@ -78,7 +82,7 @@ jobs:
           ISSUING_KEY_PRIVATE: ${{ secrets.ISSUING_KEY_PRIVATE }}
           ISSUING_KEY_CERT: ${{ secrets.ISSUING_KEY_CERT }}
         run: |
-          node -e 'const e=process.env;console.log(JSON.stringify({GITHUB_APP_ID:e.GITHUB_APP_ID,GITHUB_APP_PRIVATE_KEY:e.GITHUB_APP_PRIVATE_KEY,ISSUING_KEY_PRIVATE:e.ISSUING_KEY_PRIVATE,ISSUING_KEY_CERT:e.ISSUING_KEY_CERT}))' > "$RUNNER_TEMP/public-key.secrets.json"
+          node -e 'const e=process.env,dev=(f)=>require("fs").readFileSync("keys/dev/"+f,"utf8"),useDev=!e.ISSUING_KEY_PRIVATE;console.log(JSON.stringify({GITHUB_APP_ID:e.GITHUB_APP_ID,GITHUB_APP_PRIVATE_KEY:e.GITHUB_APP_PRIVATE_KEY,ISSUING_KEY_PRIVATE:useDev?dev("license-public.key"):e.ISSUING_KEY_PRIVATE,ISSUING_KEY_CERT:useDev?dev("license-public.cert.json"):e.ISSUING_KEY_CERT}))' > "$RUNNER_TEMP/public-key.secrets.json"
           npx wrangler secret bulk "$RUNNER_TEMP/public-key.secrets.json" -c workers/public-key/wrangler.jsonc
           rm "$RUNNER_TEMP/public-key.secrets.json"
       - if: steps.gate.outputs.skip == 'false'

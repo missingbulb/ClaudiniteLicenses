@@ -23,3 +23,6 @@ Each repository secret `deploy.yml` reads, and the Worker secret it is stored as
 - `CLAUDINITE_GITHUB_APP_PRIVATE_KEY`, as `GITHUB_APP_PRIVATE_KEY` (the App's PEM as GitHub hands it out)
 - `ISSUING_KEY_PRIVATE` (the issuing key's seed file, ClaudiniteEngine's key format)
 - `ISSUING_KEY_CERT` (its `license-public` certificate JSON)
+
+While both `ISSUING_KEY_*` secrets are unset, `deploy.yml` stores the dev issuing key in
+[`keys/dev`](../../keys/dev/README.md) instead and warns; with only one of them set it fails.
