@@ -1,0 +1,29 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "claudinite-key",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-15",
+  "workers_dev": false,
+  "observability": { "enabled": true },
+  // The webhook path has no public route: it is reached only through the router's service binding.
+  "routes": [
+    { "pattern": "license.claudinite.com/v1/session-key", "zone_name": "claudinite.com" },
+    { "pattern": "license.claudinite.com/v1/actions-key", "zone_name": "claudinite.com" },
+    { "pattern": "license.claudinite.com/v1/login/*", "zone_name": "claudinite.com" },
+    { "pattern": "license.claudinite.com/v1/key/*", "zone_name": "claudinite.com" }
+  ],
+  // Read only: D1 has no read-only binding, so a test pins that no write statement appears in src/.
+  // deploy.yml writes the real database_id with tools/ensure-d1.mjs --write; the committed value is a placeholder.
+  "d1_databases": [
+    { "binding": "DB", "database_name": "claudinite-licenses", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "../../db/migrations" }
+  ],
+  "analytics_engine_datasets": [{ "binding": "KEY_COUNTS", "dataset": "claudinite_key_counts" }],
+  "ratelimits": [{ "name": "OWNER_LIMIT", "namespace_id": "1001", "simple": { "limit": 600, "period": 60 } }],
+  "vars": {
+    "GITHUB_API_BASE": "https://api.github.com",
+    "GITHUB_WEB_BASE": "https://github.com",
+    "OIDC_ISSUER": "https://token.actions.githubusercontent.com",
+    "GITHUB_APP_CLIENT_ID": "Iv23lixTgnYXROPw9nb8",
+    "FAIL_OPEN": "true"
+  }
+}

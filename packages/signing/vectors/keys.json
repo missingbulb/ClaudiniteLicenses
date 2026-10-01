@@ -5,6 +5,7 @@
     "The certificate encoding is ClaudiniteEngine's (shared/sign/testdata/vectors.json); the key envelope is specified in packages/signing/README.md.",
     "Verify every case against roots [root, standby] at `now`; an invalid case names the first check that refuses it.",
     "A key is valid from 300 seconds before its iat, to absorb clock skew.",
+    "A license certificate signs a key of any plan; a license-public certificate signs only a public plan key.",
     "An unknown feature name, release field or payload field is ignored, so the server can add one without an engine release.",
     "Seeds here are test keys only and sign nothing anyone trusts."
   ],
@@ -77,8 +78,7 @@
     {
       "name": "license certificate on a public plan key",
       "key": "{\"certificate\":{\"payload\":\"eyJ2IjoxLCJrZXlJZCI6IjhhNDdjZjU2YzRiNDIwYTciLCJwdWJsaWNLZXkiOiJNeTYtalNmTGN5T3pwQUhCd1R0ZDFrdk13T0VPemFIQ3RkRWFBM2VhaGVVIiwidXNlIjoibGljZW5zZSIsImlzc3VlciI6ImY3Yjc2NzZjOTRkZjdlOGYiLCJub3RCZWZvcmUiOiIyMDI2LTAxLTAxVDAwOjAwOjAwWiIsIm5vdEFmdGVyIjoiMjAyNi0wNC0wMVQwMDowMDowMFoifQ\",\"signature\":\"VouXzl94FqGK7xqaqexYxAghNSC2uloWBCa6qJjhYVqV8oSFsT2yEnNZt2ISw4EWA-8crje6kv4wwRNSHRVxCg\"},\"payload\":\"eyJ2IjoxLCJ0eXAiOiJzZXNzaW9uIiwia2lkIjoiOGE0N2NmNTZjNGI0MjBhNyIsInJlcG9faWQiOjEwMDEsIm93bmVyX2lkIjoyMDAyLCJvd25lcl90eXBlIjoiVXNlciIsIm93bmVyX2xvZ2luIjoiYWNtZS11c2VyIiwicGxhbiI6InB1YmxpYyIsInVzZXJfaWQiOjMwMDMsIm5vbmNlIjoiYWNtZS1ub25jZS0wMTIzNDU2Nzg5YWJjZGVmIiwiaWF0IjoxNzY5ODE0MDAwLCJleHAiOjE3NzA0MTg4MDAsInN0YXRlIjoib2siLCJncmFjZV91bnRpbCI6bnVsbCwiZmVhdHVyZXMiOlsid29yay1jaGVja3MiLCJmb3JjZWQtc2tpbGwtbG9hZGluZyIsImluLXNlc3Npb24tZ3Jvd3RoIiwiY2xhdWRpbml0ZS10YXNrcyIsInVwZGF0ZXMiXSwicmVsZWFzZSI6eyJoZWxkIjpbXSwicmV2b2tlZCI6W10sInNlY3VyaXR5X2ZpeGVzIjpbXSwicGFja19pbmRleF9zZXJpYWwiOjAsInBhY2tfa2V5cyI6W119fQ\",\"signature\":\"mkbZCwvIc7A64ro4MSjmxNc7pzulPKSHPzUItpuCTPsjQVfxlaNpidMsOxLXV9T9icoawz0IIuDw7PH7cApxBA\"}",
-      "valid": false,
-      "reason": "purpose"
+      "valid": true
     },
     {
       "name": "license-public certificate on a personal plan key",

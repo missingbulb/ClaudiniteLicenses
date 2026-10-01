@@ -1,0 +1,1242 @@
+{
+  "public, 50 tries": {
+    "tries": 50,
+    "visible": 50,
+    "medianMs": 2404.5,
+    "p90Ms": 2568,
+    "maxMs": 3265,
+    "overCut": 0,
+    "cutMs": 10000,
+    "dispatchMedianMs": 309.5,
+    "senderTypes": {
+      "User": 50
+    },
+    "failures": [],
+    "repo": "missingbulb/ClaudiniteLicenses",
+    "event": "claudinite-key-public",
+    "head": "a7faf59f2184005962017a8e8ec1d1f96078b31f",
+    "ranAt": "2026-10-01T18:15:52.438Z",
+    "triesDetail": [
+      {
+        "try": 1,
+        "dispatchStatus": 204,
+        "dispatchMs": 281,
+        "visibleMs": 2347,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 2,
+        "dispatchStatus": 204,
+        "dispatchMs": 318,
+        "visibleMs": 2394,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 3,
+        "dispatchStatus": 204,
+        "dispatchMs": 250,
+        "visibleMs": 2369,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 4,
+        "dispatchStatus": 204,
+        "dispatchMs": 270,
+        "visibleMs": 2350,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 5,
+        "dispatchStatus": 204,
+        "dispatchMs": 268,
+        "visibleMs": 2375,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 6,
+        "dispatchStatus": 204,
+        "dispatchMs": 316,
+        "visibleMs": 2437,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 7,
+        "dispatchStatus": 204,
+        "dispatchMs": 263,
+        "visibleMs": 2401,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 8,
+        "dispatchStatus": 204,
+        "dispatchMs": 297,
+        "visibleMs": 2373,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 9,
+        "dispatchStatus": 204,
+        "dispatchMs": 246,
+        "visibleMs": 2321,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 10,
+        "dispatchStatus": 204,
+        "dispatchMs": 322,
+        "visibleMs": 2350,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 11,
+        "dispatchStatus": 204,
+        "dispatchMs": 340,
+        "visibleMs": 2457,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 12,
+        "dispatchStatus": 204,
+        "dispatchMs": 268,
+        "visibleMs": 2405,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 13,
+        "dispatchStatus": 204,
+        "dispatchMs": 280,
+        "visibleMs": 2437,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 14,
+        "dispatchStatus": 204,
+        "dispatchMs": 264,
+        "visibleMs": 2439,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 15,
+        "dispatchStatus": 204,
+        "dispatchMs": 312,
+        "visibleMs": 2622,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 16,
+        "dispatchStatus": 204,
+        "dispatchMs": 321,
+        "visibleMs": 2438,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 17,
+        "dispatchStatus": 204,
+        "dispatchMs": 263,
+        "visibleMs": 2404,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 18,
+        "dispatchStatus": 204,
+        "dispatchMs": 297,
+        "visibleMs": 2588,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 19,
+        "dispatchStatus": 204,
+        "dispatchMs": 272,
+        "visibleMs": 2371,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 20,
+        "dispatchStatus": 204,
+        "dispatchMs": 334,
+        "visibleMs": 2435,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 21,
+        "dispatchStatus": 204,
+        "dispatchMs": 330,
+        "visibleMs": 2401,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 22,
+        "dispatchStatus": 204,
+        "dispatchMs": 251,
+        "visibleMs": 2360,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 23,
+        "dispatchStatus": 204,
+        "dispatchMs": 334,
+        "visibleMs": 2470,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 24,
+        "dispatchStatus": 204,
+        "dispatchMs": 319,
+        "visibleMs": 2339,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 25,
+        "dispatchStatus": 204,
+        "dispatchMs": 395,
+        "visibleMs": 2609,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 26,
+        "dispatchStatus": 204,
+        "dispatchMs": 255,
+        "visibleMs": 2328,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 27,
+        "dispatchStatus": 204,
+        "dispatchMs": 446,
+        "visibleMs": 2548,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 28,
+        "dispatchStatus": 204,
+        "dispatchMs": 390,
+        "visibleMs": 2518,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 29,
+        "dispatchStatus": 204,
+        "dispatchMs": 376,
+        "visibleMs": 2548,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 30,
+        "dispatchStatus": 204,
+        "dispatchMs": 310,
+        "visibleMs": 2525,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 31,
+        "dispatchStatus": 204,
+        "dispatchMs": 248,
+        "visibleMs": 2351,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 32,
+        "dispatchStatus": 204,
+        "dispatchMs": 286,
+        "visibleMs": 1573,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 33,
+        "dispatchStatus": 204,
+        "dispatchMs": 336,
+        "visibleMs": 1680,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 34,
+        "dispatchStatus": 204,
+        "dispatchMs": 334,
+        "visibleMs": 2393,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 35,
+        "dispatchStatus": 204,
+        "dispatchMs": 341,
+        "visibleMs": 2378,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 36,
+        "dispatchStatus": 204,
+        "dispatchMs": 274,
+        "visibleMs": 2398,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 37,
+        "dispatchStatus": 204,
+        "dispatchMs": 385,
+        "visibleMs": 1729,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 38,
+        "dispatchStatus": 204,
+        "dispatchMs": 248,
+        "visibleMs": 2298,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 39,
+        "dispatchStatus": 204,
+        "dispatchMs": 247,
+        "visibleMs": 2419,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 40,
+        "dispatchStatus": 204,
+        "dispatchMs": 356,
+        "visibleMs": 2440,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 41,
+        "dispatchStatus": 204,
+        "dispatchMs": 341,
+        "visibleMs": 2517,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 42,
+        "dispatchStatus": 204,
+        "dispatchMs": 228,
+        "visibleMs": 2359,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 43,
+        "dispatchStatus": 204,
+        "dispatchMs": 270,
+        "visibleMs": 2489,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 44,
+        "dispatchStatus": 204,
+        "dispatchMs": 320,
+        "visibleMs": 1665,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 45,
+        "dispatchStatus": 204,
+        "dispatchMs": 308,
+        "visibleMs": 2676,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 46,
+        "dispatchStatus": 204,
+        "dispatchMs": 334,
+        "visibleMs": 2428,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 47,
+        "dispatchStatus": 204,
+        "dispatchMs": 322,
+        "visibleMs": 3265,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 48,
+        "dispatchStatus": 204,
+        "dispatchMs": 309,
+        "visibleMs": 2568,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 49,
+        "dispatchStatus": 204,
+        "dispatchMs": 321,
+        "visibleMs": 2542,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 50,
+        "dispatchStatus": 204,
+        "dispatchMs": 288,
+        "visibleMs": 2434,
+        "hasText": true,
+        "senderType": "User"
+      }
+    ]
+  },
+  "public, 100 tries --burst": {
+    "tries": 100,
+    "visible": 100,
+    "medianMs": 2432.5,
+    "p90Ms": 2585,
+    "maxMs": 3531,
+    "overCut": 0,
+    "cutMs": 10000,
+    "dispatchMedianMs": 280.5,
+    "senderTypes": {
+      "User": 100
+    },
+    "failures": [],
+    "repo": "missingbulb/ClaudiniteLicenses",
+    "event": "claudinite-key-public",
+    "head": "a7faf59f2184005962017a8e8ec1d1f96078b31f",
+    "ranAt": "2026-10-01T18:20:02.019Z",
+    "triesDetail": [
+      {
+        "try": 1,
+        "dispatchStatus": 204,
+        "dispatchMs": 295,
+        "visibleMs": 2642,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 2,
+        "dispatchStatus": 204,
+        "dispatchMs": 281,
+        "visibleMs": 2424,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 3,
+        "dispatchStatus": 204,
+        "dispatchMs": 342,
+        "visibleMs": 2432,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 4,
+        "dispatchStatus": 204,
+        "dispatchMs": 287,
+        "visibleMs": 2352,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 5,
+        "dispatchStatus": 204,
+        "dispatchMs": 274,
+        "visibleMs": 2478,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 6,
+        "dispatchStatus": 204,
+        "dispatchMs": 331,
+        "visibleMs": 2456,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 7,
+        "dispatchStatus": 204,
+        "dispatchMs": 388,
+        "visibleMs": 2527,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 8,
+        "dispatchStatus": 204,
+        "dispatchMs": 306,
+        "visibleMs": 2448,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 9,
+        "dispatchStatus": 204,
+        "dispatchMs": 273,
+        "visibleMs": 1655,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 10,
+        "dispatchStatus": 204,
+        "dispatchMs": 242,
+        "visibleMs": 2441,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 11,
+        "dispatchStatus": 204,
+        "dispatchMs": 231,
+        "visibleMs": 2380,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 12,
+        "dispatchStatus": 204,
+        "dispatchMs": 326,
+        "visibleMs": 2493,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 13,
+        "dispatchStatus": 204,
+        "dispatchMs": 327,
+        "visibleMs": 2437,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 14,
+        "dispatchStatus": 204,
+        "dispatchMs": 257,
+        "visibleMs": 2353,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 15,
+        "dispatchStatus": 204,
+        "dispatchMs": 290,
+        "visibleMs": 1506,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 16,
+        "dispatchStatus": 204,
+        "dispatchMs": 404,
+        "visibleMs": 2534,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 17,
+        "dispatchStatus": 204,
+        "dispatchMs": 321,
+        "visibleMs": 2451,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 18,
+        "dispatchStatus": 204,
+        "dispatchMs": 260,
+        "visibleMs": 2405,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 19,
+        "dispatchStatus": 204,
+        "dispatchMs": 330,
+        "visibleMs": 2426,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 20,
+        "dispatchStatus": 204,
+        "dispatchMs": 437,
+        "visibleMs": 2580,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 21,
+        "dispatchStatus": 204,
+        "dispatchMs": 268,
+        "visibleMs": 2324,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 22,
+        "dispatchStatus": 204,
+        "dispatchMs": 262,
+        "visibleMs": 2347,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 23,
+        "dispatchStatus": 204,
+        "dispatchMs": 437,
+        "visibleMs": 3531,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 24,
+        "dispatchStatus": 204,
+        "dispatchMs": 235,
+        "visibleMs": 2341,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 25,
+        "dispatchStatus": 204,
+        "dispatchMs": 238,
+        "visibleMs": 2373,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 26,
+        "dispatchStatus": 204,
+        "dispatchMs": 247,
+        "visibleMs": 2427,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 27,
+        "dispatchStatus": 204,
+        "dispatchMs": 298,
+        "visibleMs": 2400,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 28,
+        "dispatchStatus": 204,
+        "dispatchMs": 301,
+        "visibleMs": 2464,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 29,
+        "dispatchStatus": 204,
+        "dispatchMs": 282,
+        "visibleMs": 2460,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 30,
+        "dispatchStatus": 204,
+        "dispatchMs": 329,
+        "visibleMs": 1579,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 31,
+        "dispatchStatus": 204,
+        "dispatchMs": 287,
+        "visibleMs": 2554,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 32,
+        "dispatchStatus": 204,
+        "dispatchMs": 326,
+        "visibleMs": 2585,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 33,
+        "dispatchStatus": 204,
+        "dispatchMs": 269,
+        "visibleMs": 3385,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 34,
+        "dispatchStatus": 204,
+        "dispatchMs": 484,
+        "visibleMs": 2781,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 35,
+        "dispatchStatus": 204,
+        "dispatchMs": 298,
+        "visibleMs": 2461,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 36,
+        "dispatchStatus": 204,
+        "dispatchMs": 245,
+        "visibleMs": 1746,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 37,
+        "dispatchStatus": 204,
+        "dispatchMs": 275,
+        "visibleMs": 2398,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 38,
+        "dispatchStatus": 204,
+        "dispatchMs": 249,
+        "visibleMs": 2370,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 39,
+        "dispatchStatus": 204,
+        "dispatchMs": 264,
+        "visibleMs": 3222,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 40,
+        "dispatchStatus": 204,
+        "dispatchMs": 280,
+        "visibleMs": 2398,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 41,
+        "dispatchStatus": 204,
+        "dispatchMs": 255,
+        "visibleMs": 2442,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 42,
+        "dispatchStatus": 204,
+        "dispatchMs": 270,
+        "visibleMs": 2400,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 43,
+        "dispatchStatus": 204,
+        "dispatchMs": 272,
+        "visibleMs": 2385,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 44,
+        "dispatchStatus": 204,
+        "dispatchMs": 341,
+        "visibleMs": 2489,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 45,
+        "dispatchStatus": 204,
+        "dispatchMs": 335,
+        "visibleMs": 2438,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 46,
+        "dispatchStatus": 204,
+        "dispatchMs": 376,
+        "visibleMs": 2455,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 47,
+        "dispatchStatus": 204,
+        "dispatchMs": 239,
+        "visibleMs": 2442,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 48,
+        "dispatchStatus": 204,
+        "dispatchMs": 299,
+        "visibleMs": 2533,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 49,
+        "dispatchStatus": 204,
+        "dispatchMs": 236,
+        "visibleMs": 2505,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 50,
+        "dispatchStatus": 204,
+        "dispatchMs": 248,
+        "visibleMs": 2348,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 51,
+        "dispatchStatus": 204,
+        "dispatchMs": 593,
+        "visibleMs": 2777,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 52,
+        "dispatchStatus": 204,
+        "dispatchMs": 334,
+        "visibleMs": 1601,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 53,
+        "dispatchStatus": 204,
+        "dispatchMs": 291,
+        "visibleMs": 2495,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 54,
+        "dispatchStatus": 204,
+        "dispatchMs": 238,
+        "visibleMs": 2417,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 55,
+        "dispatchStatus": 204,
+        "dispatchMs": 345,
+        "visibleMs": 1645,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 56,
+        "dispatchStatus": 204,
+        "dispatchMs": 542,
+        "visibleMs": 2648,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 57,
+        "dispatchStatus": 204,
+        "dispatchMs": 272,
+        "visibleMs": 1546,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 58,
+        "dispatchStatus": 204,
+        "dispatchMs": 277,
+        "visibleMs": 1626,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 59,
+        "dispatchStatus": 204,
+        "dispatchMs": 254,
+        "visibleMs": 2456,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 60,
+        "dispatchStatus": 204,
+        "dispatchMs": 262,
+        "visibleMs": 2388,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 61,
+        "dispatchStatus": 204,
+        "dispatchMs": 277,
+        "visibleMs": 2361,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 62,
+        "dispatchStatus": 204,
+        "dispatchMs": 277,
+        "visibleMs": 2509,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 63,
+        "dispatchStatus": 204,
+        "dispatchMs": 280,
+        "visibleMs": 2427,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 64,
+        "dispatchStatus": 204,
+        "dispatchMs": 276,
+        "visibleMs": 2498,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 65,
+        "dispatchStatus": 204,
+        "dispatchMs": 263,
+        "visibleMs": 2328,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 66,
+        "dispatchStatus": 204,
+        "dispatchMs": 286,
+        "visibleMs": 2391,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 67,
+        "dispatchStatus": 204,
+        "dispatchMs": 278,
+        "visibleMs": 2444,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 68,
+        "dispatchStatus": 204,
+        "dispatchMs": 268,
+        "visibleMs": 1558,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 69,
+        "dispatchStatus": 204,
+        "dispatchMs": 285,
+        "visibleMs": 2487,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 70,
+        "dispatchStatus": 204,
+        "dispatchMs": 246,
+        "visibleMs": 2452,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 71,
+        "dispatchStatus": 204,
+        "dispatchMs": 267,
+        "visibleMs": 1561,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 72,
+        "dispatchStatus": 204,
+        "dispatchMs": 360,
+        "visibleMs": 2502,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 73,
+        "dispatchStatus": 204,
+        "dispatchMs": 288,
+        "visibleMs": 2378,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 74,
+        "dispatchStatus": 204,
+        "dispatchMs": 292,
+        "visibleMs": 1635,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 75,
+        "dispatchStatus": 204,
+        "dispatchMs": 255,
+        "visibleMs": 2337,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 76,
+        "dispatchStatus": 204,
+        "dispatchMs": 376,
+        "visibleMs": 2461,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 77,
+        "dispatchStatus": 204,
+        "dispatchMs": 281,
+        "visibleMs": 1747,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 78,
+        "dispatchStatus": 204,
+        "dispatchMs": 312,
+        "visibleMs": 2517,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 79,
+        "dispatchStatus": 204,
+        "dispatchMs": 297,
+        "visibleMs": 2655,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 80,
+        "dispatchStatus": 204,
+        "dispatchMs": 271,
+        "visibleMs": 2357,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 81,
+        "dispatchStatus": 204,
+        "dispatchMs": 255,
+        "visibleMs": 2331,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 82,
+        "dispatchStatus": 204,
+        "dispatchMs": 361,
+        "visibleMs": 2743,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 83,
+        "dispatchStatus": 204,
+        "dispatchMs": 271,
+        "visibleMs": 2477,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 84,
+        "dispatchStatus": 204,
+        "dispatchMs": 272,
+        "visibleMs": 2483,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 85,
+        "dispatchStatus": 204,
+        "dispatchMs": 338,
+        "visibleMs": 2480,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 86,
+        "dispatchStatus": 204,
+        "dispatchMs": 372,
+        "visibleMs": 2574,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 87,
+        "dispatchStatus": 204,
+        "dispatchMs": 289,
+        "visibleMs": 2360,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 88,
+        "dispatchStatus": 204,
+        "dispatchMs": 297,
+        "visibleMs": 2395,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 89,
+        "dispatchStatus": 204,
+        "dispatchMs": 249,
+        "visibleMs": 2322,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 90,
+        "dispatchStatus": 204,
+        "dispatchMs": 246,
+        "visibleMs": 2350,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 91,
+        "dispatchStatus": 204,
+        "dispatchMs": 246,
+        "visibleMs": 2379,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 92,
+        "dispatchStatus": 204,
+        "dispatchMs": 261,
+        "visibleMs": 2433,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 93,
+        "dispatchStatus": 204,
+        "dispatchMs": 247,
+        "visibleMs": 2597,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 94,
+        "dispatchStatus": 204,
+        "dispatchMs": 314,
+        "visibleMs": 2513,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 95,
+        "dispatchStatus": 204,
+        "dispatchMs": 279,
+        "visibleMs": 2317,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 96,
+        "dispatchStatus": 204,
+        "dispatchMs": 281,
+        "visibleMs": 2361,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 97,
+        "dispatchStatus": 204,
+        "dispatchMs": 278,
+        "visibleMs": 2374,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 98,
+        "dispatchStatus": 204,
+        "dispatchMs": 281,
+        "visibleMs": 2480,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 99,
+        "dispatchStatus": 204,
+        "dispatchMs": 395,
+        "visibleMs": 2492,
+        "hasText": true,
+        "senderType": "User"
+      },
+      {
+        "try": 100,
+        "dispatchStatus": 204,
+        "dispatchMs": 265,
+        "visibleMs": 2419,
+        "hasText": true,
+        "senderType": "User"
+      }
+    ]
+  }
+}

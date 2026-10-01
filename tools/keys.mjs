@@ -84,9 +84,18 @@ export async function devChain(out) {
     ISSUING_KEY_PRIVATE: pub.seed,
     ISSUING_KEY_CERT: JSON.stringify(pubCert),
   };
+  const keyVars = {
+    GITHUB_APP_ID: "1",
+    GITHUB_APP_PRIVATE_KEY: privateKey,
+    ISSUING_KEY_PRIVATE: lic.seed,
+    ISSUING_KEY_CERT: JSON.stringify(licCert),
+  };
+  const syncVars = { GITHUB_APP_ID: "1", GITHUB_APP_PRIVATE_KEY: privateKey, SYNC_ADMIN_TOKEN: randomBytes(32).toString("hex") };
   writeNew(join(out, "public-key.dev.vars"), formatDevVars(publicKeyVars), 0o600);
+  writeNew(join(out, "key.dev.vars"), formatDevVars(keyVars), 0o600);
+  writeNew(join(out, "sync.dev.vars"), formatDevVars(syncVars), 0o600);
   writeNew(join(out, "router.dev.vars"), formatDevVars({ GITHUB_APP_WEBHOOK_SECRET: secret }), 0o600);
-  return { root, publicKeyVars, webhookSecret: secret, licenseCert: licCert };
+  return { root, publicKeyVars, keyVars, syncVars, webhookSecret: secret, licenseCert: licCert };
 }
 
 async function main(argv) {
@@ -115,7 +124,7 @@ async function main(argv) {
     case "dev-chain": {
       const out = need("out");
       const chain = await devChain(out);
-      console.log(`dev chain in ${out}: root ${chain.root.keyId}; public-key.dev.vars and router.dev.vars hold the Workers' dev secrets`);
+      console.log(`dev chain in ${out}: root ${chain.root.keyId}; public-key.dev.vars, key.dev.vars, sync.dev.vars and router.dev.vars hold the Workers' dev secrets`);
       return;
     }
     default:

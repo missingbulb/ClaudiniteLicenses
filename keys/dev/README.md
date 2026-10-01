@@ -11,17 +11,22 @@ verifies only in a development build of `cn`.
   acceptable only because nothing released trusts its root. The real key never enters this tree.
 - `license-public.cert.json`: its `license-public` certificate, issued by the Engine's development
   root for 90 days, until 2026-12-30T14:25:51Z.
+- `license.key`, `license.pub`, `license.cert.json`: the development `license` issuing key (key id
+  `31c0d966a60bd33a`) and its `license` certificate from the same root, until
+  2026-12-30T17:49:26Z, for the paid key Worker.
 
-`deploy.yml` deploys `claudinite-public-key` with this key, and warns, while the repository
-secrets `ISSUING_KEY_PRIVATE` and `ISSUING_KEY_CERT` are both unset. A test skips with a warning
-once fewer than 14 days remain. Until ClaudiniteEngine#5 lands, renew the certificate before it
-expires, from an Engine checkout, and commit the new file:
+`deploy.yml` deploys `claudinite-public-key` with the `license-public` key while the repository
+secrets `ISSUING_KEY_PRIVATE` and `ISSUING_KEY_CERT` are both unset, and `claudinite-key` with the
+`license` key while `KEY_ISSUING_KEY_PRIVATE` and `KEY_ISSUING_KEY_CERT` are both unset, warning
+each time. A test skips with a warning once fewer than 14 days remain on either certificate. Until
+ClaudiniteEngine#5 lands, renew a certificate before it expires, from an Engine checkout, and commit
+the new file (`<use>` is `license-public` or `license`):
 
 ```
-rm <licenses repo>/keys/dev/license-public.cert.json
-go run ./cmd/cn-keys certify --root keys/dev/root.key --subject <licenses repo>/keys/dev/license-public.pub --use license-public --days 90 --out <licenses repo>/keys/dev/license-public.cert.json
-go run ./cmd/cn-keys verify --roots license/roots <licenses repo>/keys/dev/license-public.cert.json
+rm <licenses repo>/keys/dev/<use>.cert.json
+go run ./cmd/cn-keys certify --root keys/dev/root.key --subject <licenses repo>/keys/dev/<use>.pub --use <use> --days 90 --out <licenses repo>/keys/dev/<use>.cert.json
+go run ./cmd/cn-keys verify --roots license/roots <licenses repo>/keys/dev/<use>.cert.json
 ```
 
-This folder and `deploy.yml`'s fallback to it are removed in the change that sets
-`ISSUING_KEY_PRIVATE` and `ISSUING_KEY_CERT` to the ceremony's issuing key.
+This folder and `deploy.yml`'s fallbacks to it are removed in the change that sets both pairs of
+issuing-key secrets to the ceremony's issuing keys.

@@ -1,4 +1,7 @@
-import { b64urlEncode } from "../../../packages/signing/src/index.ts";
+// The Claudinite App's GitHub client, shared by the Workers that act as the App: its JWT, an
+// installation token for exactly the repositories and permissions a call needs, and the key check
+// run. A source package only: each Worker bundles its own copy, so nothing is shared at runtime.
+import { b64urlEncode } from "../../signing/src/index.ts";
 
 export class GitHubError extends Error {
   readonly status: number;
@@ -67,27 +70,43 @@ export async function appJwt(appId: string, pem: string, nowS: number): Promise<
   return `${input}.${b64urlEncode(sig)}`;
 }
 
-export interface GitHubClient {
+export interface GitHubApi {
   base: string;
+  userAgent: string;
+}
+
+export interface GitHubClient extends GitHubApi {
   appId: string;
   privateKey: string;
 }
 
-async function call(base: string, path: string, auth: string, body: unknown, name: string): Promise<unknown> {
-  const res = await fetch(`${base}${path}`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${auth}`,
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
-      "User-Agent": "claudinite-public-key",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
+/** One GitHub API call: a JSON body out when given, the parsed JSON answer back, a GitHubError on any non-2xx. */
+export async function githubCall(api: GitHubApi, method: string, path: string, auth: string, body: unknown, name: string): Promise<unknown> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${auth}`,
+    Accept: "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+    "User-Agent": api.userAgent,
+  };
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  const res = await fetch(`${api.base}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   const text = await res.text();
   if (!res.ok) throw new GitHubError(res.status, text, name);
   return text ? JSON.parse(text) : {};
+}
+
+export interface TokenScope {
+  repositories?: string[];
+  permissions: Record<string, "read" | "write">;
+}
+
+/** An installation token holding exactly `scope`: the named repositories, or the whole installation when none are named. */
+export async function installationToken(gh: GitHubClient, installationId: number, scope: TokenScope, nowS: number): Promise<string> {
+  const jwt = await appJwt(gh.appId, gh.privateKey, nowS);
+  const body = scope.repositories ? { repositories: scope.repositories, permissions: scope.permissions } : { permissions: scope.permissions };
+  const token = (await githubCall(gh, "POST", `/app/installations/${installationId}/access_tokens`, jwt, body, "installation token")) as { token?: unknown };
+  if (typeof token.token !== "string") throw new GitHubError(502, "no token in the answer", "installation token");
+  return token.token;
 }
 
 export interface CheckRunOutput {
@@ -103,20 +122,15 @@ export async function createKeyCheckRun(
   output: CheckRunOutput,
   nowS: number,
 ): Promise<void> {
-  const jwt = await appJwt(gh.appId, gh.privateKey, nowS);
-  const token = (await call(
-    gh.base,
-    `/app/installations/${target.installationId}/access_tokens`,
-    jwt,
-    { repositories: [target.repoName], permissions: { checks: "write" } },
-    "installation token",
-  )) as { token?: unknown };
-  if (typeof token.token !== "string") throw new GitHubError(502, "no token in the answer", "installation token");
-  await call(
-    gh.base,
+  const token = await installationToken(gh, target.installationId, { repositories: [target.repoName], permissions: { checks: "write" } }, nowS);
+  await githubCall(
+    gh,
+    "POST",
     `/repos/${target.fullName}/check-runs`,
-    token.token,
+    token,
     { name: "Claudinite key", head_sha: target.head, external_id: target.nonce, status: "completed", conclusion: "neutral", output },
     "check run",
   );
 }
+
+export * from "./session.ts";

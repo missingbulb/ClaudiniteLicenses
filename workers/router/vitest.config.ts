@@ -8,7 +8,11 @@ export default defineProject({
       wrangler: { configPath: "./wrangler.jsonc" },
       miniflare: {
         bindings: { GITHUB_APP_WEBHOOK_SECRET: "unused-in-tests" },
-        serviceBindings: { PUBLIC_KEY: () => new Response("not used in tests", { status: 501 }) },
+        serviceBindings: {
+          PUBLIC_KEY: () => new Response("not used in tests", { status: 501 }),
+          KEY: () => new Response("not used in tests", { status: 501 }),
+          SYNC: () => new Response("not used in tests", { status: 501 }),
+        },
       },
     }),
   ],

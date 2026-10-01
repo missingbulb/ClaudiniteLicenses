@@ -48,5 +48,14 @@ describe("tools/keys.mjs", () => {
     expect((await verifyCertificate(lic, roots, "license", new Date())).ok).toBe(true);
     const router = parseDevVars(readFileSync(join(dir, "router.dev.vars"), "utf8"));
     expect(router.GITHUB_APP_WEBHOOK_SECRET!.length).toBeGreaterThanOrEqual(32);
+
+    const keyVars = parseDevVars(readFileSync(join(dir, "key.dev.vars"), "utf8"));
+    const paid = await signKey(keyVars.ISSUING_KEY_PRIVATE!, JSON.parse(keyVars.ISSUING_KEY_CERT!), { ...payload, plan: "personal" });
+    expect((await verifyKey(paid, { roots, now: new Date() })).ok).toBe(true);
+    expect(JSON.parse(keyVars.ISSUING_KEY_CERT!)).toEqual(lic);
+    expect(keyVars.GITHUB_APP_PRIVATE_KEY).toBe(vars.GITHUB_APP_PRIVATE_KEY);
+    const sync = parseDevVars(readFileSync(join(dir, "sync.dev.vars"), "utf8"));
+    expect(sync).toMatchObject({ GITHUB_APP_ID: vars.GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY: vars.GITHUB_APP_PRIVATE_KEY });
+    expect(sync.SYNC_ADMIN_TOKEN!.length).toBeGreaterThanOrEqual(32);
   });
 });

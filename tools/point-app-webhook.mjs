@@ -4,7 +4,7 @@
 //
 //   node tools/point-app-webhook.mjs --url https://license.claudinite.com/github-webhook
 import { parseArgs } from "node:util";
-import { appJwt } from "../workers/public-key/src/github.ts";
+import { appJwt } from "../packages/github-app/src/index.ts";
 
 /**
  * @param {{ base?: string, appId: string, privateKey: string, url: string }} opts
