@@ -2,7 +2,7 @@
   "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "claudinite-public-key",
   "main": "src/index.ts",
-  "compatibility_date": "2026-09-30",
+  "compatibility_date": "2026-08-15",
   "workers_dev": false,
   "observability": { "enabled": true },
   // The webhook path has no public route: it is reached only through the router's service binding.

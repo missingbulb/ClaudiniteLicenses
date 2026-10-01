@@ -2,6 +2,6 @@
   "$schema": "../node_modules/wrangler/config-schema.json",
   // Migrations only: nothing deploys this database in this chunk.
   "name": "claudinite-licenses-db",
-  "compatibility_date": "2026-09-30",
+  "compatibility_date": "2026-08-15",
   "d1_databases": [{ "binding": "DB", "database_name": "claudinite-licenses", "database_id": "local", "migrations_dir": "migrations" }]
 }
