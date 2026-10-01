@@ -121,7 +121,7 @@ export async function importPrivateKey(seed: string): Promise<CryptoKey> {
 }
 
 export async function publicKeyOf(seed: string): Promise<string> {
-  const jwk = await crypto.subtle.exportKey("jwk", await importPrivateKey(seed));
+  const jwk = (await crypto.subtle.exportKey("jwk", await importPrivateKey(seed))) as JsonWebKey;
   if (typeof jwk.x !== "string") throw new Error("Ed25519 key export carried no public half");
   return jwk.x;
 }
@@ -180,7 +180,7 @@ function decodeJson(b64: unknown): { bytes: Bytes; value: unknown } | null {
   if (typeof b64 !== "string") return null;
   try {
     const bytes = b64urlDecode(b64);
-    return { bytes, value: JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) };
+    return { bytes, value: JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes)) };
   } catch {
     return null;
   }

@@ -1,10 +1,19 @@
 {
   "extends": "../tsconfig.base.json",
   "compilerOptions": {
-    "lib": ["ES2023", "DOM"],
-    "types": ["node"],
+    "lib": [
+      "ES2023",
+      "DOM"
+    ],
+    "types": [
+      "node"
+    ],
     "allowJs": true,
     "checkJs": false
   },
-  "include": ["test", "vitest.config.ts"]
+  "include": [
+    "test",
+    "vitest.config.ts",
+    "../workers/public-key/test/global-setup.ts"
+  ]
 }

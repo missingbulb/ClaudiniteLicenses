@@ -4,5 +4,9 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-09-30",
   "workers_dev": false,
-  "observability": { "enabled": true }
+  "observability": { "enabled": true },
+  // The webhook path has no public route: it is reached only through the router's service binding.
+  "routes": [{ "pattern": "license.claudinite.com/v1/public/*", "zone_name": "claudinite.com" }],
+  "analytics_engine_datasets": [{ "binding": "KEY_COUNTS", "dataset": "claudinite_key_counts" }],
+  "vars": { "GITHUB_API_BASE": "https://api.github.com" }
 }

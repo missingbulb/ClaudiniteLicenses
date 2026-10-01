@@ -1,0 +1,119 @@
+import { b64urlEncode } from "../../../packages/signing/src/index.ts";
+
+export class GitHubError extends Error {
+  constructor(
+    readonly status: number,
+    readonly body: string,
+    readonly call: string,
+  ) {
+    super(`${call} answered ${status}`);
+  }
+
+  get secondaryRateLimit(): boolean {
+    return this.status === 403 && /secondary rate limit/i.test(this.body);
+  }
+}
+
+function derLength(n: number): number[] {
+  if (n < 0x80) return [n];
+  const bytes: number[] = [];
+  while (n > 0) {
+    bytes.unshift(n & 0xff);
+    n >>= 8;
+  }
+  return [0x80 | bytes.length, ...bytes];
+}
+
+function der(tag: number, content: Uint8Array): Uint8Array {
+  const len = derLength(content.length);
+  const out = new Uint8Array(1 + len.length + content.length);
+  out[0] = tag;
+  out.set(len, 1);
+  out.set(content, 1 + len.length);
+  return out;
+}
+
+function cat(...parts: Uint8Array[]): Uint8Array<ArrayBuffer> {
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let at = 0;
+  for (const p of parts) {
+    out.set(p, at);
+    at += p.length;
+  }
+  return out;
+}
+
+// version 0, AlgorithmIdentifier { rsaEncryption, NULL }
+const PKCS8_RSA_HEAD = Uint8Array.from([0x02, 0x01, 0x00, 0x30, 0x0d, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00]);
+
+/** GitHub hands out PKCS#1 PEM ("RSA PRIVATE KEY"); WebCrypto imports PKCS#8 only, so wrap it. */
+export function pemToPkcs8(pem: string): Uint8Array<ArrayBuffer> {
+  const m = /-----BEGIN (RSA )?PRIVATE KEY-----([\s\S]+?)-----END (RSA )?PRIVATE KEY-----/.exec(pem);
+  if (!m) throw new Error("GITHUB_APP_PRIVATE_KEY is not a PEM private key");
+  const body = atob(m[2]!.replace(/\s+/g, ""));
+  const raw = Uint8Array.from(body, (c) => c.charCodeAt(0));
+  return m[1] ? cat(der(0x30, cat(PKCS8_RSA_HEAD, der(0x04, raw)))) : raw;
+}
+
+export async function appJwt(appId: string, pem: string, nowS: number): Promise<string> {
+  const key = await crypto.subtle.importKey("pkcs8", pemToPkcs8(pem), { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["sign"]);
+  const enc = (v: unknown) => b64urlEncode(new TextEncoder().encode(JSON.stringify(v)));
+  // Backdated a minute for clock drift; GitHub refuses a JWT living longer than 10 minutes.
+  const input = `${enc({ alg: "RS256", typ: "JWT" })}.${enc({ iat: nowS - 60, exp: nowS + 540, iss: appId })}`;
+  const sig = new Uint8Array(await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, new TextEncoder().encode(input)));
+  return `${input}.${b64urlEncode(sig)}`;
+}
+
+export interface GitHubClient {
+  base: string;
+  appId: string;
+  privateKey: string;
+}
+
+async function call(base: string, path: string, auth: string, body: unknown, name: string): Promise<unknown> {
+  const res = await fetch(`${base}${path}`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${auth}`,
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "claudinite-public-key",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  if (!res.ok) throw new GitHubError(res.status, text, name);
+  return text ? JSON.parse(text) : {};
+}
+
+export interface CheckRunOutput {
+  title: string;
+  summary: string;
+  text?: string;
+}
+
+/** Creates one completed, neutral `Claudinite key` check run with an installation token scoped to the repo. */
+export async function createKeyCheckRun(
+  gh: GitHubClient,
+  target: { installationId: number; repoName: string; fullName: string; head: string; nonce: string },
+  output: CheckRunOutput,
+  nowS: number,
+): Promise<void> {
+  const jwt = await appJwt(gh.appId, gh.privateKey, nowS);
+  const token = (await call(
+    gh.base,
+    `/app/installations/${target.installationId}/access_tokens`,
+    jwt,
+    { repositories: [target.repoName], permissions: { checks: "write" } },
+    "installation token",
+  )) as { token?: unknown };
+  if (typeof token.token !== "string") throw new GitHubError(502, "no token in the answer", "installation token");
+  await call(
+    gh.base,
+    `/repos/${target.fullName}/check-runs`,
+    token.token,
+    { name: "Claudinite key", head_sha: target.head, external_id: target.nonce, status: "completed", conclusion: "neutral", output },
+    "check run",
+  );
+}
