@@ -23,8 +23,8 @@ export interface Env {
 }
 
 /** The nightly cron runs both reconciles; the hourly one retries the Polar reconcile when it is due. */
-export const NIGHTLY_CRON = "17 3 * * *";
-export const HOURLY_CRON = "47 * * * *";
+const NIGHTLY_CRON = "17 3 * * *";
+const HOURLY_CRON = "47 * * * *";
 
 const nowS = () => Math.floor(Date.now() / 1000);
 
