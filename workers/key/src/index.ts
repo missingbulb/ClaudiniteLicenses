@@ -37,7 +37,7 @@ async function loginRefresh(req: Request, env: Env): Promise<Response> {
 }
 
 /** Where and how fast a D1 read was served, each null when the result's meta does not say. */
-export interface ServedBy {
+interface ServedBy {
   d1_served_by_primary: boolean | null;
   d1_served_by_region: string | null;
   d1_ms: number | null;
@@ -46,7 +46,7 @@ export interface ServedBy {
 const UNKNOWN_SERVED: ServedBy = { d1_served_by_primary: null, d1_served_by_region: null, d1_ms: null };
 
 /** D1Result's meta fields (developers.cloudflare.com/d1/worker-api/return-object/), absent locally. */
-export function servedBy(meta: Partial<D1Meta> | undefined): ServedBy {
+function servedBy(meta: Partial<D1Meta> | undefined): ServedBy {
   return {
     d1_served_by_primary: typeof meta?.served_by_primary === "boolean" ? meta.served_by_primary : null,
     d1_served_by_region: typeof meta?.served_by_region === "string" ? meta.served_by_region : null,
