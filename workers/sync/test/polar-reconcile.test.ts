@@ -131,6 +131,7 @@ describe("GET /v1/sync/health", () => {
       last_dead_letter_at: null,
       paying_uncovered: null,
       polar_webhook_secret: true,
+      ip_limit: "counted",
       version: (env as unknown as { CF_VERSION_METADATA: { id: string } }).CF_VERSION_METADATA.id,
     });
     const { POLAR_WEBHOOK_SECRET: _unset, ...noSecret } = env;

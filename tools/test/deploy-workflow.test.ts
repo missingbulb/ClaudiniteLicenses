@@ -523,13 +523,13 @@ describe("deploy.yml", () => {
   const judgeStep = () => named("Judge claudinite-sync by its own health and alerts");
 
   // Runs the judge with a curl answering `health` on /v1/sync/health and 200 alerts, the marker the deploy wrote in place.
-  function judgeRun(health: number) {
+  function judgeRun(health: number, body = '{"ok":true,"ip_limit":"counted"}') {
     const dir = mkdtempSync(join(tmpdir(), "acme-judge-"));
     mkdirSync(join(dir, "staged"));
     writeFileSync(join(dir, "staged/sync"), "live-sync");
     writeFileSync(
       join(dir, "curl"),
-      `#!/usr/bin/env bash\nout=""; url=""\nwhile [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift;; https://*) url=$1;; esac; shift; done\nif [ "\${url##*/}" = health ]; then printf '{}' > "$out"; printf '${health}'; else printf '{"ok":true,"alerts":[]}' > "$out"; printf 200; fi\n`,
+      `#!/usr/bin/env bash\nout=""; url=""\nwhile [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift;; https://*) url=$1;; esac; shift; done\nif [ "\${url##*/}" = health ]; then printf '%s' '${body}' > "$out"; printf '${health}'; else printf '{"ok":true,"alerts":[]}' > "$out"; printf 200; fi\n`,
     );
     writeFileSync(join(dir, "sleep"), "#!/usr/bin/env bash\n");
     for (const f of ["curl", "sleep"]) chmodSync(join(dir, f), 0o755);
@@ -545,6 +545,17 @@ describe("deploy.yml", () => {
     const failed = judgeRun(503);
     expect(failed.status).not.toBe(0);
     expect(existsSync(join(failed.dir, "staged/sync"))).toBe(true);
+  });
+
+  it("fails the sync Worker's judge unless its health says the per-address cap counted the read", () => {
+    for (const state of ["unbound", "unavailable"]) {
+      const res = judgeRun(200, `{"ok":true,"ip_limit":"${state}"}`);
+      expect(res.status, state).not.toBe(0);
+      expect(res.stdout, state).toContain(`::error::claudinite-sync's health reports ip_limit ${state}`);
+      expect(existsSync(join(res.dir, "staged/sync")), state).toBe(true);
+    }
+    const missing = judgeRun(200, '{"ok":true}');
+    expect(missing.status).not.toBe(0);
   });
 
   // The rollback step after a failure, with markers as the steps before it left them.
@@ -633,13 +644,22 @@ describe("deploy.yml", () => {
     expect(step.run).toContain('probe 200 "b.fail_open===$FAIL_OPEN_WANT" -- https://license.claudinite.com/v1/key/health');
   });
 
-  const capStep = () => named("Prove the per-address cap is live");
+  it("reads back that the split Workers' health reads met the per-address cap, the binding bound and called", () => {
+    const run = named("Read back the live Workers").run!;
+    expect(run).toContain(`probe 200 'b.ip_limit==="counted"' -- https://license.claudinite.com/v1/public/health`);
+    expect(run).toContain(`probe 200 'b.d1==="ok"&&b.queue==="bound"&&b.polar==="configured"&&b.ip_limit==="counted"' -- https://license.claudinite.com/v1/key/health`);
+  });
+
+  const capStep = () => named("Observe the per-address cap from outside");
 
   // Runs the cap proof with a curl that answers 200 to the first `allowed` reads in arrival order, then
   // 429, with or without the version header; each read holds 50 ms so the stand-in sees how many
   // were in flight at once.
   function capRun(allowed: number, versioned = true) {
     const dir = mkdtempSync(join(tmpdir(), "acme-cap-"));
+    const realSleep = spawnSync("bash", ["-c", "command -v sleep"], { encoding: "utf8" }).stdout.trim();
+    writeFileSync(join(dir, "sleep"), `#!/usr/bin/env bash\necho "$@" >> "${dir}/sleeps"\n`);
+    chmodSync(join(dir, "sleep"), 0o755);
     writeFileSync(
       join(dir, "curl"),
       `#!/usr/bin/env bash
@@ -649,7 +669,7 @@ exec 9>"${dir}/lock"
 flock 9; n=$(( $(cat "${dir}/n" 2>/dev/null || echo 0) + 1 )); echo $n > "${dir}/n"
 f=$(( $(cat "${dir}/flight" 2>/dev/null || echo 0) + 1 )); echo $f > "${dir}/flight"
 [ $f -gt $(cat "${dir}/max" 2>/dev/null || echo 0) ] && echo $f > "${dir}/max"; flock -u 9
-sleep 0.05
+${realSleep} 0.05
 flock 9; echo $(( $(cat "${dir}/flight") - 1 )) > "${dir}/flight"; flock -u 9
 if [ $n -le ${allowed} ]; then code=200; else code=429; fi
 printf 'HTTP/2 %s\\r\\n${versioned ? "x-claudinite-version: acme-version\\r\\n" : ""}\\r\\n' $code > "$headers"
@@ -659,27 +679,36 @@ printf %s $code
     chmodSync(join(dir, "curl"), 0o755);
     const res = runStep(capStep(), {}, { PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir });
     const count = (f: string) => Number(readFileSync(join(dir, f), "utf8"));
-    return { ...res, sent: count("n"), maxInFlight: count("max") };
+    const sleeps = existsSync(join(dir, "sleeps")) ? readFileSync(join(dir, "sleeps"), "utf8").trim().split("\n") : [];
+    return { ...res, sent: count("n"), maxInFlight: count("max"), sleeps };
   }
 
-  it("proves the cap with 400 concurrent health reads, needing a 429 that carries the version header", () => {
+  // The limiter is per location and syncs in the background, so a burst can pass it whole; the reads
+  // are paced across most of the period instead, and what they meet is reported, never failed: the
+  // read-back's ip_limit field is what proves the cap is wired.
+  it("paces 400 health reads across the cap's period, eight at a time a second, and reports the 429s it met", () => {
     const ok = capRun(300);
     expect(ok.status, ok.stderr + ok.stdout).toBe(0);
     expect(ok.sent).toBe(400);
     expect(ok.maxInFlight).toBeGreaterThan(1);
-    expect(ok.maxInFlight).toBeLessThanOrEqual(25);
+    expect(ok.maxInFlight).toBeLessThanOrEqual(8);
+    expect(ok.sleeps).toEqual(Array(49).fill("1"));
     expect(ok.stdout).toMatch(/^sent 400 health reads in \d+s, 100 answered 429$/m);
     expect(ok.stdout).toMatch(/^ok 429 from version acme-version, 100 of 400 health reads refused in \d+s$/m);
-    const never = capRun(1000);
-    expect(never.status).not.toBe(0);
-    expect(never.sent).toBe(400);
-    expect(never.stdout).toMatch(/^::error::400 health reads from one address in \d+s met no 429/m);
-    const unversioned = capRun(300, false);
-    expect(unversioned.status).not.toBe(0);
-    expect(unversioned.stdout).toMatch(/^::error::none of the 100 429s carried a version header/m);
   });
 
-  it("proves the cap after promotion and the read-back, then waits out its period before the final probe", () => {
+  it("warns rather than fails when the paced reads meet no 429, or 429s with no version header", () => {
+    const never = capRun(1000);
+    expect(never.status, never.stderr).toBe(0);
+    expect(never.sent).toBe(400);
+    expect(never.stdout).toMatch(/^::warning::400 health reads from one address in \d+s met no 429/m);
+    expect(never.stdout).not.toContain("::error::");
+    const unversioned = capRun(300, false);
+    expect(unversioned.status, unversioned.stderr).toBe(0);
+    expect(unversioned.stdout).toMatch(/^::warning::none of the 100 429s carried a version header/m);
+  });
+
+  it("observes the cap after promotion and the read-back, then waits out its period before the final probe", () => {
     const cap = steps.indexOf(capStep());
     const wait = stepAt((s) => s.name === "Wait out the cap's period before the final probe");
     expect(cap).toBeGreaterThan(stepAt((s) => s.name === "Read back the live Workers"));

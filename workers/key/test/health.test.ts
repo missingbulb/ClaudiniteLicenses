@@ -16,7 +16,7 @@ describe("GET /v1/key/health", () => {
     const res = await call("/v1/key/health");
     expect(res.status).toBe(200);
     const days = Math.floor((Date.parse(cert().notAfter) - Date.now()) / 86_400_000);
-    expect(await res.json()).toEqual({ ok: true, kid: cert().keyId, cert_exp: cert().notAfter, cert_days_left: days, d1: "ok", queue: "bound", polar: "configured", trust_roots: "ok", fail_open: true, version: (base as unknown as { CF_VERSION_METADATA: { id: string } }).CF_VERSION_METADATA.id, alerts: [] });
+    expect(await res.json()).toEqual({ ok: true, kid: cert().keyId, cert_exp: cert().notAfter, cert_days_left: days, d1: "ok", queue: "bound", polar: "configured", trust_roots: "ok", fail_open: true, ip_limit: "counted", version: (base as unknown as { CF_VERSION_METADATA: { id: string } }).CF_VERSION_METADATA.id, alerts: [] });
     expect(world.calls).toHaveLength(0);
   });
 

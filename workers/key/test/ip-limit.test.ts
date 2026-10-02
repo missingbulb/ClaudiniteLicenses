@@ -63,6 +63,15 @@ describe("the key Worker's per-address cap", () => {
     expect(world.logs.filter((l) => l.includes('"ip-limited"'))).toHaveLength(1);
   }, 30_000);
 
+  // The deploy's read-back asserts `counted`: the binding is in the live version and the health route calls it.
+  it("reports on its health whether the cap counted that very read, threw, or is unbound", async () => {
+    const read = async (e: ReturnType<typeof env>) => ((await (await call("/v1/key/health", costly("GET", "/v1/key/health"), e)).json()) as { ip_limit: string }).ip_limit;
+    expect(await read(env({ ipLimit: 300 }))).toBe("counted");
+    expect(world.ipLimited).toEqual({ "ip:192.0.2.1": 1 });
+    expect(await read(env({ IP_LIMIT: { limit: async () => Promise.reject(new Error("acme limiter outage")) } as unknown as RateLimit }))).toBe("unavailable");
+    expect(await read(env({ IP_LIMIT: undefined }))).toBe("unbound");
+  });
+
   it("lets requests through when the limiter throws, logging ip-limit-unavailable once", async () => {
     const e = env({ IP_LIMIT: { limit: async () => Promise.reject(new Error("acme limiter outage")) } as unknown as RateLimit });
     for (let i = 0; i < 3; i++) expect((await call("/v1/key/health", costly("GET", "/v1/key/health"), e)).status).toBe(200);

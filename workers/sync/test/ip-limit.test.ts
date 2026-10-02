@@ -104,6 +104,15 @@ describe("the sync Worker's per-address cap", () => {
     for (let i = 0; i < 3; i++) expect((await send(request("GET", "/v1/sync/health"), e)).status).toBe(200);
     expect(logs.filter((l) => l.includes("ip-limit-unavailable"))).toHaveLength(1);
   });
+
+  // The deploy's judge asserts `counted`: the binding is in the live version and the health route calls it.
+  it("reports on its health whether the cap counted that very read, threw, or is unbound", async () => {
+    const read = async (e: Env) => ((await (await send(request("GET", "/v1/sync/health"), e)).json()) as { ip_limit: string }).ip_limit;
+    expect(await read(env(300))).toBe("counted");
+    expect(buckets).toEqual({ "ip:192.0.2.1": 1 });
+    expect(await read(env(300, { IP_LIMIT: { limit: async () => Promise.reject(new Error("acme limiter outage")) } }))).toBe("unavailable");
+    expect(await read(env(300, { IP_LIMIT: undefined }))).toBe("unbound");
+  });
 });
 
 describe("the sync Worker's webhook body caps", () => {

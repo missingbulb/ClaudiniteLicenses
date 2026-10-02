@@ -4,7 +4,7 @@
 // request is its whole record.
 import { b64urlDecode, certStanding, type Certificate } from "../../../packages/signing/src/index.ts";
 import { createKeyCheckRun, GitHubError, parseKeyDispatch, refusalSummary } from "../../../packages/github-app/src/index.ts";
-import { BODY_MAX_WEBHOOK, ipLimited, readJsonCapped, withinIpLimit, type IpLimitEnv } from "../../../packages/http/src/index.ts";
+import { BODY_MAX_WEBHOOK, ipLimited, ipLimitState, readJsonCapped, type IpLimitEnv } from "../../../packages/http/src/index.ts";
 import { versionOf, withVersion, type VersionEnv } from "../../../packages/version/src/index.ts";
 import { publicSessionKey } from "./desktop.ts";
 import { mintPublicSessionKey } from "./key.ts";
@@ -87,7 +87,8 @@ export const PUBLIC_ROUTES = ["POST /v1/public/session-key", "GET /v1/public/hea
 
 async function route(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url);
-  if (PUBLIC_ROUTES.includes(`${req.method} ${url.pathname}`) && !(await withinIpLimit(env, req))) return ipLimited();
+  const ipLimit = PUBLIC_ROUTES.includes(`${req.method} ${url.pathname}`) ? await ipLimitState(env, req) : null;
+  if (ipLimit === "refused") return ipLimited();
   if (req.method === "POST" && url.pathname === "/webhook") return webhook(req, env);
   if (req.method === "POST" && url.pathname === "/v1/public/session-key") return publicSessionKey(req, env);
   if (req.method === "GET" && url.pathname === "/v1/public/health") {
@@ -96,7 +97,7 @@ async function route(req: Request, env: Env): Promise<Response> {
     const cert = certStanding(body.notAfter, new Date());
     const alerts = cert.alert ? [cert.alert] : [];
     return Response.json(
-      { ok: alerts.length === 0, kid: body.keyId, cert_exp: body.notAfter, cert_days_left: cert.daysLeft, version: versionOf(env), alerts },
+      { ok: alerts.length === 0, kid: body.keyId, cert_exp: body.notAfter, cert_days_left: cert.daysLeft, ip_limit: ipLimit, version: versionOf(env), alerts },
       { status: alerts.length === 0 ? 200 : 503 },
     );
   }

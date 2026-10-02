@@ -171,7 +171,7 @@ describe("health", () => {
   it("names the issuing key, its certificate's expiry and days left without calling GitHub", async () => {
     const body = certBody();
     const days = Math.floor((Date.parse(body.notAfter) - Date.now()) / 86_400_000);
-    expect(await health()).toEqual({ status: 200, body: { ok: true, kid: body.keyId, cert_exp: body.notAfter, cert_days_left: days, version: (testEnv as unknown as { CF_VERSION_METADATA: { id: string } }).CF_VERSION_METADATA.id, alerts: [] } });
+    expect(await health()).toEqual({ status: 200, body: { ok: true, kid: body.keyId, cert_exp: body.notAfter, cert_days_left: days, ip_limit: "counted", version: (testEnv as unknown as { CF_VERSION_METADATA: { id: string } }).CF_VERSION_METADATA.id, alerts: [] } });
     expect(calls).toHaveLength(0);
   });
 

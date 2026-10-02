@@ -7,6 +7,7 @@ import {
   ENGINE_VERSION_MAX,
   IP_LIMITED,
   ipLimited,
+  ipLimitState,
   readCapped,
   readJsonCapped,
   resetIpLimitLog,
@@ -141,6 +142,18 @@ describe("withinIpLimit", () => {
     for (let i = 0; i < 5; i++) expect(await withinIpLimit({ IP_LIMIT: broken }, from("192.0.2.1"))).toBe(true);
     expect(await withinIpLimit({}, from("192.0.2.1"))).toBe(true);
     expect(logs.map((l) => JSON.parse(l).marker)).toEqual(["ip-limit-unavailable"]);
+  });
+});
+
+describe("ipLimitState", () => {
+  const from = new Request("https://license.claudinite.com/v1/key/health", { headers: { "CF-Connecting-IP": "192.0.2.1" } });
+
+  it("says whether the limiter counted the request, refused it, threw or is unbound, so a health answer can report the cap's wiring", async () => {
+    const { binding } = limiter(1);
+    expect(await ipLimitState({ IP_LIMIT: binding }, from)).toBe("counted");
+    expect(await ipLimitState({ IP_LIMIT: binding }, from)).toBe("refused");
+    expect(await ipLimitState({ IP_LIMIT: { limit: async () => Promise.reject(new Error("acme limiter outage")) } }, from)).toBe("unavailable");
+    expect(await ipLimitState({}, from)).toBe("unbound");
   });
 });
 

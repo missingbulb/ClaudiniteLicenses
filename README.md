@@ -82,9 +82,13 @@ gh variable delete KEY_FAIL_OPEN
 gh workflow run deploy.yml
 ```
 
-The read-back also proves the per-address cap from outside: it sends 400 reads of
-`/v1/key/health`, 25 at a time so they land inside the cap's minute, and fails the run unless a 429
-carrying a version header comes back, then waits a minute for the window to clear before the final
+The read-back proves the per-address cap is wired: the public key and key Workers' health answers,
+and the sync Worker's in its own judge, report `ip_limit: counted`, what the cap made of that very
+read, so the live version carries the binding and its route calls it. It then observes the cap from
+outside, 400 reads of `/v1/key/health` paced eight a second across 50 seconds, and warns, never
+fails, when no 429 carrying a version header comes back: Cloudflare's limiter is per
+location, permissive and eventually consistent, so meeting no 429 is no verdict on the release. It
+then waits a minute for the window to clear before the final
 probe. The canary probe's pinned walks can meet the cap too once both versions carry it; it waits
 out a 429 `rate-limited` and asks again rather than failing.
 

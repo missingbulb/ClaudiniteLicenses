@@ -14,7 +14,7 @@ import { polarWebhook } from "./polar-webhook.ts";
 import { githubClient, reconcileInstallations } from "./reconcile.ts";
 import { applyWebhook } from "./repos.ts";
 import { consumeWrites } from "./writes.ts";
-import { BODY_MAX_WEBHOOK, ipLimited, readJsonCapped, withinIpLimit, type IpLimitEnv } from "../../../packages/http/src/index.ts";
+import { BODY_MAX_WEBHOOK, ipLimited, ipLimitState, readJsonCapped, withinIpLimit, type IpLimitEnv, type IpLimitState } from "../../../packages/http/src/index.ts";
 import { versionOf, withVersion, type VersionEnv } from "../../../packages/version/src/index.ts";
 
 export interface Env extends VersionEnv, IpLimitEnv {
@@ -43,7 +43,7 @@ async function bearerMatches(req: Request, secret: string | undefined): Promise<
   return a.every((x, i) => x === b[i]);
 }
 
-async function health(env: Env): Promise<Response> {
+async function health(env: Env, ipLimit: IpLimitState | null): Promise<Response> {
   const nowS = Math.floor(Date.now() / 1000);
   const counts = await env.DB.prepare(
     "SELECT (SELECT COUNT(*) FROM repos) AS repos, (SELECT COUNT(*) FROM subscriptions) AS subscriptions, (SELECT COUNT(*) FROM seats WHERE last_key_at >= ?) AS seats",
@@ -71,6 +71,7 @@ async function health(env: Env): Promise<Response> {
     last_dead_letter_at: at("last_dead_letter_at"),
     paying_uncovered: count("paying_uncovered"),
     polar_webhook_secret: Boolean(env.POLAR_WEBHOOK_SECRET),
+    ip_limit: ipLimit,
     version: versionOf(env),
   });
 }
@@ -129,14 +130,15 @@ export const CAPPED_ROUTES = ["GET /v1/sync/health", "GET /v1/sync/alerts", "POS
 
 async function route(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url);
-  if (CAPPED_ROUTES.includes(`${req.method} ${url.pathname}`) && !(await withinIpLimit(env, req))) return ipLimited();
+  const ipLimit = CAPPED_ROUTES.includes(`${req.method} ${url.pathname}`) ? await ipLimitState(env, req) : null;
+  if (ipLimit === "refused") return ipLimited();
   if (req.method === "POST" && url.pathname === "/webhook") {
     const read = await readJsonCapped(req, BODY_MAX_WEBHOOK);
     if (!read.ok) return read.reason === "body-too-large" ? new Response("payload-too-large", { status: 413 }) : new Response("malformed-payload", { status: 400 });
     const payload = read.value;
     return applyWebhook(env, githubClient(env), req.headers.get("X-GitHub-Event") ?? "", payload as never, nowS(), req.headers.get("X-GitHub-Delivery"));
   }
-  if (req.method === "GET" && url.pathname === "/v1/sync/health") return health(env);
+  if (req.method === "GET" && url.pathname === "/v1/sync/health") return health(env, ipLimit);
   if (req.method === "GET" && url.pathname === "/v1/sync/alerts") return alertsRoute(env.DB, nowS());
   if (req.method === "POST" && url.pathname === "/v1/sync/polar-webhook") return polarWebhook(req, env, nowS(), () => withinIpLimit(env, req));
   if (req.method === "POST" && url.pathname === "/v1/sync/polar-reconcile") {

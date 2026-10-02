@@ -28,8 +28,8 @@ are `packages/http`'s.
 Every answer carries `X-Claudinite-Version`, the serving Cloudflare version's id from the
 `version_metadata` binding `CF_VERSION_METADATA`, which the deploy's canary probe reads.
 
-`GET /v1/public/health` answers `{ ok, kid, cert_exp, cert_days_left, version, alerts }` from the issuing
-key's certificate without calling GitHub, and judges it: with fewer than 14 days left it answers
+`GET /v1/public/health` answers `{ ok, kid, cert_exp, cert_days_left, ip_limit, version, alerts }` from the issuing
+key's certificate without calling GitHub, and judges it (`ip_limit` is what the per-address cap made of that very read: `counted`, `unavailable` when the limiter threw, `unbound` when the binding is missing; the deploy reads back `counted`.): with fewer than 14 days left it answers
 503 with `ok: false` and `alerts: ["cert-expiring"]`, once expired `["cert-expired"]`, else 200
 with `alerts: []`.
 

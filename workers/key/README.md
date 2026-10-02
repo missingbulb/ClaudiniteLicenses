@@ -168,7 +168,7 @@ version that served it, from the `version_metadata` binding `CF_VERSION_METADATA
 canary probe tells a split's two versions apart by it. The id is public by design.
 
 `GET /v1/key/health` answers `{ ok, kid, cert_exp, cert_days_left, d1, queue, polar, trust_roots,
-fail_open, version, alerts }`, `fail_open` the live `FAIL_OPEN` as a boolean, `version` the same id as the header: `cert_days_left` is the whole days to `cert_exp`, `d1` is `ok` or `unreadable` after one
+fail_open, ip_limit, version, alerts }`, `fail_open` the live `FAIL_OPEN` as a boolean, `ip_limit` what the per-address cap made of that very read (`counted`, `unavailable` when the limiter threw, `unbound` when the binding is missing; the deploy reads back `counted`), `version` the same id as the header: `cert_days_left` is the whole days to `cert_exp`, `d1` is `ok` or `unreadable` after one
 `SELECT 1`, `queue` is `bound` or `unbound`, `polar` is `configured` when both `POLAR_API_BASE`
 and `POLAR_ACCESS_TOKEN` are set, else `unconfigured`, and `trust_roots` is `ok` or `invalid`. It
 judges itself: while any of `cert-expiring` (fewer than 14 days left, the issuing keys' overlap),
