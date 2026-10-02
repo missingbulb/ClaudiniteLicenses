@@ -18,6 +18,13 @@ caller's token, as the paid key Worker's `/v1/session-key` does, refusing the sa
 `no-push-access`, 502 `github-error`). A public repo answers `{ "key", "plan": "public", "state":
 "ok" }`, a private one 403 `{ "refused": "refused-private" }`.
 
+Both public routes first spend one request of `IP_LIMIT`, 300 per 60 seconds per
+`CF-Connecting-IP` (an IPv6 caller by its /64), answering 429 `rate-limited` with `Retry-After: 60` over it and letting the request through when the
+binding cannot answer. The desktop body is refused 413 `body-too-large` past 16 KiB, before GitHub
+is asked, and GitHub refusing the token (`token-invalid`) writes no usage point; the
+service-binding `POST /webhook` answers a dispatch past 1 MiB 413 `payload-too-large`. Both caps
+are `packages/http`'s.
+
 Every answer carries `X-Claudinite-Version`, the serving Cloudflare version's id from the
 `version_metadata` binding `CF_VERSION_METADATA`, which the deploy's canary probe reads.
 

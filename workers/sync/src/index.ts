@@ -14,9 +14,10 @@ import { polarWebhook } from "./polar-webhook.ts";
 import { githubClient, reconcileInstallations } from "./reconcile.ts";
 import { applyWebhook } from "./repos.ts";
 import { consumeWrites } from "./writes.ts";
+import { BODY_MAX_WEBHOOK, ipLimited, readJsonCapped, withinIpLimit, type IpLimitEnv } from "../../../packages/http/src/index.ts";
 import { versionOf, withVersion, type VersionEnv } from "../../../packages/version/src/index.ts";
 
-export interface Env extends VersionEnv {
+export interface Env extends VersionEnv, IpLimitEnv {
   DB: D1Database;
   GITHUB_APP_ID: string;
   GITHUB_APP_PRIVATE_KEY: string;
@@ -120,20 +121,24 @@ function logged(names: { ok: string; failed: string }, cron: string, work: Promi
 const GITHUB_LOG = { ok: "ok", failed: "failed" };
 const POLAR_LOG = { ok: "polar", failed: "polar-failed" };
 
+/**
+ * Every route Cloudflare serves to the world that meets the per-address cap before anything else.
+ * Polar's webhook is public too, and meets the cap only once its signature has failed.
+ */
+export const CAPPED_ROUTES = ["GET /v1/sync/health", "GET /v1/sync/alerts", "POST /v1/sync/polar-reconcile", "POST /v1/sync/reconcile"];
+
 async function route(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url);
+  if (CAPPED_ROUTES.includes(`${req.method} ${url.pathname}`) && !(await withinIpLimit(env, req))) return ipLimited();
   if (req.method === "POST" && url.pathname === "/webhook") {
-    let payload: unknown;
-    try {
-      payload = await req.json();
-    } catch {
-      return new Response("malformed-payload", { status: 400 });
-    }
+    const read = await readJsonCapped(req, BODY_MAX_WEBHOOK);
+    if (!read.ok) return read.reason === "body-too-large" ? new Response("payload-too-large", { status: 413 }) : new Response("malformed-payload", { status: 400 });
+    const payload = read.value;
     return applyWebhook(env, githubClient(env), req.headers.get("X-GitHub-Event") ?? "", payload as never, nowS(), req.headers.get("X-GitHub-Delivery"));
   }
   if (req.method === "GET" && url.pathname === "/v1/sync/health") return health(env);
   if (req.method === "GET" && url.pathname === "/v1/sync/alerts") return alertsRoute(env.DB, nowS());
-  if (req.method === "POST" && url.pathname === "/v1/sync/polar-webhook") return polarWebhook(req, env, nowS());
+  if (req.method === "POST" && url.pathname === "/v1/sync/polar-webhook") return polarWebhook(req, env, nowS(), () => withinIpLimit(env, req));
   if (req.method === "POST" && url.pathname === "/v1/sync/polar-reconcile") {
     if (!(await bearerMatches(req, env.SYNC_ADMIN_TOKEN))) return new Response("unauthorized", { status: 401 });
     return polarReconcileNow(env);

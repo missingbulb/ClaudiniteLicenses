@@ -40,7 +40,10 @@ and it writes nothing.
 When D1 cannot be read and the var `FAIL_OPEN` is `"true"`, the key is issued anyway, plan `public`
 for a public repo and `private-repo` for a private one (the binary refuses a Public key on a
 private repo), state `unverified`, every feature, and the Worker reports a `d1-unreadable`
-incident (below); with any other value the request is refused `server-error`.
+incident (below); with any other value the request is refused `server-error`. The committed value
+is `"true"`; the repository variable `KEY_FAIL_OPEN`, `true` or `false`, overrides it at the next
+deploy without a commit (the repo README's deploy section has the two commands), and the health
+body's `fail_open` says which value is live.
 
 ## Writes
 
@@ -97,7 +100,7 @@ what precedes the first colon as the cause.
 `User`; its id is the key's user) and `GET /repos/{owner}/{name}` (the repo id, owner, visibility
 and the caller's push access) with the caller's token. It answers
 `{ "key", "plan", "state", "notice", "checkout_url", "portal_url" }`, or
-`{ "refused": "<reason>" }`: 400 for a malformed body, 401 `token-missing` or `token-invalid`, 403
+`{ "refused": "<reason>" }`: 400 `malformed-body`, `bad-repo` or `bad-nonce`, 413 `body-too-large`, 401 `token-missing` or `token-invalid`, 403
 `sender-not-user`, `repo-not-visible` (GitHub's 404: the App is not installed there or the person
 has no access), `no-push-access` or `app-not-installed`, 502 `github-error`, 503
 `server-error`.
@@ -136,6 +139,16 @@ nonce, lasting 6 hours and never past the Actions key's `exp`. A degraded Action
 degraded grant. Refusals: 401 `{ "refused": "key-invalid", "reason" }` with `verifyKey`'s reason
 (`shape` for no key), 403 `key-not-actions`, 400 `issue-invalid`. There is no replay store.
 
+**Per-address cap and body caps.** Every public route (`/v1/session-key`, `/v1/actions-key`,
+`/v1/item-grant`, `/v1/login/config`, `/v1/login/refresh`, `/v1/key/health`) first spends one
+request of `IP_LIMIT`, 300 per 60 seconds per `CF-Connecting-IP` (an IPv6 caller by its /64), before anything else is read;
+over it, 429 `rate-limited` with `Retry-After: 60`. The count is Cloudflare's, per location and approximate; when the
+binding cannot answer the request passes and an `ip-limit-unavailable` line is logged once a
+minute. A JSON body past 16 KiB, or a `Content-Length` claiming more, is refused 413
+`body-too-large` before GitHub, the JWKS or D1 is asked anything; the service-binding `POST
+/webhook` takes up to 1 MiB, answering a larger dispatch 413 `payload-too-large`. The engine
+version is cut to 64 characters before it becomes a usage blob. Both caps are `packages/http`'s.
+
 **Rate limit.** `OWNER_LIMIT`, 600 requests per 60 seconds per owner, keyed by the owner's login in
 lower case as GitHub or the token names it, is checked only once the caller is authenticated: on
 the desktop path after GitHub has read the caller and the repo, on the Actions path once the token
@@ -146,14 +159,16 @@ spends a bucket.
 Every answered request writes one Analytics Engine point to `KEY_COUNTS`, the dataset the public key
 Worker writes: index the repo id, blobs plan (or `none`), outcome (`issued-<state>`,
 `refused-<reason>`, `github-error`), owner type, engine version and path (`web`, `desktop`,
-`actions`, `grant`).
+`actions`, `grant`). A desktop request nobody authenticated writes none: a malformed or oversized
+body, a bad repo or nonce, and GitHub refusing the token (`token-invalid`) answer without a point,
+so a stranger cannot fill the dataset.
 
 Every answer, on every route and status, carries `X-Claudinite-Version`, the id of the Cloudflare
 version that served it, from the `version_metadata` binding `CF_VERSION_METADATA`; the deploy's
 canary probe tells a split's two versions apart by it. The id is public by design.
 
 `GET /v1/key/health` answers `{ ok, kid, cert_exp, cert_days_left, d1, queue, polar, trust_roots,
-version, alerts }`, `version` the same id as the header: `cert_days_left` is the whole days to `cert_exp`, `d1` is `ok` or `unreadable` after one
+fail_open, version, alerts }`, `fail_open` the live `FAIL_OPEN` as a boolean, `version` the same id as the header: `cert_days_left` is the whole days to `cert_exp`, `d1` is `ok` or `unreadable` after one
 `SELECT 1`, `queue` is `bound` or `unbound`, `polar` is `configured` when both `POLAR_API_BASE`
 and `POLAR_ACCESS_TOKEN` are set, else `unconfigured`, and `trust_roots` is `ok` or `invalid`. It
 judges itself: while any of `cert-expiring` (fewer than 14 days left, the issuing keys' overlap),
@@ -173,7 +188,9 @@ What ClaudiniteEngine implements for a desktop:
    `token-invalid`, it calls `POST /v1/login/refresh` with `{ "refresh_token" }`; the Worker adds
    the App's client secret, sends GitHub's refresh grant and returns GitHub's answer and status
    verbatim (`access_token`, `expires_in`, `refresh_token`, `refresh_token_expires_in`). While the
-   secret is unset that route answers 503 `refresh-not-configured`, and the binary runs the device
+   secret is unset that route answers 503 `refresh-not-configured` (a body without a
+`refresh_token` is 400 `no-refresh-token` first, so an unauthenticated probe learns nothing of the
+secret), and the binary runs the device
    flow again.
 
 ## Secrets

@@ -39,7 +39,11 @@ describe("POST /v1/login/refresh", () => {
     expect(world.calls).toHaveLength(0);
   });
 
-  it("refuses a body without a refresh token with 400", async () => {
-    expect((await refresh(undefined, {})).status).toBe(400);
+  it("refuses a body without a refresh token with 400 no-refresh-token, configured or not, calling no one", async () => {
+    for (const e of [undefined, env({ GITHUB_APP_CLIENT_SECRET: undefined })]) {
+      const res = await refresh(e, {});
+      expect([res.status, await res.json()]).toEqual([400, { refused: "no-refresh-token" }]);
+    }
+    expect(world.calls).toHaveLength(0);
   });
 });

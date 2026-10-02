@@ -15,7 +15,9 @@ export async function sessionKey(req: Request, env: Env, ctx: ExecutionContext):
 
   const caller = await readDesktopCaller({ base: env.GITHUB_API_BASE ?? "https://api.github.com", userAgent: "claudinite-key" }, token, ownerLogin, name);
   if (!caller.ok) {
-    countPoint(env, { repoId: "unknown", plan: "none", outcome: caller.reason === "github-error" ? "github-error" : `refused-${caller.reason}`, ownerType: "unknown", engineVersion, path: "desktop" });
+    // GitHub refusing the token is a caller nobody authenticated, which counts nothing; any other
+    // refusal spent a real token on GitHub and counts.
+    if (caller.reason !== "token-invalid") countPoint(env, { repoId: "unknown", plan: "none", outcome: caller.reason === "github-error" ? "github-error" : `refused-${caller.reason}`, ownerType: "unknown", engineVersion, path: "desktop" });
     return refusal(caller.status, caller.reason);
   }
   const { user, repo, owner } = caller;

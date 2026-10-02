@@ -1,6 +1,7 @@
 // What a session key request carries, read the same way by both key Workers: the web path's
 // repository_dispatch payload, and the desktop path's request with the caller's App user token,
 // whose user and repo are read from GitHub as that caller rather than trusted from the body.
+import { BODY_MAX_JSON, capEngineVersion, readJsonCapped } from "../../http/src/index.ts";
 import { GitHubError, githubCall, type GitHubApi } from "./index.ts";
 
 export const NONCE = /^[A-Za-z0-9_-]{16,64}$/;
@@ -49,7 +50,7 @@ export function parseKeyDispatch(payload: unknown): { ok: true; dispatch: KeyDis
   const d = (typeof payload === "object" && payload !== null ? payload : {}) as DispatchPayload;
   const repo = d.repository;
   const owner = repo?.owner;
-  const engineVersion = typeof d.client_payload?.engine_version === "string" ? d.client_payload.engine_version : "unknown";
+  const engineVersion = typeof d.client_payload?.engine_version === "string" ? capEngineVersion(d.client_payload.engine_version) : "unknown";
   const seen = { repoId: String(repo?.id ?? "unknown"), ownerType: typeof owner?.type === "string" ? owner.type : "unknown", engineVersion };
   const refuse = (status: number, reason: string) => ({ ok: false as const, status, reason, seen });
   if (d.sender?.type !== "User") return refuse(403, "sender-not-user");
@@ -93,20 +94,17 @@ export interface DesktopRequest {
   engineVersion: string;
 }
 
-/** Reads a desktop key request: `Authorization: Bearer <App user token>`, body `{ repo: "owner/name", nonce, engine_version }`. */
+/** Reads a desktop key request: `Authorization: Bearer <App user token>`, body `{ repo: "owner/name", nonce, engine_version }` of at most BODY_MAX_JSON bytes. */
 export async function parseDesktopRequest(req: Request): Promise<{ ok: true; request: DesktopRequest } | Refused> {
   const token = /^Bearer (\S+)$/.exec(req.headers.get("Authorization") ?? "")?.[1];
   if (!token) return { ok: false, status: 401, reason: "token-missing" };
-  let body: { repo?: unknown; nonce?: unknown; engine_version?: unknown };
-  try {
-    body = (await req.json()) as typeof body;
-  } catch {
-    return { ok: false, status: 400, reason: "malformed-body" };
-  }
+  const read = await readJsonCapped(req, BODY_MAX_JSON);
+  if (!read.ok) return read.reason === "body-too-large" ? { ok: false, status: 413, reason: read.reason } : { ok: false, status: 400, reason: read.reason };
+  const body = read.value as { repo?: unknown; nonce?: unknown; engine_version?: unknown } | null;
   const m = typeof body?.repo === "string" ? REPO.exec(body.repo) : null;
-  if (!m) return { ok: false, status: 400, reason: "bad-repo" };
+  if (!m || !body) return { ok: false, status: 400, reason: "bad-repo" };
   if (typeof body.nonce !== "string" || !NONCE.test(body.nonce)) return { ok: false, status: 400, reason: "bad-nonce" };
-  const engineVersion = typeof body.engine_version === "string" ? body.engine_version : "unknown";
+  const engineVersion = typeof body.engine_version === "string" ? capEngineVersion(body.engine_version) : "unknown";
   return { ok: true, request: { token, owner: m[1]!, name: m[2]!, nonce: body.nonce, engineVersion } };
 }
 

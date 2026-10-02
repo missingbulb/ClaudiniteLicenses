@@ -28,19 +28,20 @@ function readmeSecrets(worker: string): ReadmeSecret[] {
   return [...section.matchAll(/^- `([A-Z0-9_]+)`(?:, as `([A-Z0-9_]+)`)?(.*)$/gm)].map((m) => ({ repo: m[1]!, worker: m[2] ?? m[1]!, optional: /\(optional\b/.test(m[3]!) }));
 }
 
-function resolveEnv(env: Record<string, string> | undefined, secrets: Record<string, string>): Record<string, string> {
+// `${{ secrets.NAME }}` resolves from `secrets`, `${{ vars.NAME }}` from `vars`, each empty when unset, as Actions does.
+function resolveEnv(env: Record<string, string> | undefined, secrets: Record<string, string>, vars: Record<string, string> = {}): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(env ?? {})) {
-    const m = /^\$\{\{\s*secrets\.([A-Z0-9_]+)\s*\}\}$/.exec(String(v));
-    out[k] = m ? (secrets[m[1]!] ?? "") : String(v);
+    const m = /^\$\{\{\s*(secrets|vars)\.([A-Z0-9_]+)\s*\}\}$/.exec(String(v));
+    out[k] = m ? ((m[1] === "vars" ? vars : secrets)[m[2]!] ?? "") : String(v);
   }
   return out;
 }
 
-function runStep(step: Step, secrets: Record<string, string>, extra: Record<string, string> = {}) {
+function runStep(step: Step, secrets: Record<string, string>, extra: Record<string, string> = {}, opts: { cwd?: string; vars?: Record<string, string> } = {}) {
   return spawnSync("bash", ["-e", "-c", step.run!], {
-    cwd: ROOT,
-    env: { PATH: process.env.PATH!, ...resolveEnv(job.env, secrets), ...resolveEnv(step.env, secrets), ...extra },
+    cwd: opts.cwd ?? ROOT,
+    env: { PATH: process.env.PATH!, ...resolveEnv(job.env, secrets, opts.vars), ...resolveEnv(step.env, secrets, opts.vars), ...extra },
     encoding: "utf8",
   });
 }
@@ -71,6 +72,7 @@ const answers = {
   upload: { version_id: "new-" + worker },
   status: JSON.parse(process.env["STATUS_" + worker.replace("-", "_").toUpperCase()] || JSON.stringify({ versions: [{ id: "live-" + worker, percentage: 100 }] })),
   split: { deployed: [], previous: "live-" + worker },
+  tag: { tag: process.env["TAG_" + worker.replace("-", "_").toUpperCase()] || null },
 };
 const out = answers[cmd] || { ok: true };
 console.log(JSON.stringify(out));
@@ -87,9 +89,9 @@ function stageCalls(dir: string): string[][] {
   return existsSync(join(dir, "stage.log")) ? readFileSync(join(dir, "stage.log"), "utf8").trim().split("\n").map((l) => JSON.parse(l)) : [];
 }
 
-function runWithStandIns(step: Step, secrets: Record<string, string> = {}, extra: Record<string, string> = {}) {
+function runWithStandIns(step: Step, secrets: Record<string, string> = {}, extra: Record<string, string> = {}, vars: Record<string, string> = {}) {
   const dir = standIns();
-  const res = runStep(step, secrets, { PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, GITHUB_OUTPUT: join(dir, "output"), GITHUB_STEP_SUMMARY: join(dir, "summary"), GITHUB_SHA: "0123456789abcdef", RUN_URL: "https://github.test/acme/runs/1", ...extra });
+  const res = runStep(step, secrets, { PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, GITHUB_OUTPUT: join(dir, "output"), GITHUB_STEP_SUMMARY: join(dir, "summary"), GITHUB_SHA: "0123456789abcdef", RUN_URL: "https://github.test/acme/runs/1", ...extra }, { vars });
   const read = (f: string) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), "utf8") : "");
   return { ...res, dir, calls: stageCalls(dir), output: read("output"), summary: read("summary"), npx: read("npx.log") };
 }
@@ -393,7 +395,7 @@ describe("deploy.yml", () => {
       expect(args[args.indexOf("--secrets-file") + 1], w).toBe(join(res.dir, `${w}.secrets.json`));
       expect(args[args.indexOf("--tag") + 1], w).toBe("0123456");
       expect(args[args.indexOf("--message") + 1], w).toBe("https://github.test/acme/runs/1");
-      expect(res.output, w).toBe(`version_id=new-${w}\n`);
+      expect(res.output.split("\n").filter((l) => l.startsWith("version_id=")), w).toEqual([`version_id=new-${w}`]);
     }
     expect(job.env!.RUN_URL).toBe("${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}");
   });
@@ -493,7 +495,7 @@ describe("deploy.yml", () => {
     writeFileSync(join(dir, "staged/sync"), "live-sync");
     const res = runStep(rollback, {}, { PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir });
     expect(res.status, res.stderr).toBe(0);
-    expect(stageCalls(dir).map((c) => c.join(" "))).toEqual(["rollback --config workers/public-key/wrangler.jsonc --id live-public-key", "rollback --config workers/sync/wrangler.jsonc --id live-sync"]);
+    expect(stageCalls(dir).filter((c) => c[0] === "rollback").map((c) => c.join(" "))).toEqual(["rollback --config workers/public-key/wrangler.jsonc --id live-public-key", "rollback --config workers/sync/wrangler.jsonc --id live-sync"]);
     expect(res.stdout).toMatch(/^::warning::claudinite-key had no live version/m);
     expect(res.stdout).toMatch(/^::error::claudinite-public-key rolled back to live-public-key$/m);
     const failing = runStep(rollback, {}, { PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, STAGE_FAIL: "rollback:sync" });
@@ -506,5 +508,183 @@ describe("deploy.yml", () => {
     expect(rehearse.if).toContain("inputs.rehearse_d1_restore");
     expect(workflow.on.workflow_dispatch.inputs.rehearse_d1_restore).toMatchObject({ type: "boolean", default: false });
     expect(workflow.on.workflow_dispatch.inputs.rotate_polar_webhook).toMatchObject({ type: "boolean", default: false });
+  });
+
+  // ClaudiniteLicenses#18
+
+  it("reads the live versions before the restore point and the database, right after npm ci", () => {
+    const live = stepAt((s) => s.name === "Read the live versions");
+    const ci = stepAt((s) => s.run === "npm ci");
+    expect(live).toBe(ci + 1);
+    expect(live).toBeLessThan(stepAt((s) => /node tools\/ensure-d1\.mjs/.test(s.run ?? "")));
+    expect(live).toBeLessThan(stepAt((s) => /wrangler d1 time-travel info/.test(s.run ?? "")));
+  });
+
+  const judgeStep = () => named("Judge claudinite-sync by its own health and alerts");
+
+  // Runs the judge with a curl answering `health` on /v1/sync/health and 200 alerts, the marker the deploy wrote in place.
+  function judgeRun(health: number) {
+    const dir = mkdtempSync(join(tmpdir(), "acme-judge-"));
+    mkdirSync(join(dir, "staged"));
+    writeFileSync(join(dir, "staged/sync"), "live-sync");
+    writeFileSync(
+      join(dir, "curl"),
+      `#!/usr/bin/env bash\nout=""; url=""\nwhile [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift;; https://*) url=$1;; esac; shift; done\nif [ "\${url##*/}" = health ]; then printf '{}' > "$out"; printf '${health}'; else printf '{"ok":true,"alerts":[]}' > "$out"; printf 200; fi\n`,
+    );
+    writeFileSync(join(dir, "sleep"), "#!/usr/bin/env bash\n");
+    for (const f of ["curl", "sleep"]) chmodSync(join(dir, f), 0o755);
+    const res = runStep(judgeStep(), {}, { PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir });
+    return { ...res, dir };
+  }
+
+  it("closes the sync Worker's rollback window once its own judge passes, and keeps it open when the judge fails", () => {
+    const passed = judgeRun(200);
+    expect(passed.status, passed.stderr).toBe(0);
+    expect(existsSync(join(passed.dir, "staged/sync"))).toBe(false);
+    expect(existsSync(join(passed.dir, "sync-judged"))).toBe(true);
+    const failed = judgeRun(503);
+    expect(failed.status).not.toBe(0);
+    expect(existsSync(join(failed.dir, "staged/sync"))).toBe(true);
+  });
+
+  // The rollback step after a failure, with markers as the steps before it left them.
+  function rollbackAfter(markers: Record<string, string>, extra: Record<string, string> = {}, cwd?: string) {
+    const dir = standIns();
+    mkdirSync(join(dir, "staged"));
+    for (const [f, v] of Object.entries(markers)) writeFileSync(join(dir, f), v);
+    const res = runStep(named("Roll back to the versions that were live"), {}, { PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, ...extra }, { cwd });
+    return { ...res, dir, calls: stageCalls(dir) };
+  }
+  const rolledBack = (calls: string[][]) => calls.filter((c) => c[0] === "rollback").map((c) => /workers\/([^/]+)\//.exec(c[2]!)![1]);
+
+  it("rolls back the three split Workers and not sync when the canary fails after sync passed its judge, and says why", () => {
+    const res = rollbackAfter({ "staged/public-key": "live-public-key", "staged/key": "live-key", "staged/router": "live-router", "sync-judged": "" });
+    expect(res.status, res.stderr).toBe(0);
+    expect(rolledBack(res.calls)).toEqual(["public-key", "key", "router"]);
+    expect(res.stdout).toMatch(/claudinite-sync passed its own judge/);
+  });
+
+  it("rolls back sync when its own deploy or judge failed", () => {
+    const res = rollbackAfter({ "staged/sync": "live-sync" });
+    expect(res.status, res.stderr).toBe(0);
+    expect(rolledBack(res.calls)).toEqual(["sync"]);
+  });
+
+  // A stand-in history: the key Worker's config at a base commit, then at HEAD with `routes` as given.
+  function history(headRoutes: string[]) {
+    const repo = mkdtempSync(join(tmpdir(), "acme-history-"));
+    const git = (...a: string[]) => spawnSync("git", ["-c", "user.name=acme", "-c", "user.email=acme@example.test", ...a], { cwd: repo, encoding: "utf8" });
+    git("init", "-q");
+    mkdirSync(join(repo, "workers/key"), { recursive: true });
+    const config = (routes: string[]) => `{\n  // a comment\n  "name": "claudinite-key",\n  "main": "src/index.ts",\n  "routes": ${JSON.stringify(routes.map((pattern) => ({ pattern, zone_name: "claudinite.com" })))}\n}\n`;
+    writeFileSync(join(repo, "workers/key/wrangler.jsonc"), config(["license.claudinite.com/v1/session-key"]));
+    git("add", ".");
+    git("commit", "-q", "-m", "base");
+    const base = git("rev-parse", "HEAD").stdout.trim();
+    writeFileSync(join(repo, "workers/key/wrangler.jsonc"), config(headRoutes));
+    git("commit", "-q", "-am", "head");
+    return { repo, base, head: git("rev-parse", "HEAD").stdout.trim() };
+  }
+
+  it("re-applies the live version's commit's triggers on rollback when the routes moved, from a config beside the real one it then removes", () => {
+    const { repo, base, head } = history(["license.claudinite.com/v1/session-key", "license.claudinite.com/v1/other"]);
+    const res = rollbackAfter({ "staged/key": "live-key" }, { TAG_KEY: base.slice(0, 7) }, repo);
+    expect(res.status, res.stderr + res.stdout).toBe(0);
+    expect(res.calls.map((c) => c.slice(0, 5).join(" "))).toEqual(["rollback --config workers/key/wrangler.jsonc --id live-key", "tag --config workers/key/wrangler.jsonc --id live-key", "triggers --config workers/key/wrangler.rollback.jsonc"]);
+    expect(existsSync(join(repo, "workers/key/wrangler.rollback.jsonc"))).toBe(false);
+    expect(res.stdout).toMatch(new RegExp(`^::error::claudinite-key's routes or triggers differ between ${head.slice(0, 7)} and ${base.slice(0, 7)}`, "m"));
+  });
+
+  it("falls back to the push's base commit when the live version carries no tag, and runs nothing when no trigger moved", () => {
+    const { repo, base } = history(["license.claudinite.com/v1/session-key"]);
+    const res = rollbackAfter({ "staged/key": "live-key" }, { BEFORE: base }, repo);
+    expect(res.status, res.stderr + res.stdout).toBe(0);
+    expect(res.calls.filter((c) => c[0] === "triggers")).toEqual([]);
+    expect(res.stdout).toMatch(/claudinite-key: no route or trigger moved/);
+    const moved = history(["license.claudinite.com/v1/elsewhere"]);
+    const again = rollbackAfter({ "staged/key": "live-key" }, { BEFORE: moved.base }, moved.repo);
+    expect(again.calls.filter((c) => c[0] === "triggers").map((c) => c.join(" "))).toEqual(["triggers --config workers/key/wrangler.rollback.jsonc"]);
+    expect(named("Roll back to the versions that were live").env).toMatchObject({ BEFORE: "${{ github.event.before }}" });
+  });
+
+  it("passes FAIL_OPEN from the KEY_FAIL_OPEN repository variable only when it is set, refusing anything but true or false", () => {
+    const step = uploadStep("key")!;
+    expect(step.env).toMatchObject({ KEY_FAIL_OPEN: "${{ vars.KEY_FAIL_OPEN }}" });
+    const failOpenVar = (args: string[]) => args.flatMap((a, i) => (a === "--var" && args[i + 1]!.startsWith("FAIL_OPEN:") ? [args[i + 1]] : []));
+    for (const value of ["true", "false"]) {
+      const res = runWithStandIns(step, {}, {}, { KEY_FAIL_OPEN: value });
+      expect(res.status, res.stderr).toBe(0);
+      expect(failOpenVar(res.calls[0]!), value).toEqual([`FAIL_OPEN:${value}`]);
+      expect(res.output).toContain(`fail_open=${value}\n`);
+    }
+    const unset = runWithStandIns(step);
+    expect(unset.status, unset.stderr).toBe(0);
+    expect(failOpenVar(unset.calls[0]!)).toEqual([]);
+    expect(unset.output).toContain("fail_open=true\n");
+    const wrong = runWithStandIns(step, {}, {}, { KEY_FAIL_OPEN: "TRUE" });
+    expect(wrong.status).not.toBe(0);
+    expect(wrong.stdout + wrong.stderr).toMatch(/KEY_FAIL_OPEN.*TRUE/);
+    expect(wrong.calls).toEqual([]);
+  });
+
+  it("reads fail_open back from the key Worker's health as the upload passed it", () => {
+    const step = named("Read back the live Workers");
+    expect(step.env).toMatchObject({ FAIL_OPEN_WANT: "${{ steps.upload-key.outputs.fail_open }}" });
+    expect(step.run).toContain('probe 200 "b.fail_open===$FAIL_OPEN_WANT" -- https://license.claudinite.com/v1/key/health');
+  });
+
+  const capStep = () => named("Prove the per-address cap is live");
+
+  // Runs the cap proof with a curl that answers 200 to the first `allowed` reads in arrival order, then
+  // 429, with or without the version header; each read holds 50 ms so the stand-in sees how many
+  // were in flight at once.
+  function capRun(allowed: number, versioned = true) {
+    const dir = mkdtempSync(join(tmpdir(), "acme-cap-"));
+    writeFileSync(
+      join(dir, "curl"),
+      `#!/usr/bin/env bash
+headers=""
+while [ $# -gt 0 ]; do if [ "$1" = -D ]; then headers=$2; shift; fi; shift; done
+exec 9>"${dir}/lock"
+flock 9; n=$(( $(cat "${dir}/n" 2>/dev/null || echo 0) + 1 )); echo $n > "${dir}/n"
+f=$(( $(cat "${dir}/flight" 2>/dev/null || echo 0) + 1 )); echo $f > "${dir}/flight"
+[ $f -gt $(cat "${dir}/max" 2>/dev/null || echo 0) ] && echo $f > "${dir}/max"; flock -u 9
+sleep 0.05
+flock 9; echo $(( $(cat "${dir}/flight") - 1 )) > "${dir}/flight"; flock -u 9
+if [ $n -le ${allowed} ]; then code=200; else code=429; fi
+printf 'HTTP/2 %s\\r\\n${versioned ? "x-claudinite-version: acme-version\\r\\n" : ""}\\r\\n' $code > "$headers"
+printf %s $code
+`,
+    );
+    chmodSync(join(dir, "curl"), 0o755);
+    const res = runStep(capStep(), {}, { PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir });
+    const count = (f: string) => Number(readFileSync(join(dir, f), "utf8"));
+    return { ...res, sent: count("n"), maxInFlight: count("max") };
+  }
+
+  it("proves the cap with 400 concurrent health reads, needing a 429 that carries the version header", () => {
+    const ok = capRun(300);
+    expect(ok.status, ok.stderr + ok.stdout).toBe(0);
+    expect(ok.sent).toBe(400);
+    expect(ok.maxInFlight).toBeGreaterThan(1);
+    expect(ok.maxInFlight).toBeLessThanOrEqual(25);
+    expect(ok.stdout).toMatch(/^sent 400 health reads in \d+s, 100 answered 429$/m);
+    expect(ok.stdout).toMatch(/^ok 429 from version acme-version, 100 of 400 health reads refused in \d+s$/m);
+    const never = capRun(1000);
+    expect(never.status).not.toBe(0);
+    expect(never.sent).toBe(400);
+    expect(never.stdout).toMatch(/^::error::400 health reads from one address in \d+s met no 429/m);
+    const unversioned = capRun(300, false);
+    expect(unversioned.status).not.toBe(0);
+    expect(unversioned.stdout).toMatch(/^::error::none of the 100 429s carried a version header/m);
+  });
+
+  it("proves the cap after promotion and the read-back, then waits out its period before the final probe", () => {
+    const cap = steps.indexOf(capStep());
+    const wait = stepAt((s) => s.name === "Wait out the cap's period before the final probe");
+    expect(cap).toBeGreaterThan(stepAt((s) => s.name === "Read back the live Workers"));
+    expect(wait).toBe(cap + 1);
+    expect(steps[wait]!.run!.trim()).toMatch(/^sleep (6[1-9]|[7-9]\d)$/m);
+    expect(wait).toBeLessThan(steps.indexOf(probeStep()!));
   });
 });

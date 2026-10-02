@@ -25,6 +25,9 @@
       { "queue": "claudinite-licenses-writes-dlq", "max_batch_size": 100 }
     ]
   },
+  // Every public request's address, counted before anything is spent on it (Polar's webhook only once
+  // its signature fails); the namespace_id is this Worker's own.
+  "ratelimits": [{ "name": "IP_LIMIT", "namespace_id": "1004", "simple": { "limit": 300, "period": 60 } }],
   // The sandbox until the commercial track flips both Workers to the production organization.
   "vars": { "GITHUB_API_BASE": "https://api.github.com", "POLAR_API_BASE": "https://sandbox-api.polar.sh" }
 }

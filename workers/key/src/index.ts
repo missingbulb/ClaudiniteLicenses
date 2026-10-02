@@ -3,7 +3,8 @@
 // token, deciding from D1 reads alone, and exchanges an Actions key for an item grant. It writes
 // nothing to D1: each key's records go onto the writes queue the sync Worker consumes.
 import { certStanding } from "../../../packages/signing/src/index.ts";
-import { certBody, refusal, trustRoots, type Env } from "./env.ts";
+import { BODY_MAX_JSON, ipLimited, readJsonCapped, withinIpLimit } from "../../../packages/http/src/index.ts";
+import { certBody, failOpenEnabled, refusal, trustRoots, type Env } from "./env.ts";
 import { sessionKey } from "./desktop.ts";
 import { webhook } from "./web.ts";
 import { actionsKey } from "./actions.ts";
@@ -19,14 +20,12 @@ function loginConfig(env: Env): Response {
 
 // GitHub's refresh grant needs the App's client secret, which a binary cannot hold.
 async function loginRefresh(req: Request, env: Env): Promise<Response> {
-  if (!env.GITHUB_APP_CLIENT_SECRET) return refusal(503, "refresh-not-configured");
-  let body: { refresh_token?: unknown };
-  try {
-    body = (await req.json()) as typeof body;
-  } catch {
-    return refusal(400, "malformed-body");
-  }
+  const read = await readJsonCapped(req, BODY_MAX_JSON);
+  if (!read.ok) return refusal(read.reason === "body-too-large" ? 413 : 400, read.reason);
+  const body = read.value as { refresh_token?: unknown } | null;
+  // A body with no token is refused the same way configured or not, so the probe can judge the route.
   if (typeof body?.refresh_token !== "string" || body.refresh_token.length === 0) return refusal(400, "no-refresh-token");
+  if (!env.GITHUB_APP_CLIENT_SECRET) return refusal(503, "refresh-not-configured");
   const form = new URLSearchParams({ client_id: env.GITHUB_APP_CLIENT_ID, client_secret: env.GITHUB_APP_CLIENT_SECRET, grant_type: "refresh_token", refresh_token: body.refresh_token });
   const res = await fetch(`${env.GITHUB_WEB_BASE ?? "https://github.com"}/login/oauth/access_token`, {
     method: "POST",
@@ -36,7 +35,7 @@ async function loginRefresh(req: Request, env: Env): Promise<Response> {
   return new Response(res.body, { status: res.status, headers: { "Content-Type": res.headers.get("Content-Type") ?? "application/json" } });
 }
 
-/** Judges its own certificate, trust roots and D1, answering 503 while any of them is wrong. */
+/** Judges its own certificate, trust roots and D1, answering 503 while any of them is wrong, and says whether a key fails open. */
 async function health(env: Env): Promise<Response> {
   const body = certBody(env);
   let d1: "ok" | "unreadable" = "ok";
@@ -58,6 +57,7 @@ async function health(env: Env): Promise<Response> {
       queue: env.WRITES ? "bound" : "unbound",
       polar: env.POLAR_API_BASE && env.POLAR_ACCESS_TOKEN ? "configured" : "unconfigured",
       trust_roots: roots,
+      fail_open: failOpenEnabled(env),
       version: versionOf(env),
       alerts,
     },
@@ -65,9 +65,14 @@ async function health(env: Env): Promise<Response> {
   );
 }
 
-function route(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> | Response {
+/** Every route Cloudflare serves to the world: each meets the per-address cap before anything else. */
+export const PUBLIC_ROUTES = ["POST /v1/session-key", "POST /v1/actions-key", "POST /v1/item-grant", "GET /v1/login/config", "POST /v1/login/refresh", "GET /v1/key/health"];
+
+async function route(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const url = new URL(req.url);
-  switch (`${req.method} ${url.pathname}`) {
+  const at = `${req.method} ${url.pathname}`;
+  if (PUBLIC_ROUTES.includes(at) && !(await withinIpLimit(env, req))) return ipLimited();
+  switch (at) {
     case "POST /webhook":
       return webhook(req, env, ctx);
     case "POST /v1/session-key":

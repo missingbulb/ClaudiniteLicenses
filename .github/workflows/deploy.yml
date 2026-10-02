@@ -98,6 +98,25 @@ jobs:
       - if: steps.gate.outputs.skip == 'false'
         run: npm ci
       - if: steps.gate.outputs.skip == 'false'
+        id: live
+        name: Read the live versions
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          # The version each Worker serves now is what a failure rolls it back to. A split an
+          # interrupted run left behind is rolled back by hand first; this run never stacks on one,
+          # and stops here, before it records a restore point or applies a migration.
+          for w in public-key key sync router; do
+            node tools/stage.mjs status --config "workers/$w/wrangler.jsonc" --json "$RUNNER_TEMP/$w.status.json"
+            live=$(node -e 'const v=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).versions;if(v.length>1){console.error(v.map((x)=>x.id+"@"+x.percentage+"%").join(" "));process.exit(1)}process.stdout.write(v[0]?.id??"")' "$RUNNER_TEMP/$w.status.json") || {
+              echo "::error::claudinite-$w has a split standing; roll it back by hand with node tools/stage.mjs rollback --config workers/$w/wrangler.jsonc --id <the version that should be live>, then rerun"
+              exit 1
+            }
+            echo "claudinite-$w live: ${live:-none}"
+            echo "${w//-/_}=$live" >> "$GITHUB_OUTPUT"
+          done
+      - if: steps.gate.outputs.skip == 'false'
         name: Make the D1 database exist and write its id
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -136,24 +155,6 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: node tools/d1-restore-rehearsal.mjs
       - if: steps.gate.outputs.skip == 'false'
-        id: live
-        name: Read the live versions
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          # The version each Worker serves now is what a failure rolls it back to. A split an
-          # interrupted run left behind is rolled back by hand first; this run never stacks on one.
-          for w in public-key key sync router; do
-            node tools/stage.mjs status --config "workers/$w/wrangler.jsonc" --json "$RUNNER_TEMP/$w.status.json"
-            live=$(node -e 'const v=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).versions;if(v.length>1){console.error(v.map((x)=>x.id+"@"+x.percentage+"%").join(" "));process.exit(1)}process.stdout.write(v[0]?.id??"")' "$RUNNER_TEMP/$w.status.json") || {
-              echo "::error::claudinite-$w has a split standing; roll it back by hand with node tools/stage.mjs rollback --config workers/$w/wrangler.jsonc --id <the version that should be live>, then rerun"
-              exit 1
-            }
-            echo "claudinite-$w live: ${live:-none}"
-            echo "${w//-/_}=$live" >> "$GITHUB_OUTPUT"
-          done
-      - if: steps.gate.outputs.skip == 'false'
         id: upload-public-key
         name: Upload claudinite-public-key with its secrets
         env:
@@ -182,13 +183,26 @@ jobs:
           ISSUING_KEY_PRIVATE: ${{ secrets.KEY_ISSUING_KEY_PRIVATE }}
           ISSUING_KEY_CERT: ${{ secrets.KEY_ISSUING_KEY_CERT }}
           POLAR_ACCESS_TOKEN: ${{ secrets.POLAR_SANDBOX_TOKEN }}
+          # The emergency switch for the design's layer 3: set to false, a dispatch turns failing open
+          # off in minutes with no commit; unset, the committed FAIL_OPEN stands.
+          KEY_FAIL_OPEN: ${{ vars.KEY_FAIL_OPEN }}
         run: |
+          fail_open=()
+          case "$KEY_FAIL_OPEN" in
+            "") committed=$(node -p 'JSON.parse(require("fs").readFileSync("workers/key/wrangler.jsonc","utf8").replace(/^\s*\/\/.*$/gm,"")).vars.FAIL_OPEN')
+                echo "fail_open=$committed" >> "$GITHUB_OUTPUT" ;;
+            true|false) fail_open=(--var "FAIL_OPEN:$KEY_FAIL_OPEN")
+                echo "::warning::KEY_FAIL_OPEN overrides the committed FAIL_OPEN with $KEY_FAIL_OPEN"
+                echo "fail_open=$KEY_FAIL_OPEN" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::the repository variable KEY_FAIL_OPEN is $KEY_FAIL_OPEN; set it to true or false, or unset it"
+               exit 1 ;;
+          esac
           trap 'rm -f "$RUNNER_TEMP/key.secrets.json"' EXIT
           umask 077
           node -e 'const e=process.env,dev=(f)=>require("fs").readFileSync("keys/dev/"+f,"utf8"),useDev=!e.ISSUING_KEY_PRIVATE;console.log(JSON.stringify({GITHUB_APP_ID:e.GITHUB_APP_ID,GITHUB_APP_PRIVATE_KEY:e.GITHUB_APP_PRIVATE_KEY,...(e.GITHUB_APP_CLIENT_SECRET?{GITHUB_APP_CLIENT_SECRET:e.GITHUB_APP_CLIENT_SECRET}:{}),ISSUING_KEY_PRIVATE:useDev?dev("license.key"):e.ISSUING_KEY_PRIVATE,ISSUING_KEY_CERT:useDev?dev("license.cert.json"):e.ISSUING_KEY_CERT,POLAR_ACCESS_TOKEN:e.POLAR_ACCESS_TOKEN}))' > "$RUNNER_TEMP/key.secrets.json"
           # The roots an Actions key must chain to for an item grant.
           roots=$(node tools/keys.mjs trust-roots)
-          node tools/stage.mjs upload --config workers/key/wrangler.jsonc --var "TRUST_ROOTS:$roots" --secrets-file "$RUNNER_TEMP/key.secrets.json" --tag "${GITHUB_SHA::7}" --message "$RUN_URL" --json "$RUNNER_TEMP/key.upload.json"
+          node tools/stage.mjs upload --config workers/key/wrangler.jsonc --var "TRUST_ROOTS:$roots" "${fail_open[@]}" --secrets-file "$RUNNER_TEMP/key.secrets.json" --tag "${GITHUB_SHA::7}" --message "$RUN_URL" --json "$RUNNER_TEMP/key.upload.json"
           echo "version_id=$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).version_id' "$RUNNER_TEMP/key.upload.json")" >> "$GITHUB_OUTPUT"
       - if: steps.gate.outputs.skip == 'false'
         name: Make the Polar webhook endpoint exist
@@ -232,7 +246,8 @@ jobs:
           LIVE: ${{ steps.live.outputs.sync }}
         run: |
           # The sync Worker deploys at once: which version a split hands its cron and queue consumer
-          # is not documented, and it never touches key issuance. A failure rolls it back to LIVE.
+          # is not documented, and it never touches key issuance. A failure here or in its judge
+          # rolls it back to LIVE.
           mkdir -p "$RUNNER_TEMP/staged"
           printf %s "$LIVE" > "$RUNNER_TEMP/staged/sync"
           npx wrangler deploy -c workers/sync/wrangler.jsonc
@@ -257,6 +272,10 @@ jobs:
               process.exit(1);
             }
           '
+          # Judged healthy on its own: the two halves are independent, so a failure from here on is no
+          # verdict on the sync Worker and does not roll it back.
+          rm -f "$RUNNER_TEMP/staged/sync"
+          : > "$RUNNER_TEMP/sync-judged"
       - if: steps.gate.outputs.skip == 'false'
         id: upload-router
         name: Upload claudinite-router with its secrets
@@ -343,6 +362,7 @@ jobs:
           POLAR_API_BASE: https://sandbox-api.polar.sh
           POLAR_ACCESS_TOKEN: ${{ secrets.POLAR_SANDBOX_TOKEN }}
           OWNER_TYPE: ${{ github.event.repository.owner.type }}
+          FAIL_OPEN_WANT: ${{ steps.upload-key.outputs.fail_open }}
         run: |
           # probe <status> [<node expression over the JSON body, b>] -- <curl args>
           probe() {
@@ -365,6 +385,8 @@ jobs:
           rm "$RUNNER_TEMP/sync-admin-token"
           probe 200 -- https://license.claudinite.com/v1/public/health
           probe 200 'b.d1==="ok"&&b.queue==="bound"&&b.polar==="configured"' -- https://license.claudinite.com/v1/key/health
+          # The fail-open switch the upload passed, or the committed value.
+          probe 200 "b.fail_open===$FAIL_OPEN_WANT" -- https://license.claudinite.com/v1/key/health
           probe 200 -- https://license.claudinite.com/v1/sync/health
           probe 200 'b.ok===true' -- -X POST -H "Authorization: Bearer $token" https://license.claudinite.com/v1/sync/reconcile
           # The App is installed on all of missingbulb, so the reconcile must have found repos.
@@ -405,6 +427,39 @@ jobs:
           '
           rm -f "$RUNNER_TEMP/alerts.json"
       - if: steps.gate.outputs.skip == 'false'
+        name: Prove the per-address cap is live
+        run: |
+          # From this runner's one address, more than 300 health reads inside the cap's 60-second period
+          # must meet a 429 that names its version. Sent one at a time, 400 reads can outlast the period
+          # and never meet the cap, so they go 25 at a time; the limiter counts per location and catches
+          # up in the background, so 400 are sent before the cap counts as absent.
+          dir="$RUNNER_TEMP/cap"
+          rm -rf "$dir" && mkdir -p "$dir"
+          started=$(date +%s)
+          seq 1 400 | xargs -P 25 -I{} sh -c 'curl -sS -o /dev/null -D "$1/$2.headers" -w "%{http_code}" --max-time 20 https://license.claudinite.com/v1/key/health > "$1/$2.code" 2>/dev/null || true' _ "$dir" {}
+          elapsed=$(( $(date +%s) - started ))
+          sent=$(find "$dir" -name '*.code' | wc -l)
+          refused=$(grep -lx 429 "$dir"/*.code 2>/dev/null | wc -l)
+          echo "sent $sent health reads in ${elapsed}s, $refused answered 429"
+          if [ "$refused" -eq 0 ]; then
+            echo "::error::$sent health reads from one address in ${elapsed}s met no 429; the per-address cap on claudinite-key is not live"
+            exit 1
+          fi
+          version=""
+          for code in $(grep -lx 429 "$dir"/*.code); do
+            version=$(grep -i '^x-claudinite-version: ' "${code%.code}.headers" | cut -d' ' -f2 | tr -d '\r')
+            [ -n "$version" ] && break
+          done
+          if [ -z "$version" ]; then
+            echo "::error::none of the $refused 429s carried a version header, so no Worker gave them"
+            exit 1
+          fi
+          echo "ok 429 from version $version, $refused of $sent health reads refused in ${elapsed}s"
+      - if: steps.gate.outputs.skip == 'false'
+        name: Wait out the cap's period before the final probe
+        # The cap's period is 60 seconds; the final probe then starts with a fresh budget.
+        run: sleep 61
+      - if: steps.gate.outputs.skip == 'false'
         name: Probe the live Workers from outside
         run: |
           # The scheduled probe's checks; its alerts check is the step above's to report, and only the
@@ -426,12 +481,63 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # The push's previous head: the commit to compare routes and triggers with when the live
+          # version carries no tag (the sync Worker's, deployed whole). Empty on a dispatch.
+          BEFORE: ${{ github.event.before }}
         run: |
-          # Every Worker this run staged goes back to the version it served before the run, whether
-          # the canary, the promotion, the read-back or an upload or split midway failed.
+          # Every Worker this run staged and has not cleared goes back to the version it served before
+          # the run: the three split Workers whenever the run fails after their uploads, the sync Worker
+          # only when its own deploy or judge failed.
+          #
+          # triggers deploy ran after promotion, so a route or cron the failing commit changed would
+          # outlive the versions it came with: for each Worker rolled back, the live version's commit
+          # (its tag, else the push's base) is compared with HEAD, and its routes and crons re-applied
+          # from a config written beside the real one, so relative paths resolve, when they differ.
+          restore_triggers() {
+            local w=$1 live=$2 config="workers/$1/wrangler.jsonc" base=""
+            if node tools/stage.mjs tag --config "$config" --id "$live" --json "$RUNNER_TEMP/$w.tag.json" > /dev/null; then
+              base=$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).tag ?? ""' "$RUNNER_TEMP/$w.tag.json")
+            fi
+            [ -n "$base" ] || base=$BEFORE
+            if [ -z "$base" ]; then
+              echo "::warning::claudinite-$w: no commit to compare its routes and triggers with; check them by hand"
+              return 0
+            fi
+            if [ "$(git rev-parse --is-shallow-repository)" = true ]; then git fetch --quiet --unshallow origin || true; fi
+            if ! git cat-file -e "$base:$config" 2>/dev/null; then
+              echo "::warning::claudinite-$w: $base is no commit here, so its routes and triggers were not compared; check them by hand"
+              return 0
+            fi
+            git show "$base:$config" > "$RUNNER_TEMP/$w.base.jsonc"
+            if node -e '
+              const fs = require("fs");
+              const keys = (f) => { const c = JSON.parse(fs.readFileSync(f, "utf8").replace(/^\s*\/\/.*$/gm, "")); return JSON.stringify([c.routes ?? null, c.triggers ?? null]); };
+              process.exit(keys(process.argv[1]) === keys(process.argv[2]) ? 0 : 1);
+            ' "$config" "$RUNNER_TEMP/$w.base.jsonc"; then
+              echo "claudinite-$w: no route or trigger moved between HEAD and ${base::7}"
+              return 0
+            fi
+            cp "$RUNNER_TEMP/$w.base.jsonc" "workers/$w/wrangler.rollback.jsonc"
+            local ok=0
+            node tools/stage.mjs triggers --config "workers/$w/wrangler.rollback.jsonc" || ok=1
+            rm -f "workers/$w/wrangler.rollback.jsonc"
+            if [ $ok = 0 ]; then
+              echo "::error::claudinite-$w's routes or triggers differ between $(git rev-parse --short=7 HEAD) and ${base::7}; re-applied ${base::7}'s"
+            else
+              echo "::error::claudinite-$w's routes or triggers differ between $(git rev-parse --short=7 HEAD) and ${base::7}, and re-applying ${base::7}'s failed; run node tools/stage.mjs triggers on that commit's config by hand"
+            fi
+            return $ok
+          }
           status=0
           for w in public-key key sync router; do
-            [ -f "$RUNNER_TEMP/staged/$w" ] || continue
+            if [ ! -f "$RUNNER_TEMP/staged/$w" ]; then
+              if [ "$w" = sync ] && [ -f "$RUNNER_TEMP/sync-judged" ]; then
+                echo "claudinite-sync passed its own judge after its deploy, so this failure is no verdict on it: left as deployed"
+              else
+                echo "claudinite-$w: not staged by this run, so there is nothing to roll back"
+              fi
+              continue
+            fi
             live=$(cat "$RUNNER_TEMP/staged/$w")
             if [ -z "$live" ]; then
               echo "::warning::claudinite-$w had no live version before this run, so there is nothing to roll it back to"
@@ -439,6 +545,7 @@ jobs:
             fi
             if node tools/stage.mjs rollback --config "workers/$w/wrangler.jsonc" --id "$live"; then
               echo "::error::claudinite-$w rolled back to $live"
+              restore_triggers "$w" "$live" || status=1
             else
               echo "::error::claudinite-$w could not be rolled back to $live; run node tools/stage.mjs rollback --config workers/$w/wrangler.jsonc --id $live by hand"
               status=1

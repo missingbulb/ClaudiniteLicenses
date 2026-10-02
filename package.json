@@ -11,7 +11,7 @@
   },
   "scripts": {
     "test": "WRANGLER_SEND_METRICS=false vitest run",
-    "typecheck": "tsc --noEmit -p packages/signing && tsc --noEmit -p packages/licensing && tsc --noEmit -p packages/polar && tsc --noEmit -p packages/github-app && tsc --noEmit -p packages/version && tsc --noEmit -p workers/router && tsc --noEmit -p workers/public-key && tsc --noEmit -p workers/key && tsc --noEmit -p workers/sync && tsc --noEmit -p tools && tsc --noEmit -p db && tsc --noEmit -p spike",
+    "typecheck": "tsc --noEmit -p packages/signing && tsc --noEmit -p packages/licensing && tsc --noEmit -p packages/polar && tsc --noEmit -p packages/github-app && tsc --noEmit -p packages/version && tsc --noEmit -p packages/http && tsc --noEmit -p workers/router && tsc --noEmit -p workers/public-key && tsc --noEmit -p workers/key && tsc --noEmit -p workers/sync && tsc --noEmit -p tools && tsc --noEmit -p db && tsc --noEmit -p spike",
     "dry-run": "WRANGLER_SEND_METRICS=false wrangler deploy --dry-run --outdir .wrangler/dry-run/router -c workers/router/wrangler.jsonc && WRANGLER_SEND_METRICS=false wrangler deploy --dry-run --outdir .wrangler/dry-run/public-key -c workers/public-key/wrangler.jsonc && WRANGLER_SEND_METRICS=false wrangler deploy --dry-run --outdir .wrangler/dry-run/key -c workers/key/wrangler.jsonc && WRANGLER_SEND_METRICS=false wrangler deploy --dry-run --outdir .wrangler/dry-run/sync -c workers/sync/wrangler.jsonc",
     "dev": "WRANGLER_SEND_METRICS=false node tools/local-roundtrip.mjs --serve --timeout-ms 600000",
     "e2e": "WRANGLER_SEND_METRICS=false node tools/local-roundtrip.mjs"

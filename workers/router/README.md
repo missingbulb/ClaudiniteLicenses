@@ -8,6 +8,10 @@ and 204 to anything else, and returns the bound Worker's status and body. `PUBLI
 `SYNC` are bound to `claudinite-public-key`, `claudinite-key` and `claudinite-sync`; a binding a
 future config drops answers 202 `unrouted: <event>`, so GitHub keeps the delivery redeliverable.
 
+A body past 1 MiB, or a `Content-Length` claiming more, is refused before the HMAC is computed
+(`packages/http`'s cap). The router has no per-address cap: the signature check is its gate, and
+GitHub's deliveries come from a few addresses that a cap would throttle.
+
 Every answer carries `X-Claudinite-Version`, the router's own Cloudflare version id from the
 `version_metadata` binding `CF_VERSION_METADATA`, replacing the one a bound Worker's answer named,
 so the canary probe judges the router's version on the signature check.

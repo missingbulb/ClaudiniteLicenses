@@ -1,6 +1,7 @@
 // The Claudinite App's one webhook address: checks GitHub's signature, then hands each webhook to
 // the Worker it is for over a service binding and returns that Worker's answer, so the App's
 // delivery log shows the outcome.
+import { BODY_MAX_WEBHOOK, readCapped } from "../../../packages/http/src/index.ts";
 import { versionOf, withVersion, type VersionEnv } from "../../../packages/version/src/index.ts";
 
 export interface Env extends VersionEnv {
@@ -8,34 +9,6 @@ export interface Env extends VersionEnv {
   PUBLIC_KEY?: Fetcher;
   KEY?: Fetcher;
   SYNC?: Fetcher;
-}
-
-const MAX_BODY = 1024 * 1024;
-
-async function readCapped(req: Request): Promise<Uint8Array<ArrayBuffer> | null> {
-  const declared = Number(req.headers.get("Content-Length") ?? "0");
-  if (declared > MAX_BODY) return null;
-  if (!req.body) return new Uint8Array();
-  const reader = req.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    size += value.length;
-    if (size > MAX_BODY) {
-      await reader.cancel();
-      return null;
-    }
-    chunks.push(value);
-  }
-  const out = new Uint8Array(size);
-  let at = 0;
-  for (const c of chunks) {
-    out.set(c, at);
-    at += c.length;
-  }
-  return out;
 }
 
 async function signatureMatches(secret: string, body: Uint8Array<ArrayBuffer>, header: string | null): Promise<boolean> {
@@ -63,7 +36,7 @@ async function forward(binding: Fetcher | undefined, host: string, route: string
 async function route(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url);
   if (req.method !== "POST" || url.pathname !== "/github-webhook") return new Response("not found", { status: 404 });
-  const body = await readCapped(req);
+  const body = await readCapped(req, BODY_MAX_WEBHOOK);
   if (body === null) return new Response("payload too large", { status: 413 });
   if (!(await signatureMatches(env.GITHUB_APP_WEBHOOK_SECRET, body, req.headers.get("X-Hub-Signature-256")))) {
     return new Response("bad signature", { status: 401 });

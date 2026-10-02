@@ -1,6 +1,7 @@
 // The Actions path: `POST /v1/actions-key` with the run's OIDC token. The repo, owner and
 // visibility come from the token's claims alone; the workflow must be one of the member's three
 // Claudinite workflows on its default branch, and pull request triggers are refused.
+import { BODY_MAX_JSON, readJsonCapped } from "../../../packages/http/src/index.ts";
 import { countPoint, issuingKey, refusal, withinOwnerLimit, type Env } from "./env.ts";
 import { licenceFields, mintKey } from "./key.ts";
 import { linksFor, NO_LINKS, wantsLinks } from "./links.ts";
@@ -25,13 +26,11 @@ function pinnedBranch(repository: string, ref: string): string | null {
 export async function actionsKey(req: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
   const token = /^Bearer (\S+)$/.exec(req.headers.get("Authorization") ?? "")?.[1];
   if (!token) return refusal(401, "token-missing");
-  let engineVersion = "unknown";
-  try {
-    const body = (await req.json()) as { engine_version?: unknown };
-    if (typeof body?.engine_version === "string") engineVersion = body.engine_version;
-  } catch {
-    // The engine version only labels the usage point; a request without one still gets a key.
-  }
+  const read = await readJsonCapped(req, BODY_MAX_JSON);
+  if (!read.ok && read.reason === "body-too-large") return refusal(413, read.reason);
+  // The engine version only labels the usage point; a request without one still gets a key.
+  const claimed = read.ok ? (read.value as { engine_version?: unknown } | null)?.engine_version : undefined;
+  const engineVersion = typeof claimed === "string" ? claimed : "unknown";
 
   const nowS = Math.floor(Date.now() / 1000);
   const verdict = await verifyActionsToken(token, { issuer: env.OIDC_ISSUER, nowS });

@@ -12,6 +12,7 @@ The license server for Claudinite
 - `packages/licensing`: the seat, headroom, grace and paid-seat rules, and the writes queue's messages, bundled by the key and sync Workers.
 - `packages/polar`: the Polar client (checkouts, customer sessions, subscriptions, webhook endpoints) and the Standard Webhooks check.
 - `packages/github-app`: the Claudinite App's GitHub client (App JWT, installation tokens, the key check run), a source package each Worker that acts as the App bundles.
+- `packages/http`: what each Worker does to a request before spending anything on it: the per-address cap (`IP_LIMIT`), the 16 KiB and 1 MiB body caps, and the engine version's 64-character cut.
 - `packages/version`: the `X-Claudinite-Version` header every Worker puts on each answer, from its `version_metadata` binding.
 - `workers/router`: the App's one webhook address, forwarding each webhook to the Worker it is for.
 - `workers/public-key`: the public key Worker, Public keys for public repos on the web and desktop paths.
@@ -65,6 +66,27 @@ gh workflow run d1-restore.yml -f bookmark=<bookmark from the summary>
 A restore is in place and reverts every row written after the bookmark; see `db/README.md` before
 running it. The `rehearse_d1_restore` dispatch input runs the same restore command on a throwaway
 database first.
+
+The key Worker's fail-open (`FAIL_OPEN`, `workers/key/README.md`) can be turned off without a
+commit: set the repository variable and run a deploy, then delete the variable and deploy again to
+return to the committed value. The read-back checks `/v1/key/health`'s `fail_open` against the value
+the deploy chose.
+
+```
+gh variable set KEY_FAIL_OPEN --body false
+gh workflow run deploy.yml
+```
+
+```
+gh variable delete KEY_FAIL_OPEN
+gh workflow run deploy.yml
+```
+
+The read-back also proves the per-address cap from outside: it sends 400 reads of
+`/v1/key/health`, 25 at a time so they land inside the cap's minute, and fails the run unless a 429
+carrying a version header comes back, then waits a minute for the window to clear before the final
+probe. The canary probe's pinned walks can meet the cap too once both versions carry it; it waits
+out a 429 `rate-limited` and asks again rather than failing.
 
 Three rules keep this safe:
 
