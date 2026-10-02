@@ -5,6 +5,7 @@
 //
 //   node tools/key-counts.mjs [--since <unix s | ISO | 7d | 24h | 90m>] [--until …] [--repo-id <n>]
 //     [--engine-version <v>] [--group plan,outcome,path] [--probe] [--json | --markdown]
+//     [--base <API base URL; tests point it at a stand-in>]
 //
 // A token without the read permission is an expected state, not an error: the answer is
 // `unavailable` naming the permission, and the CLI exits 0 printing it.
@@ -157,7 +158,7 @@ export function parseTime(value, nowS) {
 const unavailableLine = (u) => `key counts: unavailable (${u.status}; the CLOUDFLARE_API_TOKEN needs the ${u.permission} permission on this account)`;
 
 const USAGE =
-  "usage: CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... node tools/key-counts.mjs [--since <unix s | ISO | 7d | 24h | 90m>] [--until …] [--repo-id <n>] [--engine-version <v>] [--group plan,outcome,path] [--probe] [--json | --markdown]";
+  "usage: CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... node tools/key-counts.mjs [--since <unix s | ISO | 7d | 24h | 90m>] [--until …] [--repo-id <n>] [--engine-version <v>] [--group plan,outcome,path] [--probe] [--json | --markdown] [--base <API base URL; tests point it at a stand-in>]";
 
 /** @returns {Promise<number>} the exit status */
 async function main() {
