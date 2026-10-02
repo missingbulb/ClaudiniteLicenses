@@ -456,6 +456,7 @@ jobs:
             node tools/stage.mjs triggers --config "workers/$w/wrangler.jsonc"
           done
       - if: steps.gate.outputs.skip == 'false'
+        id: read-back
         name: Read back the live Workers
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -482,6 +483,7 @@ jobs:
             return 1
           }
           started=$(date +%s)
+          echo "started=$started" >> "$GITHUB_OUTPUT"
           token=$(cat "$RUNNER_TEMP/sync-admin-token")
           rm "$RUNNER_TEMP/sync-admin-token"
           # ip_limit is what the per-address cap made of that very read: `counted` proves the live
@@ -513,6 +515,8 @@ jobs:
           oidc=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=claudinite" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>process.stdout.write(JSON.parse(s).value))')
           echo "::add-mask::$oidc"
           probe 403 'b.refused==="workflow-not-pinned"' -- -X POST -H "Authorization: Bearer $oidc" -H 'content-type: application/json' -d '{"engine_version":"deploy-read-back"}' https://license.claudinite.com/v1/actions-key
+          # That refusal counted one key point; the key counts read-back looks for it from this time.
+          echo "point_at=$(date +%s)" >> "$GITHUB_OUTPUT"
       - if: steps.gate.outputs.skip == 'false'
         name: Read back D1 read replication and where the key Worker's read was served
         env:
@@ -541,6 +545,58 @@ jobs:
             echo
             echo "claudinite-licenses read replication: \`${mode:-nothing}\`. The key Worker's health read from this runner: $served."
             [ -z "$warning" ] || { echo; echo "Warning: $warning"; }
+          } >> "$GITHUB_STEP_SUMMARY"
+      - if: steps.gate.outputs.skip == 'false'
+        name: Read back the key counts
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          STARTED: ${{ steps.read-back.outputs.started }}
+          POINT_AT: ${{ steps.read-back.outputs.point_at }}
+        run: |
+          # Reading the counts needs Account Analytics: Read on the token, which the deploy owns no
+          # proof of (#30), and how soon a point is queryable is not documented: both answers are
+          # warnings, never a rollback of a release the read-back judged healthy. A tool that throws
+          # fails the step like any other read-back.
+          probe=$(node tools/key-counts.mjs --probe)
+          echo "$probe"
+          case "$probe" in
+            "key counts: unavailable"*)
+              echo "::warning::$probe"
+              {
+                echo "## Key counts"
+                echo
+                echo "unavailable: the CLOUDFLARE_API_TOKEN lacks Account Analytics: Read; #30 is the owner's step."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0 ;;
+          esac
+          # The read-back's actions-key refusal wrote one point: engine version deploy-read-back,
+          # indexed by this repository's id, path actions.
+          found=""
+          for wait in 0 5 10 20 30 30; do
+            [ "$wait" = 0 ] || sleep "$wait"
+            point=$(node tools/key-counts.mjs --since "$STARTED" --repo-id "$GITHUB_REPOSITORY_ID" --engine-version deploy-read-back --group outcome,path --json)
+            if P="$point" node -e 'const p=JSON.parse(process.env.P);process.exit(p.available&&p.rows.some((r)=>r.requests>=1)?0:1)'; then
+              found="this run's point read back after $(( $(date +%s) - ${POINT_AT:-$STARTED} )) s"
+              break
+            fi
+          done
+          if [ -n "$found" ]; then
+            line="key counts: $found"
+            echo "$line"
+          else
+            line="key counts: this run's point was not queryable within 95 s"
+            echo "::warning::$line"
+          fi
+          week=$(node tools/key-counts.mjs --since 7d --group plan,outcome,path --markdown)
+          {
+            echo "## Key counts"
+            echo
+            echo "${line#key counts: }."
+            echo
+            echo "### The last 7 days, by plan, outcome and path"
+            echo
+            echo "$week"
           } >> "$GITHUB_STEP_SUMMARY"
       - if: steps.gate.outputs.skip == 'false'
         name: Read back the alerts
