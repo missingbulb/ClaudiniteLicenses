@@ -78,20 +78,23 @@ async function ask(url, init = {}, extra = {}) {
  */
 function checks(base, oidc) {
   const status = (/** @type {number} */ want) => (/** @type {Answer} */ a) => (a.status === want ? null : `want ${want}`);
+  // A 200 whose body carries each field as given. `ip_limit: "counted"` is the per-address cap counting
+  // that very read, so a version without its binding fails the canary rather than the read-back.
+  const healthy = (/** @type {Record<string, unknown>} */ fields) => (/** @type {Answer} */ a) => {
+    if (a.status !== 200) return "want 200";
+    const b = a.body ?? {};
+    const wrong = Object.entries(fields)
+      .filter(([k, v]) => b[k] !== v)
+      .map(([k, v]) => `${k} is ${JSON.stringify(b[k])}, want ${JSON.stringify(v)}`);
+    return wrong.length ? wrong.join("; ") : null;
+  };
   const list = [
-    { name: "public-health", worker: "public-key", request: (extra) => ask(`${base}/v1/public/health`, {}, extra), judge: status(200) },
+    { name: "public-health", worker: "public-key", request: (extra) => ask(`${base}/v1/public/health`, {}, extra), judge: healthy({ ip_limit: "counted" }) },
     {
       name: "key-health",
       worker: "key",
       request: (extra) => ask(`${base}/v1/key/health`, {}, extra),
-      judge: (/** @type {Answer} */ a) => {
-        if (a.status !== 200) return "want 200";
-        const b = a.body ?? {};
-        const wrong = Object.entries({ d1: "ok", queue: "bound", polar: "configured", trust_roots: "ok" })
-          .filter(([k, v]) => b[k] !== v)
-          .map(([k, v]) => `${k} is ${JSON.stringify(b[k])}, want ${JSON.stringify(v)}`);
-        return wrong.length ? wrong.join("; ") : null;
-      },
+      judge: healthy({ d1: "ok", queue: "bound", polar: "configured", trust_roots: "ok", ip_limit: "counted" }),
     },
     { name: "sync-health", worker: "sync", request: (extra) => ask(`${base}/v1/sync/health`, {}, extra), judge: status(200) },
     { name: "sync-alerts", worker: "sync", request: (extra) => ask(`${base}/v1/sync/alerts`, {}, extra), judge: status(200) },

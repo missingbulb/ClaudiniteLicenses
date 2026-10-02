@@ -169,10 +169,11 @@ spend one request of `IP_LIMIT`, 300 per 60 seconds per `CF-Connecting-IP` (an I
 `GET /v1/sync/health` answers `{ ok, repos, subscriptions, seats, last_webhook_at,
 last_reconcile_at, last_reconcile_corrections, last_polar_webhook_at, last_polar_reconcile_at,
 last_polar_reconcile_corrections, last_polar_reconcile_error, last_queue_at, queue_lag_s,
-last_dead_letter_at, paying_uncovered, polar_webhook_secret, version }`. `seats` counts rows whose last key
+last_dead_letter_at, paying_uncovered, polar_webhook_secret, ip_limit, version }`. `seats` counts rows whose last key
 is within 30 days; each stamp is null where it was never written, `paying_uncovered` until the first
 audit; `polar_webhook_secret` says whether the secret
 is set, never its value, and is what `deploy.yml` reads to decide whether to make a new endpoint.
+`ip_limit` is what the per-address cap made of that very read: `counted`, `unavailable` when the limiter threw, `unbound` when the binding is missing; the deploy's judge of this Worker requires `counted`.
 
 ## Secrets
 

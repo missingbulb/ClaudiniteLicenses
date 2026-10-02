@@ -3,7 +3,7 @@
 // token, deciding from D1 reads alone, and exchanges an Actions key for an item grant. It writes
 // nothing to D1: each key's records go onto the writes queue the sync Worker consumes.
 import { certStanding } from "../../../packages/signing/src/index.ts";
-import { BODY_MAX_JSON, ipLimited, readJsonCapped, withinIpLimit } from "../../../packages/http/src/index.ts";
+import { BODY_MAX_JSON, ipLimited, ipLimitState, readJsonCapped, type IpLimitState } from "../../../packages/http/src/index.ts";
 import { certBody, failOpenEnabled, refusal, trustRoots, type Env } from "./env.ts";
 import { sessionKey } from "./desktop.ts";
 import { webhook } from "./web.ts";
@@ -36,7 +36,7 @@ async function loginRefresh(req: Request, env: Env): Promise<Response> {
 }
 
 /** Judges its own certificate, trust roots and D1, answering 503 while any of them is wrong, and says whether a key fails open. */
-async function health(env: Env): Promise<Response> {
+async function health(env: Env, ipLimit: IpLimitState | null): Promise<Response> {
   const body = certBody(env);
   let d1: "ok" | "unreadable" = "ok";
   try {
@@ -58,6 +58,7 @@ async function health(env: Env): Promise<Response> {
       polar: env.POLAR_API_BASE && env.POLAR_ACCESS_TOKEN ? "configured" : "unconfigured",
       trust_roots: roots,
       fail_open: failOpenEnabled(env),
+      ip_limit: ipLimit,
       version: versionOf(env),
       alerts,
     },
@@ -71,7 +72,8 @@ export const PUBLIC_ROUTES = ["POST /v1/session-key", "POST /v1/actions-key", "P
 async function route(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const url = new URL(req.url);
   const at = `${req.method} ${url.pathname}`;
-  if (PUBLIC_ROUTES.includes(at) && !(await withinIpLimit(env, req))) return ipLimited();
+  const ipLimit = PUBLIC_ROUTES.includes(at) ? await ipLimitState(env, req) : null;
+  if (ipLimit === "refused") return ipLimited();
   switch (at) {
     case "POST /webhook":
       return webhook(req, env, ctx);
@@ -86,7 +88,7 @@ async function route(req: Request, env: Env, ctx: ExecutionContext): Promise<Res
     case "POST /v1/login/refresh":
       return loginRefresh(req, env);
     case "GET /v1/key/health":
-      return health(env);
+      return health(env, ipLimit);
     default:
       return new Response("not found", { status: 404 });
   }

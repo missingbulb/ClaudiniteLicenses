@@ -68,21 +68,36 @@ export function addressKey(ip: string): string {
   return `${full.slice(0, 4).map((g) => parseInt(g, 16).toString(16)).join(":")}::/64`;
 }
 
-/** Whether the caller's address is within its cap; true when the limiter cannot answer. */
-export async function withinIpLimit(env: IpLimitEnv, req: Request): Promise<boolean> {
+/**
+ * What the cap made of this request: `counted` within it, `refused` over it, `unavailable` when the
+ * limiter threw, `unbound` when the binding is missing. A health answer reports it, so a deploy can
+ * read back that the live version carries the binding and its route calls it, which a burst of reads
+ * cannot show against a limiter that is permissive by design.
+ */
+export type IpLimitState = "counted" | "refused" | "unavailable" | "unbound";
+
+export async function ipLimitState(env: IpLimitEnv, req: Request): Promise<IpLimitState> {
   const ip = addressKey(req.headers.get("CF-Connecting-IP") ?? "unknown");
+  if (!env.IP_LIMIT) {
+    onceAMinute("ip-limit-unavailable", { error: "IP_LIMIT is not bound" });
+    return "unbound";
+  }
   let success: boolean;
   try {
-    if (!env.IP_LIMIT) throw new Error("IP_LIMIT is not bound");
     ({ success } = await env.IP_LIMIT.limit({ key: `ip:${ip}` }));
   } catch (err) {
     onceAMinute("ip-limit-unavailable", { error: String(err) });
-    return true;
+    return "unavailable";
   }
-  if (success) return true;
+  if (success) return "counted";
   refusedSinceLine++;
   if (onceAMinute("ip-limited", { count: refusedSinceLine })) refusedSinceLine = 0;
-  return false;
+  return "refused";
+}
+
+/** Whether the caller's address is within its cap; true when the limiter cannot answer. */
+export async function withinIpLimit(env: IpLimitEnv, req: Request): Promise<boolean> {
+  return (await ipLimitState(env, req)) !== "refused";
 }
 
 export function ipLimited(): Response {
