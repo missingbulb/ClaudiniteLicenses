@@ -11,7 +11,7 @@
 // it as `result.read_replication.mode`. A database whose answer carries no such field reads as
 // null, an unknown, never as disabled.
 //
-//   node tools/ensure-d1.mjs --name claudinite-licenses [--write] [--read-replication auto|disabled | --show-read-replication]
+//   node tools/ensure-d1.mjs --name claudinite-licenses [--write] [--read-replication auto|disabled | --show-read-replication, which looks up and never creates]
 import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -40,15 +40,23 @@ function caller(base, token) {
 }
 
 /**
+ * The id of the database named `name`, or null when there is none; it never creates one.
+ * @param {{ base?: string, token: string, accountId: string, name: string }} opts
+ * @returns {Promise<string | null>}
+ */
+export async function findD1({ base = API, token, accountId, name }) {
+  const listed = await caller(base, token)("GET", `/accounts/${accountId}/d1/database?name=${encodeURIComponent(name)}`);
+  return listed.find((/** @type {{ name: string }} */ d) => d.name === name)?.uuid ?? null;
+}
+
+/**
  * @param {{ base?: string, token: string, accountId: string, name: string }} opts
  * @returns {Promise<{ created: boolean, id: string }>}
  */
 export async function ensureD1({ base = API, token, accountId, name }) {
-  const call = caller(base, token);
-  const path = `/accounts/${accountId}/d1/database`;
-  const found = (await call("GET", `${path}?name=${encodeURIComponent(name)}`)).find((/** @type {{ name: string }} */ d) => d.name === name);
-  if (found) return { created: false, id: found.uuid };
-  const made = await call("POST", path, { name });
+  const found = await findD1({ base, token, accountId, name });
+  if (found) return { created: false, id: found };
+  const made = await caller(base, token)("POST", `/accounts/${accountId}/d1/database`, { name });
   return { created: true, id: made.uuid };
 }
 
@@ -110,22 +118,27 @@ if (import.meta.filename === process.argv[1]) {
   const token = process.env.CLOUDFLARE_API_TOKEN;
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
   const mode = values["read-replication"];
-  const badMode = mode !== undefined && (!REPLICATION_MODES.includes(mode) || values["show-read-replication"]);
+  const show = values["show-read-replication"];
+  const badMode = (mode !== undefined && (!REPLICATION_MODES.includes(mode) || show)) || (show && values.write);
   if (!values.name || !token || !accountId || badMode) {
     console.error(
-      "usage: CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... node tools/ensure-d1.mjs --name <database> [--write] [--read-replication auto|disabled | --show-read-replication]",
+      "usage: CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... node tools/ensure-d1.mjs --name <database> [--write] [--read-replication auto|disabled | --show-read-replication, which looks up and never creates]",
     );
     process.exit(2);
   }
   try {
-    const { created, id } = await ensureD1({ base: values.base, token, accountId, name: values.name });
-    console.log(`${created ? "created" : "already held"}: ${values.name} ${id}`);
-    if (values.write) console.log(`database_id set in ${writeDatabaseId(resolve(import.meta.dirname, ".."), values.name, id).join(", ")}`);
-    if (mode !== undefined) {
-      const set = await setReadReplication({ base: values.base, token, accountId, id, mode });
-      console.log(`read replication: ${set.mode} (${set.changed ? "changed" : "unchanged"})`);
-    } else if (values["show-read-replication"]) {
-      console.log(`read replication: ${(await readReplication({ base: values.base, token, accountId, id })) ?? "unreported"}`);
+    if (show) {
+      // Looks up only: the read-back runs this after promotion, where creating a database would be wrong.
+      const id = await findD1({ base: values.base, token, accountId, name: values.name });
+      console.log(`read replication: ${id ? ((await readReplication({ base: values.base, token, accountId, id })) ?? "unreported") : `no database named ${values.name}`}`);
+    } else {
+      const { created, id } = await ensureD1({ base: values.base, token, accountId, name: values.name });
+      console.log(`${created ? "created" : "already held"}: ${values.name} ${id}`);
+      if (values.write) console.log(`database_id set in ${writeDatabaseId(resolve(import.meta.dirname, ".."), values.name, id).join(", ")}`);
+      if (mode !== undefined) {
+        const set = await setReadReplication({ base: values.base, token, accountId, id, mode });
+        console.log(`read replication: ${set.mode} (${set.changed ? "changed" : "unchanged"})`);
+      }
     }
   } catch (err) {
     console.error(`ensure-d1: ${err instanceof Error ? err.message : err}`);

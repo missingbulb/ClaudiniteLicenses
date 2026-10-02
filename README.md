@@ -80,9 +80,12 @@ Right after the rehearsal step, `Turn on D1 read replication when D1_READ_REPLIC
 reads D1's read replication mode and writes it to the summary. It changes the mode only when the
 repository variable `D1_READ_REPLICATION` is `auto`. The variable stays unset until a
 `rehearse_d1_restore` run, which waits on the owner's approval, has proven the restore on a
-replicated database (`db/README.md`). The read-back prints the mode, accepting `auto` or
-`disabled`, and requires `/v1/key/health` to carry `d1_served_by_primary`, `d1_served_by_region`
-and `d1_ms`, printing all three to the summary.
+replicated database (`db/README.md`). The read-back requires `/v1/key/health` to carry
+`d1_served_by_primary`, `d1_served_by_region` and `d1_ms`, then reads the mode by lookup alone,
+never creating a database, and prints the mode and the three fields to the summary. While the
+variable is `auto`, both steps require the mode `auto` and fail otherwise. While it is unset or
+`off`, a mode that is missing or unknown only warns, because the API reference makes
+`read_replication` optional and a failed read-back would roll back a healthy release.
 
 The key Worker's fail-open (`FAIL_OPEN`, `workers/key/README.md`) can be turned off without a
 commit: set the repository variable and run a deploy, then delete the variable and deploy again to

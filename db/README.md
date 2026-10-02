@@ -50,5 +50,8 @@ gh variable set D1_READ_REPLICATION --body auto
 gh workflow run deploy.yml
 ```
 
-From then on every deploy turns the mode back to `auto` if something else turned it off.
-`node tools/ensure-d1.mjs --name claudinite-licenses --show-read-replication` prints the mode.
+From then on every deploy turns the mode back to `auto` if something else turned it off, and the
+read-back fails unless the mode is `auto`. Until then, the deploy and its read-back only warn when
+the mode is missing or unknown. `node tools/ensure-d1.mjs --name claudinite-licenses
+--show-read-replication` prints the mode, or `no database named …`. It looks the database up and
+never creates it.

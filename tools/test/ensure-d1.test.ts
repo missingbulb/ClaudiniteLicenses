@@ -194,6 +194,24 @@ describe("tools/ensure-d1.mjs", () => {
       expect(cf.requests.filter((r) => !r.startsWith("GET"))).toEqual([]);
     });
 
+    it("--show-read-replication only looks a database up: a missing one prints no database and is never created", async () => {
+      const cf = await startCloudflare([{ uuid: "uuid-other", name: `${NAME}-staging` }]);
+      const res = await cli(cf.base, ["--show-read-replication"]);
+      expect(res.status, res.stderr).toBe(0);
+      expect(res.stdout).toMatch(new RegExp(`^read replication: no database named ${NAME}$`, "m"));
+      expect(cf.requests).toEqual([`GET /accounts/acct/d1/database?name=${NAME}`]);
+      expect(cf.databases.map((d) => d.name)).toEqual([`${NAME}-staging`]);
+    });
+
+    it("refuses --show-read-replication beside --write, sending nothing", async () => {
+      // A name no committed config binds, so a regression cannot write this checkout's configs.
+      const other = "acme-unbound";
+      const cf = await startCloudflare([{ uuid: "uuid-other", name: other }]);
+      const res = await cli(cf.base, ["--show-read-replication", "--write", "--name", other]);
+      expect(res.status).toBe(2);
+      expect(cf.requests).toEqual([]);
+    });
+
     it("refuses an unknown mode with usage, sending nothing", async () => {
       const cf = await startCloudflare([{ uuid: "uuid-live", name: NAME }]);
       const res = await cli(cf.base, ["--read-replication", "on"]);
