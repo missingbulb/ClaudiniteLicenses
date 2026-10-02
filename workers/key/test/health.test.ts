@@ -2,6 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { b64urlDecode } from "../../../packages/signing/src/index.ts";
 import { base, call, env, freshDatabase, resetWorld, world } from "./helpers.ts";
 
+/** A binding whose session answers every statement with `meta`, as a remote D1 fills it. */
+function sessionAnswering(meta: Record<string, unknown>): D1Database {
+  const statement = { bind: () => statement, run: async () => ({ success: true, results: [], meta }), first: async () => null, all: async () => ({ success: true, results: [], meta }) };
+  const session = { prepare: () => statement, batch: async () => [], getBookmark: () => null };
+  return { withSession: () => session } as unknown as D1Database;
+}
+
 beforeEach(async () => {
   await freshDatabase();
   resetWorld();
@@ -16,7 +23,7 @@ describe("GET /v1/key/health", () => {
     const res = await call("/v1/key/health");
     expect(res.status).toBe(200);
     const days = Math.floor((Date.parse(cert().notAfter) - Date.now()) / 86_400_000);
-    expect(await res.json()).toEqual({ ok: true, kid: cert().keyId, cert_exp: cert().notAfter, cert_days_left: days, d1: "ok", queue: "bound", polar: "configured", trust_roots: "ok", fail_open: true, ip_limit: "counted", version: (base as unknown as { CF_VERSION_METADATA: { id: string } }).CF_VERSION_METADATA.id, alerts: [] });
+    expect(await res.json()).toEqual({ ok: true, kid: cert().keyId, cert_exp: cert().notAfter, cert_days_left: days, d1: "ok", d1_served_by_primary: null, d1_served_by_region: null, d1_ms: expect.any(Number), queue: "bound", polar: "configured", trust_roots: "ok", fail_open: true, ip_limit: "counted", version: (base as unknown as { CF_VERSION_METADATA: { id: string } }).CF_VERSION_METADATA.id, alerts: [] });
     expect(world.calls).toHaveLength(0);
   });
 
@@ -51,6 +58,26 @@ describe("GET /v1/key/health", () => {
     const res = await call("/v1/key/health", {}, env({ WRITES: undefined, POLAR_ACCESS_TOKEN: undefined }));
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ queue: "unbound", polar: "unconfigured" });
+  });
+
+  it("says where and how fast its D1 read was served when the result's meta does", async () => {
+    const res = await call("/v1/key/health", {}, env({ DB: sessionAnswering({ served_by_primary: false, served_by_region: "WEUR", duration: 1.2 }) }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ d1: "ok", d1_served_by_primary: false, d1_served_by_region: "WEUR", d1_ms: 1.2 });
+  });
+
+  it("answers null for each served-by field the meta lacks, never false or 0, and judges D1 the same", async () => {
+    const res = await call("/v1/key/health", {}, env({ DB: sessionAnswering({}) }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, d1: "ok", d1_served_by_primary: null, d1_served_by_region: null, d1_ms: null, alerts: [] });
+    const primary = await call("/v1/key/health", {}, env({ DB: sessionAnswering({ served_by_primary: true, served_by_region: "ENAM" }) }));
+    expect(await primary.json()).toMatchObject({ d1_served_by_primary: true, d1_served_by_region: "ENAM", d1_ms: null });
+  });
+
+  it("answers 503 d1-unreadable when D1 throws, with each served-by field null", async () => {
+    const res = await call("/v1/key/health", {}, env({ brokenDb: true }));
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ d1: "unreadable", d1_served_by_primary: null, d1_served_by_region: null, d1_ms: null });
   });
 
   it("answers 503 d1-unreadable when D1 throws", async () => {

@@ -243,6 +243,32 @@ describe("tools/probe.mjs", () => {
     expect((await probe([])).status).toBe(1);
   });
 
+  it("copies where and how fast the key Worker's D1 read was served onto the key-health row and its line", async () => {
+    stub.routes["GET /v1/key/health"] = () => ({
+      status: 200,
+      body: { ok: true, d1: "ok", queue: "bound", polar: "configured", trust_roots: "ok", ip_limit: "counted", d1_served_by_primary: false, d1_served_by_region: "WEUR", d1_ms: 1.2, alerts: [] },
+    });
+    const json = join(dir, "probe.json");
+    const res = await probe(["--json", json]);
+    expect(res.status, res.stderr + res.stdout).toBe(0);
+    const row = JSON.parse(readFileSync(json, "utf8")).checks.find((c: { name: string }) => c.name === "key-health");
+    expect(row).toMatchObject({ ok: true, d1_served_by_primary: false, d1_served_by_region: "WEUR", d1_ms: 1.2 });
+    expect(res.stdout).toMatch(/^ok key-health 200 .*\n {2}d1_served_by_primary=false d1_served_by_region=WEUR d1_ms=1\.2$/m);
+  });
+
+  it("puts null on the key-health row for each served-by field the body lacks, and judges the row without them", async () => {
+    const json = join(dir, "probe.json");
+    const res = await probe(["--json", json]);
+    expect(res.status).toBe(0);
+    const checks = JSON.parse(readFileSync(json, "utf8")).checks as Record<string, unknown>[];
+    expect(checks.find((c) => c.name === "key-health")).toMatchObject({ ok: true, d1_served_by_primary: null, d1_served_by_region: null, d1_ms: null });
+    expect(checks.find((c) => c.name === "public-health")).not.toHaveProperty("d1_ms");
+    stub.routes["GET /v1/key/health"] = () => ({ status: 200, body: { ok: true, d1: "ok", queue: "unbound", polar: "configured", trust_roots: "ok", ip_limit: "counted", d1_served_by_primary: true, d1_served_by_region: "ENAM", d1_ms: 0.4 } });
+    const failing = await probe(["--json", json]);
+    expect(failing.status).toBe(1);
+    expect(JSON.parse(readFileSync(json, "utf8")).checks.find((c: { name: string }) => c.name === "key-health")).toMatchObject({ ok: false, d1_served_by_primary: true, d1_served_by_region: "ENAM", d1_ms: 0.4 });
+  });
+
   it("fails a Worker that does not answer at all, naming the error", async () => {
     await stub.close();
     const res = await probe([]);

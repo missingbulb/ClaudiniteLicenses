@@ -3,6 +3,7 @@
 // subscriptions; a private repo's state, notice and queued writes from the seat rules.
 import { dayOf, licenseeOf, paidSeats, planFeatures, type Notice, type PaidPlan, type SubscriptionRow, type WriteMessage } from "../../../packages/licensing/src/index.ts";
 import { FEATURES, type KeySeats, type Plan } from "../../../packages/signing/src/index.ts";
+import type { D1Reads } from "./db.ts";
 import { failOpenEnabled, type Path } from "./env.ts";
 import { incident, type IncidentEnv } from "./incidents.ts";
 import { readLicensee, verdictFor } from "./seats.ts";
@@ -46,7 +47,6 @@ export interface PlanRequest {
 }
 
 export interface PlanEnv extends IncidentEnv {
-  DB: D1Database;
   FAIL_OPEN?: string;
 }
 
@@ -59,7 +59,7 @@ export interface PlanContext {
 const REPO_SQL = "SELECT repo_id, owner_id, owner_type, owner_login, visibility, installation_id, full_name, default_branch FROM repos WHERE repo_id = ?";
 const SUBSCRIPTIONS_SQL = "SELECT plan, seats, repo_ids, status, ended_at FROM subscriptions WHERE owner_id = ?";
 
-export async function readRepo(db: D1Database, repoId: number): Promise<RepoRow | null> {
+export async function readRepo(db: D1Reads, repoId: number): Promise<RepoRow | null> {
   return db.prepare(REPO_SQL).bind(repoId).first<RepoRow>();
 }
 
@@ -79,7 +79,7 @@ function usageMessage(req: PlanRequest & { userId: number }, plan: PaidPlan, now
   return { v: 1, kind: "usage", at: now, repo_id: req.repoId, user_id: req.userId, owner_id: req.ownerId, plan, day: dayOf(now) };
 }
 
-async function decide(env: PlanEnv, req: PlanRequest, row: RepoRow | null, subs: SubscriptionRow[], now: number): Promise<Issued> {
+async function decide(db: D1Reads, req: PlanRequest, row: RepoRow | null, subs: SubscriptionRow[], now: number): Promise<Issued> {
   const subscribed = subs.length > 0;
   const { plan, paid } = choosePlan(subs, req, now);
   // A public repo's users take no seat, whatever plan covers it: no seat read, no write.
@@ -88,7 +88,7 @@ async function decide(env: PlanEnv, req: PlanRequest, row: RepoRow | null, subs:
   const paidPlan = plan as PaidPlan;
   const licensee = licenseeOf(paidPlan, req.ownerId, req.repoId);
   const userId = req.typ === "session" ? req.userId : null;
-  const reads = await readLicensee(env.DB, { licensee, ownerId: req.ownerId, repoId: req.repoId, userId, now });
+  const reads = await readLicensee(db, { licensee, ownerId: req.ownerId, repoId: req.repoId, userId, now });
   const v = verdictFor(paidPlan, paid, reads, userId, now);
   const writes: WriteMessage[] = [];
   if (userId !== null) {
@@ -113,26 +113,26 @@ function failOpen(env: PlanEnv, req: PlanRequest, err: unknown, now: number, fro
 /**
  * Resolves the key for one repo. `installed` says the caller already proved the App covers the
  * repo (a webhook that came through its installation), so a row the sync Worker has not written
- * yet is not a refusal.
+ * yet is not a refusal. `db` is the request's one session (`reader`).
  */
-export async function resolvePlan(env: PlanEnv, req: PlanRequest, opts: { installed?: boolean } & PlanContext = {}): Promise<Resolution> {
+export async function resolvePlan(env: PlanEnv, db: D1Reads, req: PlanRequest, opts: { installed?: boolean } & PlanContext = {}): Promise<Resolution> {
   const now = Math.floor(Date.now() / 1000);
   try {
-    const [repo, subs] = await env.DB.batch([env.DB.prepare(REPO_SQL).bind(req.repoId), env.DB.prepare(SUBSCRIPTIONS_SQL).bind(req.ownerId)]);
+    const [repo, subs] = await db.batch([db.prepare(REPO_SQL).bind(req.repoId), db.prepare(SUBSCRIPTIONS_SQL).bind(req.ownerId)]);
     const row = ((repo?.results ?? [])[0] as RepoRow | undefined) ?? null;
     if (!row && !opts.installed) return { refused: "app-not-installed" };
-    return await decide(env, req, row, (subs?.results ?? []) as unknown as SubscriptionRow[], now);
+    return await decide(db, req, row, (subs?.results ?? []) as unknown as SubscriptionRow[], now);
   } catch (err) {
     return failOpen(env, req, err, now, opts);
   }
 }
 
 /** The key for a repo whose row the caller already read and checked, as the Actions path does. It never fails open. */
-export async function resolveForRow(env: PlanEnv, req: PlanRequest, row: RepoRow, from: PlanContext = {}): Promise<Resolution> {
+export async function resolveForRow(env: PlanEnv, db: D1Reads, req: PlanRequest, row: RepoRow, from: PlanContext = {}): Promise<Resolution> {
   const now = Math.floor(Date.now() / 1000);
   try {
-    const { results } = await env.DB.prepare(SUBSCRIPTIONS_SQL).bind(req.ownerId).all<SubscriptionRow>();
-    return await decide(env, req, row, results, now);
+    const { results } = await db.prepare(SUBSCRIPTIONS_SQL).bind(req.ownerId).all<SubscriptionRow>();
+    return await decide(db, req, row, results, now);
   } catch (err) {
     incident(env, from.ctx, "d1-unreadable", from.path, { repo_id: req.repoId, path: req.typ, error: String(err) });
     return { refused: "server-error" };

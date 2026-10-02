@@ -48,9 +48,13 @@ export const CAP_WAITS = 2;
 
 /**
  * @typedef {{ status: number | null, body: any, text: string, version: string | null, headers: Record<string, string>, error?: string, latency_ms: number }} Answer
- * @typedef {{ name: string, ok: boolean, status: number | null, version: string | null, latency_ms: number, cap_waits?: number, alerts?: { id: string, since?: number | null, detail?: string | null }[], detail?: string, headers?: Record<string, string> }} Check
+ * @typedef {{ name: string, ok: boolean, status: number | null, version: string | null, latency_ms: number, cap_waits?: number, d1_served_by_primary?: unknown, d1_served_by_region?: unknown, d1_ms?: unknown, alerts?: { id: string, since?: number | null, detail?: string | null }[], detail?: string, headers?: Record<string, string> }} Check
  * @typedef {(extra?: Record<string, string>) => Promise<Answer>} Request
  */
+
+/** Where and how fast the key Worker's own D1 read was served, as its health reports it. */
+export const KEY_HEALTH_CARRIED = /** @type {const} */ (["d1_served_by_primary", "d1_served_by_region", "d1_ms"]);
+/** @typedef {typeof KEY_HEALTH_CARRIED[number]} CarriedField */
 
 /** @param {string} url @param {RequestInit & { headers?: Record<string, string> }} [init] @param {Record<string, string>} [extra] @returns {Promise<Answer>} */
 async function ask(url, init = {}, extra = {}) {
@@ -73,8 +77,9 @@ async function ask(url, init = {}, extra = {}) {
 /**
  * The checks in order, each a request and what its answer must be.
  * @param {string} base @param {string | null} oidc
- * `worker` is the Worker that answers, or null for a check no Worker may answer.
- * @returns {{ name: string, worker: string | null, request: Request, judge: (a: Answer) => string | null }[]}
+ * `worker` is the Worker that answers, or null for a check no Worker may answer. `carry` names body
+ * fields copied onto the row, each null when the body lacks it, and never judged.
+ * @returns {{ name: string, worker: string | null, request: Request, judge: (a: Answer) => string | null, carry?: CarriedField[] }[]}
  */
 function checks(base, oidc) {
   const status = (/** @type {number} */ want) => (/** @type {Answer} */ a) => (a.status === want ? null : `want ${want}`);
@@ -95,6 +100,7 @@ function checks(base, oidc) {
       worker: "key",
       request: (extra) => ask(`${base}/v1/key/health`, {}, extra),
       judge: healthy({ d1: "ok", queue: "bound", polar: "configured", trust_roots: "ok", ip_limit: "counted" }),
+      carry: [...KEY_HEALTH_CARRIED],
     },
     { name: "sync-health", worker: "sync", request: (extra) => ask(`${base}/v1/sync/health`, {}, extra), judge: status(200) },
     { name: "sync-alerts", worker: "sync", request: (extra) => ask(`${base}/v1/sync/alerts`, {}, extra), judge: status(200) },
@@ -250,6 +256,7 @@ export async function runProbe({ base, oidc = null, attempts = 1, retryDelayMs =
     }
     /** @type {Check} */
     const check = { name: c.name, ok: !wrong, status: a.status, version: a.version, latency_ms: a.latency_ms };
+    for (const field of c.carry ?? []) check[field] = a.body?.[field] ?? null;
     if (waits.count > 0) check.cap_waits = waits.count;
     if (Array.isArray(a.body?.alerts) && a.body.alerts.length > 0) check.alerts = a.body.alerts;
     if (c.worker && !a.version && a.status !== null) check.headers = a.headers;
@@ -261,8 +268,9 @@ export async function runProbe({ base, oidc = null, attempts = 1, retryDelayMs =
 
 /** @param {Check} c */
 function lines(c) {
+  const carried = KEY_HEALTH_CARRIED.filter((f) => f in c).map((f) => `${f}=${c[f] ?? "null"}`);
   const head = `${c.ok ? "ok" : "FAIL"} ${c.name} ${c.status ?? "-"} ${c.latency_ms} ms${c.version ? ` ${c.version}` : ""}${c.cap_waits ? ` (waited out the per-address cap ${c.cap_waits}x)` : ""}${c.detail ? `: ${c.detail}` : ""}`;
-  return [head, ...(c.alerts ?? []).map((a) => `  alert ${typeof a === "string" ? a : `${a.id}${a.detail ? `: ${a.detail}` : ""}`}`), ...(c.headers ? [`  headers ${JSON.stringify(c.headers)}`] : [])];
+  return [head, ...(carried.length ? [`  ${carried.join(" ")}`] : []), ...(c.alerts ?? []).map((a) => `  alert ${typeof a === "string" ? a : `${a.id}${a.detail ? `: ${a.detail}` : ""}`}`), ...(c.headers ? [`  headers ${JSON.stringify(c.headers)}`] : [])];
 }
 
 /** @param {{ ok: boolean, checks: Check[] }} summary @param {string} run */

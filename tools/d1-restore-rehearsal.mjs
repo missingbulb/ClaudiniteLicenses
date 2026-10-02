@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Rehearses a D1 Time Travel restore on a throwaway database, so the command d1-restore.yml runs
 // against the real one is known to work before anyone needs it: creates the rehearsal database,
-// checks it is on the production backend Time Travel needs, applies the migrations, writes a row,
+// checks it is on the production backend Time Travel needs, turns read replication on so the
+// restore is proven on the shape the deploy gives production, applies the migrations, writes a row,
 // reads a bookmark, writes a second row, runs RESTORE_COMMAND with that bookmark, asserts the first
 // row survived and the second is gone, and deletes the database, printing one line per step. A
 // rehearsal database that already exists is refused, never reused. Reads CLOUDFLARE_API_TOKEN and
@@ -16,6 +17,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { setReadReplication } from "./ensure-d1.mjs";
 
 /** The restore d1-restore.yml runs, with {database} and {bookmark} filled in; the rehearsal runs exactly this. */
 export const RESTORE_COMMAND = "npx wrangler d1 time-travel restore {database} --bookmark={bookmark} --json -c db/wrangler.jsonc";
@@ -69,6 +71,8 @@ export async function rehearse({ base = "https://api.cloudflare.com/client/v4", 
     const { version } = await call("GET", `/${uuid}`);
     if (version !== "production") throw new Error(`${REHEARSAL_DATABASE} is on the ${version} backend; Time Travel needs production`);
     log(`backend ${version}`);
+    const { mode } = await setReadReplication({ base, token, accountId, id: uuid, mode: "auto" });
+    log(`replication ${mode}`);
 
     const config = join(dir, "wrangler.json");
     writeFileSync(
