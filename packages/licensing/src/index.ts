@@ -162,3 +162,5 @@ export function isWriteMessage(m: unknown): m is WriteMessage {
   if (r.kind === "grace-start" || r.kind === "grace-reset") return true;
   return r.kind === "usage" && isId(r.repo_id) && isId(r.user_id) && PAID_PLANS.includes(r.plan as string) && typeof r.day === "string" && /^\d{4}-\d{2}-\d{2}$/.test(r.day);
 }
+
+export { KEY_COUNT_BLOBS, keyCountBlobs, type KeyCountBlob } from "./key-counts.ts";

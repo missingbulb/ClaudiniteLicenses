@@ -6,6 +6,7 @@ import { b64urlDecode, certStanding, type Certificate } from "../../../packages/
 import { createKeyCheckRun, GitHubError, parseKeyDispatch, refusalSummary } from "../../../packages/github-app/src/index.ts";
 import { BODY_MAX_WEBHOOK, ipLimited, ipLimitState, readJsonCapped, type IpLimitEnv } from "../../../packages/http/src/index.ts";
 import { versionOf, withVersion, type VersionEnv } from "../../../packages/version/src/index.ts";
+import { keyCountBlobs } from "../../../packages/licensing/src/index.ts";
 import { publicSessionKey } from "./desktop.ts";
 import { mintPublicSessionKey } from "./key.ts";
 
@@ -40,7 +41,7 @@ async function webhook(req: Request, env: Env): Promise<Response> {
     ? { repoId: String(parsed.dispatch.repo.id), ownerType: parsed.dispatch.owner.type, engineVersion: parsed.dispatch.engineVersion }
     : parsed.seen;
   const point = (outcome: Outcome) =>
-    env.KEY_COUNTS?.writeDataPoint({ indexes: [seen.repoId], blobs: ["public", outcome, seen.ownerType, seen.engineVersion, "web"], doubles: [1] });
+    env.KEY_COUNTS?.writeDataPoint({ indexes: [seen.repoId], blobs: keyCountBlobs({ plan: "public", outcome, ownerType: seen.ownerType, engineVersion: seen.engineVersion, path: "web" }), doubles: [1] });
   if (!parsed.ok) {
     if (parsed.reason === "sender-not-user") point("refused-sender");
     return refuse(parsed.status, parsed.reason, delivery);

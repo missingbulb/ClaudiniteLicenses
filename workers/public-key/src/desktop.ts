@@ -1,6 +1,7 @@
 // The desktop path for public repos: `POST /v1/public/session-key` with the App user token. The
 // user and the repo come from GitHub, read as the caller; GitHub saying public is the whole plan.
 import { parseDesktopRequest, readDesktopCaller } from "../../../packages/github-app/src/index.ts";
+import { keyCountBlobs } from "../../../packages/licensing/src/index.ts";
 import type { Certificate } from "../../../packages/signing/src/index.ts";
 import type { Env } from "./index.ts";
 import { mintPublicSessionKey } from "./key.ts";
@@ -15,7 +16,7 @@ export async function publicSessionKey(req: Request, env: Env): Promise<Response
   if (!parsed.ok) return refusal(parsed.status, parsed.reason);
   const { token, owner: ownerLogin, name, nonce, engineVersion } = parsed.request;
   const point = (outcome: string, repoId: string, ownerType: string) =>
-    env.KEY_COUNTS?.writeDataPoint({ indexes: [repoId], blobs: ["public", outcome, ownerType, engineVersion, "desktop"], doubles: [1] });
+    env.KEY_COUNTS?.writeDataPoint({ indexes: [repoId], blobs: keyCountBlobs({ plan: "public", outcome, ownerType, engineVersion, path: "desktop" }), doubles: [1] });
 
   const caller = await readDesktopCaller({ base: env.GITHUB_API_BASE ?? "https://api.github.com", userAgent: "claudinite-public-key" }, token, ownerLogin, name);
   if (!caller.ok) {

@@ -4,6 +4,7 @@ import type { GitHubClient } from "../../../packages/github-app/src/index.ts";
 import { b64urlDecode, type Certificate } from "../../../packages/signing/src/index.ts";
 import { capEngineVersion, type IpLimitEnv } from "../../../packages/http/src/index.ts";
 import type { VersionEnv } from "../../../packages/version/src/index.ts";
+import { keyCountBlobs } from "../../../packages/licensing/src/index.ts";
 
 export interface Env extends VersionEnv, IpLimitEnv {
   DB: D1Database;
@@ -69,9 +70,9 @@ export function failOpenEnabled(env: { FAIL_OPEN?: string }): boolean {
   return env.FAIL_OPEN === "true";
 }
 
-/** One Analytics Engine point per request from a caller something authenticated: index the repo id, blobs plan, outcome, owner type, engine version and path. */
+/** One Analytics Engine point per request from a caller something authenticated: index the repo id, blobs in KEY_COUNT_BLOBS order. */
 export function countPoint(env: Env, p: { repoId: string; plan: string; outcome: string; ownerType: string; engineVersion: string; path: Path }): void {
-  env.KEY_COUNTS?.writeDataPoint({ indexes: [p.repoId], blobs: [p.plan, p.outcome, p.ownerType, capEngineVersion(p.engineVersion), p.path], doubles: [1] });
+  env.KEY_COUNTS?.writeDataPoint({ indexes: [p.repoId], blobs: keyCountBlobs({ ...p, engineVersion: capEngineVersion(p.engineVersion) }), doubles: [1] });
 }
 
 export function refusal(status: number, reason: string): Response {
