@@ -27,6 +27,7 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { ensureWebhookEndpoint, polarClient, POLAR_VERSION, WEBHOOK_EVENTS } from "../packages/polar/src/index.ts";
 import { verifyKey } from "../packages/signing/src/index.ts";
+import { IP_LIMIT_PERIOD_S } from "../packages/http/src/index.ts";
 import { VERSION_HEADER } from "../packages/version/src/index.ts";
 import { DEFAULT_WORLD, startStub } from "./github-stub.mjs";
 import { devChain, formatDevVars, parseDevVars } from "./keys.mjs";
@@ -542,7 +543,11 @@ if (JSON.stringify(unversioned) !== JSON.stringify(["private-paths-unrouted"])) 
 console.log(`probe: exit 0, ${probeChecks.length} checks passed, each a Worker answered naming its version (${[...new Set(probeChecks.map((c) => c.version).filter(Boolean))].length} versions), private-paths-unrouted answered by none`);
 
 // The per-address cap, last: the 300th health read in a minute answers, the 301st is 429 with the
-// version header. Reads already spent this minute count, so the walk stops at the first 429.
+// version header. Reads already spent this minute count, so the walk stops at the first 429. The
+// local limiter's windows are aligned to the wall clock, so a walk that crosses into the next one
+// starts counting again: it begins only with ten seconds or more of its window left.
+const windowLeftMs = IP_LIMIT_PERIOD_S * 1000 - (Date.now() % (IP_LIMIT_PERIOD_S * 1000));
+if (windowLeftMs < 10_000) await sleep(windowLeftMs + 100);
 let capped = 0;
 for (let i = 1; i <= 400; i++) {
   const res = await call("/v1/key/health");
