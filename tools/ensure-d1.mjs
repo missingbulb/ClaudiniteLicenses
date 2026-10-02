@@ -4,7 +4,14 @@
 // is a placeholder, which `wrangler deploy --dry-run` accepts. Reads CLOUDFLARE_API_TOKEN and
 // CLOUDFLARE_ACCOUNT_ID from the environment.
 //
-//   node tools/ensure-d1.mjs --name claudinite-licenses [--write]
+// It also reads and sets the database's read replication mode. Cloudflare's D1 read replication
+// page (developers.cloudflare.com/d1/best-practices/read-replication/, read 2026-10-02): `PUT
+// /accounts/{account_id}/d1/database/{database_id}` with `{"read_replication":{"mode":"auto"}}`
+// turns it on and `"disabled"` off, both needing D1 Edit, and the `GET` of the same path reports
+// it as `result.read_replication.mode`. A database whose answer carries no such field reads as
+// null, an unknown, never as disabled.
+//
+//   node tools/ensure-d1.mjs --name claudinite-licenses [--write] [--read-replication auto|disabled | --show-read-replication]
 import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -13,14 +20,15 @@ export const PLACEHOLDER_ID = "00000000-0000-0000-0000-000000000000";
 /** Every config that binds the database, relative to the repo root. */
 export const D1_CONFIGS = ["db/wrangler.jsonc", "workers/key/wrangler.jsonc", "workers/sync/wrangler.jsonc"];
 
-/**
- * @param {{ base?: string, token: string, accountId: string, name: string }} opts
- * @returns {Promise<{ created: boolean, id: string }>}
- */
-export async function ensureD1({ base = "https://api.cloudflare.com/client/v4", token, accountId, name }) {
+/** The modes the D1 API names for read replication. */
+export const REPLICATION_MODES = ["auto", "disabled"];
+const API = "https://api.cloudflare.com/client/v4";
+
+/** @param {string} base @param {string} token */
+function caller(base, token) {
   const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
   /** @param {string} method @param {string} path @param {unknown} [body] */
-  const call = async (method, path, body) => {
+  return async (method, path, body) => {
     const res = await fetch(`${base}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
     const json = await res.json().catch(() => ({}));
     if (!res.ok || json.success === false) {
@@ -29,11 +37,45 @@ export async function ensureD1({ base = "https://api.cloudflare.com/client/v4", 
     }
     return json.result;
   };
+}
+
+/**
+ * @param {{ base?: string, token: string, accountId: string, name: string }} opts
+ * @returns {Promise<{ created: boolean, id: string }>}
+ */
+export async function ensureD1({ base = API, token, accountId, name }) {
+  const call = caller(base, token);
   const path = `/accounts/${accountId}/d1/database`;
   const found = (await call("GET", `${path}?name=${encodeURIComponent(name)}`)).find((/** @type {{ name: string }} */ d) => d.name === name);
   if (found) return { created: false, id: found.uuid };
   const made = await call("POST", path, { name });
   return { created: true, id: made.uuid };
+}
+
+/**
+ * The database's read replication mode as the API reports it, or null when the answer names none.
+ * @param {{ base?: string, token: string, accountId: string, id: string }} opts
+ * @returns {Promise<string | null>}
+ */
+export async function readReplication({ base = API, token, accountId, id }) {
+  const result = await caller(base, token)("GET", `/accounts/${accountId}/d1/database/${id}`);
+  const mode = result?.read_replication?.mode;
+  return typeof mode === "string" ? mode : null;
+}
+
+/**
+ * Gives the database `mode`, sending the PUT only when its mode differs, and reads it back.
+ * @param {{ base?: string, token: string, accountId: string, id: string, mode: string }} opts
+ * @returns {Promise<{ changed: boolean, mode: string }>}
+ */
+export async function setReadReplication({ base = API, token, accountId, id, mode }) {
+  if (!REPLICATION_MODES.includes(mode)) throw new Error(`read replication mode ${JSON.stringify(mode)} is not ${REPLICATION_MODES.join(" or ")}`);
+  const before = await readReplication({ base, token, accountId, id });
+  if (before === mode) return { changed: false, mode };
+  await caller(base, token)("PUT", `/accounts/${accountId}/d1/database/${id}`, { read_replication: { mode } });
+  const after = await readReplication({ base, token, accountId, id });
+  if (after !== mode) throw new Error(`asked for ${mode} read replication on ${id}, but it reads ${after ?? "no mode"} after the PUT`);
+  return { changed: true, mode };
 }
 
 /**
@@ -56,17 +98,35 @@ export function writeDatabaseId(root, name, id) {
 }
 
 if (import.meta.filename === process.argv[1]) {
-  const { values } = parseArgs({ options: { name: { type: "string" }, write: { type: "boolean", default: false }, base: { type: "string" } } });
+  const { values } = parseArgs({
+    options: {
+      name: { type: "string" },
+      write: { type: "boolean", default: false },
+      base: { type: "string" },
+      "read-replication": { type: "string" },
+      "show-read-replication": { type: "boolean", default: false },
+    },
+  });
   const token = process.env.CLOUDFLARE_API_TOKEN;
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
-  if (!values.name || !token || !accountId) {
-    console.error("usage: CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... node tools/ensure-d1.mjs --name <database> [--write]");
+  const mode = values["read-replication"];
+  const badMode = mode !== undefined && (!REPLICATION_MODES.includes(mode) || values["show-read-replication"]);
+  if (!values.name || !token || !accountId || badMode) {
+    console.error(
+      "usage: CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... node tools/ensure-d1.mjs --name <database> [--write] [--read-replication auto|disabled | --show-read-replication]",
+    );
     process.exit(2);
   }
   try {
     const { created, id } = await ensureD1({ base: values.base, token, accountId, name: values.name });
     console.log(`${created ? "created" : "already held"}: ${values.name} ${id}`);
     if (values.write) console.log(`database_id set in ${writeDatabaseId(resolve(import.meta.dirname, ".."), values.name, id).join(", ")}`);
+    if (mode !== undefined) {
+      const set = await setReadReplication({ base: values.base, token, accountId, id, mode });
+      console.log(`read replication: ${set.mode} (${set.changed ? "changed" : "unchanged"})`);
+    } else if (values["show-read-replication"]) {
+      console.log(`read replication: ${(await readReplication({ base: values.base, token, accountId, id })) ?? "unreported"}`);
+    }
   } catch (err) {
     console.error(`ensure-d1: ${err instanceof Error ? err.message : err}`);
     process.exitCode = 1;

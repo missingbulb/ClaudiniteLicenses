@@ -778,7 +778,7 @@ describe("deploy.yml", () => {
   it("reads back that the split Workers' health reads met the per-address cap, the binding bound and called", () => {
     const run = named("Read back the live Workers").run!;
     expect(run).toContain(`probe 200 'b.ip_limit==="counted"' -- https://license.claudinite.com/v1/public/health`);
-    expect(run).toContain(`probe 200 'b.d1==="ok"&&b.queue==="bound"&&b.polar==="configured"&&b.ip_limit==="counted"' -- https://license.claudinite.com/v1/key/health`);
+    expect(run).toMatch(/^ *probe 200 'b\.d1==="ok"&&b\.queue==="bound"&&b\.polar==="configured"&&b\.ip_limit==="counted"(&&[^']*)?' -- https:\/\/license\.claudinite\.com\/v1\/key\/health$/m);
   });
 
   const capStep = () => named("Observe the per-address cap from outside");
@@ -846,5 +846,77 @@ printf %s $code
     expect(wait).toBe(cap + 1);
     expect(steps[wait]!.run!.trim()).toMatch(/^sleep (6[1-9]|[7-9]\d)$/m);
     expect(wait).toBeLessThan(steps.indexOf(probeStep()!));
+  });
+
+  describe("D1 read replication", () => {
+    const replicationStep = () => steps.find((s) => s.name === "Turn on D1 read replication when D1_READ_REPLICATION says so")!;
+    const readBack = () => steps.find((s) => s.name === "Read back the live Workers")!;
+
+    // A stand-in node answering `tools/ensure-d1.mjs` with ENSURE_MODE as the mode it reads, logging its argv.
+    function replicationRun(vars: Record<string, string>, mode = "disabled") {
+      const dir = mkdtempSync(join(tmpdir(), "acme-replication-"));
+      writeFileSync(
+        join(dir, "node"),
+        `#!/usr/bin/env bash\nif [ "$1" = tools/ensure-d1.mjs ]; then echo "$*" >> "${dir}/ensure.log"; echo "already held: claudinite-licenses uuid-live"; case " $* " in *" --read-replication auto "*) echo "read replication: auto (changed)";; *) echo "read replication: $ENSURE_MODE";; esac; exit 0; fi\nexec "${process.execPath}" "$@"\n`,
+      );
+      chmodSync(join(dir, "node"), 0o755);
+      const res = runStep(replicationStep(), { CLOUDFLARE_API_TOKEN: "t", CLOUDFLARE_ACCOUNT_ID: "acct" }, { PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, GITHUB_STEP_SUMMARY: join(dir, "summary"), ENSURE_MODE: mode }, { vars });
+      const read = (f: string) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), "utf8") : "");
+      return { ...res, calls: read("ensure.log").trim().split("\n").filter(Boolean), summary: read("summary") };
+    }
+
+    it("sits after the restore rehearsal and before the first upload, gated on the repository variable", () => {
+      const at = steps.indexOf(replicationStep());
+      const rehearse = stepAt((s) => runLines(s).includes("node tools/d1-restore-rehearsal.mjs"));
+      expect(at).toBeGreaterThan(rehearse);
+      expect(at).toBe(rehearse + 1);
+      expect(at).toBeLessThan(uploadAt("public-key"));
+      expect(replicationStep().env).toMatchObject({ D1_READ_REPLICATION: "${{ vars.D1_READ_REPLICATION }}", CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}" });
+      expect(runLines(replicationStep())).toContain('auto) out=$(node tools/ensure-d1.mjs --name claudinite-licenses --read-replication auto) ;;');
+    });
+
+    for (const value of ["", "off"]) {
+      it(`only reads and prints the mode while D1_READ_REPLICATION is ${value || "unset"}, changing nothing`, () => {
+        const res = replicationRun(value ? { D1_READ_REPLICATION: value } : {});
+        expect(res.status, res.stderr + res.stdout).toBe(0);
+        expect(res.calls).toEqual(["tools/ensure-d1.mjs --name claudinite-licenses --show-read-replication"]);
+        expect(res.stdout).toMatch(/^read replication: disabled$/m);
+        expect(res.summary).toMatch(/D1_READ_REPLICATION is (unset|off), so the deploy changes nothing: read replication: disabled/);
+      });
+    }
+
+    it("turns replication on when D1_READ_REPLICATION is auto, and says so in the summary", () => {
+      const res = replicationRun({ D1_READ_REPLICATION: "auto" });
+      expect(res.status, res.stderr + res.stdout).toBe(0);
+      expect(res.calls).toEqual(["tools/ensure-d1.mjs --name claudinite-licenses --read-replication auto"]);
+      expect(res.summary).toMatch(/D1_READ_REPLICATION is auto: read replication: auto \(changed\)/);
+    });
+
+    it("fails on any other value of D1_READ_REPLICATION, calling nothing", () => {
+      const res = replicationRun({ D1_READ_REPLICATION: "on" });
+      expect(res.status).not.toBe(0);
+      expect(res.stdout).toMatch(/^::error::the repository variable D1_READ_REPLICATION is on; set it to auto or off, or unset it$/m);
+      expect(res.calls).toEqual([]);
+    });
+
+    it("fails before any upload when the API reports no mode at all, while off", () => {
+      const res = replicationRun({}, "unreported");
+      expect(res.status).not.toBe(0);
+      expect(res.stdout).toMatch(/^::error::.*reports no read replication mode/m);
+    });
+
+    it("the read-back prints the mode, accepting auto or disabled, and the key Worker's served-by fields, which must be present", () => {
+      const step = readBack();
+      expect(step.env).toMatchObject({ CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}", CLOUDFLARE_ACCOUNT_ID: "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" });
+      const lines = runLines(step);
+      expect(lines).toContain("replication=$(node tools/ensure-d1.mjs --name claudinite-licenses --show-read-replication)");
+      expect(lines.some((l) => /auto\|disabled\)/.test(l))).toBe(true);
+      const keyHealth = lines.find((l) => l.startsWith("probe 200 'b.d1===\"ok\"") && l.endsWith("https://license.claudinite.com/v1/key/health"))!;
+      for (const field of ["d1_served_by_primary", "d1_served_by_region", "d1_ms"]) {
+        expect(keyHealth, field).toContain(`"${field}" in b`);
+        expect(step.run, field).toContain(`${field}=\${b.${field}}`);
+      }
+      expect(step.run).toContain("GITHUB_STEP_SUMMARY");
+    });
   });
 });

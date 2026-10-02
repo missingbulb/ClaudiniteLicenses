@@ -10,7 +10,8 @@
 // once three such keys have been asked for and clearing once those incidents are an hour old, an
 // account the App no longer covers firing and clearing across two reconciles; then what stands in
 // front of the costly calls: an unsigned Polar delivery refused, a desktop body over 16 KiB refused
-// before GitHub is asked, a bogus desktop token stopped at GitHub, fail_open in the key health; the
+// before GitHub is asked, a bogus desktop token stopped at GitHub, fail_open and where its D1 read
+// was served in the key health; the
 // outside probe passing against the local set with all ten checks; and last, since it spends the
 // address's budget for a minute, the 301st health read in a minute answered 429. Each key is verified against the dev chain's roots and must carry
 // the issuing key its Worker holds. Exits 0 only when every key and the grant verify, every stamp
@@ -507,6 +508,10 @@ console.log("bogus token: refused 401 token-invalid after one GitHub call, GET /
 const keyHealth = (await call("/v1/key/health")).json;
 if (keyHealth?.fail_open !== true) await fail(`the key health's fail_open: ${JSON.stringify(keyHealth)}`);
 console.log("key health: fail_open true, the committed value");
+// The local runtime may leave a field null; the keys must be there.
+const servedFields = ["d1_served_by_primary", "d1_served_by_region", "d1_ms"];
+if (!servedFields.every((f) => f in keyHealth)) await fail(`the key health's served-by fields: ${JSON.stringify(keyHealth)}`);
+console.log(`key health: ${servedFields.map((f) => `${f} ${JSON.stringify(keyHealth[f])}`).join(", ")}`);
 
 // The outside probe, as the deploy runs it, against the local set: no issue, an OIDC token from the
 // stub's issuer for a workflow the pin refuses.

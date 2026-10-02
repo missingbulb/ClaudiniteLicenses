@@ -10,6 +10,7 @@ import { webhook } from "./web.ts";
 import { actionsKey } from "./actions.ts";
 import { itemGrant } from "./grant.ts";
 import { versionOf, withVersion } from "../../../packages/version/src/index.ts";
+import { reader } from "./db.ts";
 
 export type { Env } from "./env.ts";
 
@@ -35,12 +36,34 @@ async function loginRefresh(req: Request, env: Env): Promise<Response> {
   return new Response(res.body, { status: res.status, headers: { "Content-Type": res.headers.get("Content-Type") ?? "application/json" } });
 }
 
-/** Judges its own certificate, trust roots and D1, answering 503 while any of them is wrong, and says whether a key fails open. */
+/** Where and how fast a D1 read was served, each null when the result's meta does not say. */
+export interface ServedBy {
+  d1_served_by_primary: boolean | null;
+  d1_served_by_region: string | null;
+  d1_ms: number | null;
+}
+
+const UNKNOWN_SERVED: ServedBy = { d1_served_by_primary: null, d1_served_by_region: null, d1_ms: null };
+
+/** D1Result's meta fields (developers.cloudflare.com/d1/worker-api/return-object/), absent locally. */
+export function servedBy(meta: Partial<D1Meta> | undefined): ServedBy {
+  return {
+    d1_served_by_primary: typeof meta?.served_by_primary === "boolean" ? meta.served_by_primary : null,
+    d1_served_by_region: typeof meta?.served_by_region === "string" ? meta.served_by_region : null,
+    d1_ms: typeof meta?.duration === "number" ? meta.duration : null,
+  };
+}
+
+/**
+ * Judges its own certificate, trust roots and D1, answering 503 while any of them is wrong, says
+ * whether a key fails open, and where and how fast its D1 read was served.
+ */
 async function health(env: Env, ipLimit: IpLimitState | null): Promise<Response> {
   const body = certBody(env);
   let d1: "ok" | "unreadable" = "ok";
+  let served = UNKNOWN_SERVED;
   try {
-    await env.DB.prepare("SELECT 1").first();
+    served = servedBy((await reader(env).prepare("SELECT 1").run()).meta);
   } catch {
     d1 = "unreadable";
   }
@@ -54,6 +77,7 @@ async function health(env: Env, ipLimit: IpLimitState | null): Promise<Response>
       cert_exp: body.notAfter,
       cert_days_left: cert.daysLeft,
       d1,
+      ...served,
       queue: env.WRITES ? "bound" : "unbound",
       polar: env.POLAR_API_BASE && env.POLAR_ACCESS_TOKEN ? "configured" : "unconfigured",
       trust_roots: roots,

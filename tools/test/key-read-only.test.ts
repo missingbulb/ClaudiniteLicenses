@@ -10,3 +10,13 @@ it("the key Worker's source holds no INSERT, UPDATE or DELETE", () => {
   const hits = files.filter((f) => /\b(INSERT|UPDATE|DELETE)\b/.test(readFileSync(join(dir, f), "utf8")));
   expect(hits).toEqual([]);
 });
+
+// A writer's constraint in a Worker that never writes would send every key's first read to the
+// primary for nothing; the key Worker's reads are one unconstrained session per request.
+it("the key Worker's source never opens a first-primary session", () => {
+  const dir = resolve(import.meta.dirname, "../../workers/key/src");
+  const hits = readdirSync(dir)
+    .filter((f) => f.endsWith(".ts"))
+    .filter((f) => /first-primary/.test(readFileSync(join(dir, f), "utf8").replace(/^\s*(\/\/|\*).*$/gm, "")));
+  expect(hits).toEqual([]);
+});

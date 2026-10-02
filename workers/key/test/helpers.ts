@@ -28,6 +28,8 @@ export interface World {
   points: Point[];
   logs: string[];
   dbCalls: number;
+  /** The constraint each withSession call carried, in order. */
+  sessions: (string | undefined)[];
   /** Every statement prepared, in order. */
   dbSql: string[];
   /** Each sendBatch call's message bodies. */
@@ -65,6 +67,7 @@ export function resetWorld(): World {
     points: [],
     logs: [],
     dbCalls: 0,
+    sessions: [],
     dbSql: [],
     sent: [],
     polarSignals: [],
@@ -109,10 +112,25 @@ export function githubRepo(over: Record<string, unknown> = {}) {
   return { id: 1001, name: "acme-repo", full_name: "acme-user/acme-repo", private: false, visibility: "public", owner: { id: 2002, login: "acme-user", type: "User" }, permissions: { push: true }, ...over };
 }
 
-/** A D1 binding that counts every statement prepared, or throws on each one. */
-export function countingDb(inner: D1Database, opts: { broken?: boolean } = {}): D1Database {
+/**
+ * A D1 binding that counts every statement prepared, or throws on each one, and records each
+ * session opened, whose statements it counts the same way. With `sessionOnly`, a statement
+ * prepared or batched on the binding itself, outside a session, throws.
+ */
+export function countingDb(inner: D1Database, opts: { broken?: boolean; sessionOnly?: boolean } = {}): D1Database {
   return new Proxy(inner, {
     get(target, prop) {
+      if (prop === "withSession") {
+        return (constraint?: string) => {
+          world.sessions.push(constraint);
+          return countingDb(target.withSession(constraint) as unknown as D1Database, { broken: opts.broken });
+        };
+      }
+      if (opts.sessionOnly && (prop === "prepare" || prop === "batch")) {
+        return () => {
+          throw new Error(`${prop} on the binding itself, outside a session`);
+        };
+      }
       if (prop === "prepare") {
         return (sql: string) => {
           world.dbCalls++;

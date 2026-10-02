@@ -15,12 +15,13 @@ interface Db {
   uuid: string;
   name: string;
   version: string;
+  mode: string;
   rows: { name: string; seq: number }[];
 }
 
 // The Cloudflare API's D1 routes, plus two the stand-in npx calls to read a bookmark and restore to one.
-async function startCloudflare(opts: { existing?: string[]; version?: string; restoreWorks?: boolean } = {}) {
-  const dbs: Db[] = (opts.existing ?? []).map((name, i) => ({ uuid: `uuid-old-${i}`, name, version: "production", rows: [] }));
+async function startCloudflare(opts: { existing?: string[]; version?: string; restoreWorks?: boolean; replicationFails?: boolean } = {}) {
+  const dbs: Db[] = (opts.existing ?? []).map((name, i) => ({ uuid: `uuid-old-${i}`, name, version: "production", mode: "disabled", rows: [] }));
   const requests: string[] = [];
   let seq = 0;
   server = createServer((req, res) => {
@@ -44,12 +45,20 @@ async function startCloudflare(opts: { existing?: string[]; version?: string; re
       const path = url.pathname.replace(/^\/accounts\/acct\/d1\/database/, "");
       if (path === "" && req.method === "GET") return ok(dbs.filter((d) => d.name === url.searchParams.get("name")).map(({ uuid, name }) => ({ uuid, name })));
       if (path === "" && req.method === "POST") {
-        const db = { uuid: `uuid-${dbs.length + 1}`, name: JSON.parse(body).name, version: opts.version ?? "production", rows: [] };
+        const db = { uuid: `uuid-${dbs.length + 1}`, name: JSON.parse(body).name, version: opts.version ?? "production", mode: "disabled", rows: [] };
         dbs.push(db);
         return ok({ uuid: db.uuid, name: db.name });
       }
       const db = dbs.find((d) => path.startsWith(`/${d.uuid}`));
-      if (db && path === `/${db.uuid}` && req.method === "GET") return ok({ uuid: db.uuid, name: db.name, version: db.version });
+      if (db && path === `/${db.uuid}` && req.method === "GET") return ok({ uuid: db.uuid, name: db.name, version: db.version, read_replication: { mode: db.mode } });
+      if (db && path === `/${db.uuid}` && req.method === "PUT") {
+        if (opts.replicationFails) {
+          res.statusCode = 500;
+          return res.end(JSON.stringify({ success: false, errors: [{ message: "acme replication outage" }] }));
+        }
+        db.mode = (JSON.parse(body) as { read_replication: { mode: string } }).read_replication.mode;
+        return ok({ uuid: db.uuid, name: db.name, read_replication: { mode: db.mode } });
+      }
       if (db && path === `/${db.uuid}` && req.method === "DELETE") {
         dbs.splice(dbs.indexOf(db), 1);
         return ok(null);
@@ -125,12 +134,12 @@ function rehearse(base: string, npxDir: string): Promise<{ status: number | null
 const argv = (dir: string) => readFileSync(join(dir, "argv.log"), "utf8").trim().split("\n").map((l) => JSON.parse(l) as string[]);
 
 describe("tools/d1-restore-rehearsal.mjs", () => {
-  it("creates, migrates, inserts, reads a bookmark, inserts, restores, asserts and deletes, in that order", async () => {
+  it("creates, turns read replication on, migrates, inserts, reads a bookmark, inserts, restores, asserts and deletes, in that order", async () => {
     const cf = await startCloudflare();
     const npx = standInNpx(cf.base);
     const res = await rehearse(cf.base, npx);
     expect(res.status, res.stderr + res.stdout).toBe(0);
-    expect(res.stdout.split("\n").filter(Boolean).map((l) => l.split(" ")[0])).toEqual(["create", "backend", "migrate", "insert", "bookmark", "insert", "restore", "assert", "delete"]);
+    expect(res.stdout.split("\n").filter(Boolean).map((l) => l.split(" ")[0])).toEqual(["create", "backend", "replication", "migrate", "insert", "bookmark", "insert", "restore", "assert", "delete"]);
     expect(cf.dbs).toEqual([]);
     const calls = argv(npx);
     expect(calls.map((c) => c.slice(0, 5).join(" "))).toEqual([
@@ -140,14 +149,36 @@ describe("tools/d1-restore-rehearsal.mjs", () => {
     ]);
     expect(calls[0]).toContain("--remote");
     expect(JSON.parse(readFileSync(join(npx, "config.json"), "utf8")).d1_databases[0]).toMatchObject({ database_name: REHEARSAL_DATABASE, database_id: "uuid-1", migrations_dir: join(ROOT, "db/migrations") });
+    expect(res.stdout).toMatch(/^replication auto$/m);
     expect(cf.requests.filter((r) => !r.startsWith("GET /__stub") && !r.startsWith("GET /accounts/acct/d1/database/uuid-1"))).toEqual([
       "GET /accounts/acct/d1/database",
       "POST /accounts/acct/d1/database",
+      "PUT /accounts/acct/d1/database/uuid-1",
       "POST /accounts/acct/d1/database/uuid-1/query",
       "POST /accounts/acct/d1/database/uuid-1/query",
       "POST /accounts/acct/d1/database/uuid-1/query",
       "DELETE /accounts/acct/d1/database/uuid-1",
     ]);
+  });
+
+  it("turns replication on after the create and before the first migration, so the restore runs on a replicated database", async () => {
+    const cf = await startCloudflare();
+    const res = await rehearse(cf.base, standInNpx(cf.base));
+    expect(res.status, res.stderr + res.stdout).toBe(0);
+    const lines = res.stdout.split("\n").filter(Boolean);
+    expect(lines.findIndex((l) => l.startsWith("create "))).toBeLessThan(lines.indexOf("replication auto"));
+    expect(lines.indexOf("replication auto")).toBeLessThan(lines.indexOf("migrate db/migrations"));
+  });
+
+  it("fails when turning replication on fails, before any migration, and still deletes the database", async () => {
+    const cf = await startCloudflare({ replicationFails: true });
+    const npx = standInNpx(cf.base);
+    const res = await rehearse(cf.base, npx);
+    expect(res.status).toBe(1);
+    expect(res.stderr).toMatch(/PUT .*500/);
+    expect(res.stdout).not.toMatch(/^migrate /m);
+    expect(res.stdout).toMatch(/^delete /m);
+    expect(cf.dbs).toEqual([]);
   });
 
   it("fails when the restore leaves the second row, and still deletes the database", async () => {

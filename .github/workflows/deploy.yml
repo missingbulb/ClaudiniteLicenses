@@ -155,6 +155,35 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: node tools/d1-restore-rehearsal.mjs
       - if: steps.gate.outputs.skip == 'false'
+        name: Turn on D1 read replication when D1_READ_REPLICATION says so
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # Unset or off, the deploy only reads the mode. auto is set once a dispatch with
+          # rehearse_d1_restore has proven Time Travel's restore on a replicated database; from then
+          # on every deploy turns the mode back to auto if it was flipped off elsewhere.
+          D1_READ_REPLICATION: ${{ vars.D1_READ_REPLICATION }}
+        run: |
+          case "$D1_READ_REPLICATION" in
+            ""|off) out=$(node tools/ensure-d1.mjs --name claudinite-licenses --show-read-replication)
+                note="D1_READ_REPLICATION is ${D1_READ_REPLICATION:-unset}, so the deploy changes nothing" ;;
+            auto) out=$(node tools/ensure-d1.mjs --name claudinite-licenses --read-replication auto) ;;
+            *) echo "::error::the repository variable D1_READ_REPLICATION is $D1_READ_REPLICATION; set it to auto or off, or unset it"
+               exit 1 ;;
+          esac
+          echo "$out"
+          mode=$(printf '%s\n' "$out" | sed -n 's/^read replication: //p')
+          case "$mode" in
+            auto*|disabled*) ;;
+            *) echo "::error::claudinite-licenses reports no read replication mode the deploy knows: ${mode:-nothing}"
+               exit 1 ;;
+          esac
+          {
+            echo "## D1 read replication"
+            echo
+            echo "${note:-D1_READ_REPLICATION is auto}: read replication: $mode"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - if: steps.gate.outputs.skip == 'false'
         id: upload-public-key
         name: Upload claudinite-public-key with its secrets
         env:
@@ -417,6 +446,8 @@ jobs:
       - if: steps.gate.outputs.skip == 'false'
         name: Read back the live Workers
         env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           POLAR_API_BASE: https://sandbox-api.polar.sh
           POLAR_ACCESS_TOKEN: ${{ secrets.POLAR_SANDBOX_TOKEN }}
           OWNER_TYPE: ${{ github.event.repository.owner.type }}
@@ -444,7 +475,22 @@ jobs:
           # ip_limit is what the per-address cap made of that very read: `counted` proves the live
           # version carries the binding and its health route calls it.
           probe 200 'b.ip_limit==="counted"' -- https://license.claudinite.com/v1/public/health
-          probe 200 'b.d1==="ok"&&b.queue==="bound"&&b.polar==="configured"&&b.ip_limit==="counted"' -- https://license.claudinite.com/v1/key/health
+          # Where and how fast the key Worker's own D1 read was served: each key present, null allowed.
+          probe 200 'b.d1==="ok"&&b.queue==="bound"&&b.polar==="configured"&&b.ip_limit==="counted"&&"d1_served_by_primary" in b&&"d1_served_by_region" in b&&"d1_ms" in b' -- https://license.claudinite.com/v1/key/health
+          served=$(node -p 'const b=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));`d1_served_by_primary=${b.d1_served_by_primary} d1_served_by_region=${b.d1_served_by_region} d1_ms=${b.d1_ms}`' "$RUNNER_TEMP/probe.body")
+          # Either mode is accepted until D1_READ_REPLICATION turns replication on.
+          replication=$(node tools/ensure-d1.mjs --name claudinite-licenses --show-read-replication)
+          mode=$(printf '%s\n' "$replication" | sed -n 's/^read replication: //p')
+          case "$mode" in
+            auto|disabled) echo "read replication: $mode; key health from this runner: $served" ;;
+            *) echo "::error::claudinite-licenses reports no read replication mode the deploy knows: ${mode:-nothing}"
+               exit 1 ;;
+          esac
+          {
+            echo "## D1 reads"
+            echo
+            echo "claudinite-licenses read replication: \`$mode\`. The key Worker's health read from this runner: $served."
+          } >> "$GITHUB_STEP_SUMMARY"
           # The fail-open switch the upload passed, or the committed value.
           probe 200 "b.fail_open===$FAIL_OPEN_WANT" -- https://license.claudinite.com/v1/key/health
           probe 200 -- https://license.claudinite.com/v1/sync/health

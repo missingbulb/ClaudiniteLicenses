@@ -7,6 +7,7 @@ import { licenceFields, mintKey } from "./key.ts";
 import { queueIncident } from "./incidents.ts";
 import { linksFor, NO_LINKS, wantsLinks } from "./links.ts";
 import { REFUSAL_TEXT, resolvePlan } from "./plan.ts";
+import { reader } from "./db.ts";
 import { enqueueWrites } from "./writes.ts";
 
 function refuse(status: number, reason: string, delivery: string | null): Response {
@@ -28,7 +29,7 @@ export async function webhook(req: Request, env: Env, ctx: ExecutionContext): Pr
   const seen = { repoId: String(repo.id), ownerType: owner.type, engineVersion, path: "web" as const };
 
   const nowS = Math.floor(Date.now() / 1000);
-  const plan = await resolvePlan(env, { repoId: repo.id, visibility: repo.private ? "private" : "public", ownerId: owner.id, userId: sender.id, typ: "session" }, { installed: true, ctx, path: "web" });
+  const plan = await resolvePlan(env, reader(env), { repoId: repo.id, visibility: repo.private ? "private" : "public", ownerId: owner.id, userId: sender.id, typ: "session" }, { installed: true, ctx, path: "web" });
   let outcome: string;
   let planName: string;
   let output: { title: string; summary: string; text?: string };

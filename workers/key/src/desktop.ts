@@ -6,6 +6,7 @@ import { licenceFields, mintKey } from "./key.ts";
 import { queueIncident } from "./incidents.ts";
 import { linksFor, NO_LINKS, wantsLinks } from "./links.ts";
 import { resolvePlan } from "./plan.ts";
+import { reader } from "./db.ts";
 import { enqueueWrites } from "./writes.ts";
 
 export async function sessionKey(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -23,7 +24,7 @@ export async function sessionKey(req: Request, env: Env, ctx: ExecutionContext):
   const { user, repo, owner } = caller;
   if (!(await withinOwnerLimit(env, owner.login))) return refusal(429, "rate-limited");
   const seen = { repoId: String(repo.id), ownerType: owner.type, engineVersion, path: "desktop" as const };
-  const plan = await resolvePlan(env, { repoId: repo.id, visibility: repo.private ? "private" : "public", ownerId: owner.id, userId: user.id, typ: "session" }, { ctx, path: "desktop" });
+  const plan = await resolvePlan(env, reader(env), { repoId: repo.id, visibility: repo.private ? "private" : "public", ownerId: owner.id, userId: user.id, typ: "session" }, { ctx, path: "desktop" });
   if ("refused" in plan) {
     if (plan.refused === "app-not-installed") queueIncident(env, ctx, "app-not-installed", "desktop");
     countPoint(env, { ...seen, plan: "none", outcome: `refused-${plan.refused}` });
