@@ -112,6 +112,22 @@ then waits a minute for the window to clear before the final
 probe. The canary probe's pinned walks can meet the cap too once both versions carry it; it waits
 out a 429 `rate-limited` and asks again rather than failing.
 
+`Read back the key counts`, after the D1 read-back, reads the key counts dataset with
+`tools/key-counts.mjs`. It first looks for the one point the read-back's own `actions-key` refusal
+wrote (engine version `deploy-read-back`, this repository's id), asking for about 95 seconds, then
+prints the last 7 days' counts by plan, outcome and path to the summary's `## Key counts` section.
+A token without `Account Analytics: Read` prints `unavailable` there and warns, naming #30; a
+dataset no point has created yet, a point not yet queryable, and the tool itself failing each only
+warn too. The step runs after promotion and reads, never judges, so it never fails the deploy.
+Anyone holding a token with that permission can read the same counts:
+
+```
+CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... node tools/key-counts.mjs --since 7d --group plan,outcome,path
+```
+
+`--probe` only says whether the token can read and the dataset exists; `--json` and `--markdown`
+change the output; `--repo-id` and `--engine-version` narrow it.
+
 Three rules keep this safe:
 
 - A change to the contract between the router and a Worker it binds promotes the callee first: two

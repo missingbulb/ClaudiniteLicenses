@@ -848,6 +848,147 @@ printf %s $code
     expect(wait).toBeLessThan(steps.indexOf(probeStep()!));
   });
 
+  describe("key counts", () => {
+    const countsStep = () => named("Read back the key counts");
+    const readBack = () => named("Read back the live Workers");
+    const UNAVAILABLE = "key counts: unavailable (403; the CLOUDFLARE_API_TOKEN needs the Account Analytics: Read permission on this account)";
+    const point = (n: number) => JSON.stringify({ available: true, since: 1, until: 2, groupBy: ["outcome", "path"], rows: n ? [{ outcome: "refused-workflow-not-pinned", path: "actions", requests: n }] : [], total: n });
+    const POINT_AT = Math.floor(Date.now() / 1000) - 7;
+    const WEEK = "| plan | outcome | path | requests |\n| --- | --- | --- | --- |\n| none | refused-workflow-not-pinned | actions | 4 |\n| total |  |  | 4 |";
+
+    // A stand-in node answering `tools/key-counts.mjs` from COUNTS_PROBE, the next of the
+    // `|`-separated COUNTS_POINT answers, and COUNTS_WEEK, failing the query COUNTS_FAIL names, logging its argv;
+    // a stand-in sleep logs its argument and returns at once.
+    function countsRun(env: { probe?: string; points?: string[]; week?: string; fail?: "probe" | "point" | "week" }) {
+      const dir = mkdtempSync(join(tmpdir(), "acme-counts-"));
+      writeFileSync(
+        join(dir, "node"),
+        `#!/usr/bin/env bash
+if [ "$1" = tools/key-counts.mjs ]; then
+  echo "$*" >> "${dir}/counts.log"
+  case " $* " in
+    *" --probe "*) q=probe ;;
+    *" --engine-version "*) q=point ;;
+    *) q=week ;;
+  esac
+  if [ "$COUNTS_FAIL" = "$q" ]; then echo "key-counts: POST answered 400: bad $q query" >&2; exit 1; fi
+  case " $* " in
+    *" --probe "*) echo "$COUNTS_PROBE" ;;
+    *" --engine-version "*) n=$(( $(cat "${dir}/reads" 2>/dev/null || echo 0) + 1 )); echo $n > "${dir}/reads"; IFS='|' read -ra answers <<< "$COUNTS_POINT"; i=$(( n <= \${#answers[@]} ? n - 1 : \${#answers[@]} - 1 )); echo "\${answers[$i]}" ;;
+    *) printf '%s\\n' "$COUNTS_WEEK" ;;
+  esac
+  exit 0
+fi
+exec "${process.execPath}" "$@"
+`,
+      );
+      writeFileSync(join(dir, "sleep"), `#!/usr/bin/env bash\necho "$1" >> "${dir}/sleeps"\n`);
+      for (const f of ["node", "sleep"]) chmodSync(join(dir, f), 0o755);
+      const res = runStep(
+        countsStep(),
+        { CLOUDFLARE_API_TOKEN: "t", CLOUDFLARE_ACCOUNT_ID: "acct" },
+        {
+          PATH: `${dir}:${process.env.PATH}`,
+          RUNNER_TEMP: dir,
+          GITHUB_STEP_SUMMARY: join(dir, "summary"),
+          GITHUB_REPOSITORY_ID: "4242",
+          STARTED: "1790000000",
+          POINT_AT: String(POINT_AT),
+          COUNTS_PROBE: env.probe ?? "key counts: available, dataset claudinite_key_counts present",
+          COUNTS_POINT: (env.points ?? [point(1)]).join("|"),
+          COUNTS_WEEK: env.week ?? WEEK,
+          COUNTS_FAIL: env.fail ?? "",
+        },
+      );
+      const read = (f: string) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), "utf8") : "");
+      return { ...res, calls: read("counts.log").trim().split("\n").filter(Boolean), summary: read("summary"), sleeps: read("sleeps").trim().split("\n").filter(Boolean).map(Number) };
+    }
+
+    it("sits directly after the D1 read-back and before the alerts read-back, with the deploy's token", () => {
+      const at = steps.indexOf(countsStep());
+      expect(at).toBe(stepAt((s) => s.name === "Read back D1 read replication and where the key Worker's read was served") + 1);
+      expect(steps[at + 1]!.name).toBe("Read back the alerts");
+      expect(countsStep().if).toBe("steps.gate.outputs.skip == 'false'");
+      expect(countsStep().env).toMatchObject({ CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}", CLOUDFLARE_ACCOUNT_ID: "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" });
+    });
+
+    it("the read-back exports when it started and when its actions-key probe wrote the point, which the step reads", () => {
+      const id = readBack().id!;
+      expect(id).toBeTruthy();
+      const lines = runLines(readBack());
+      expect(lines).toContain('echo "started=$started" >> "$GITHUB_OUTPUT"');
+      const probeAt = lines.findIndex((l) => l.includes('{"engine_version":"deploy-read-back"}') && l.endsWith("https://license.claudinite.com/v1/actions-key"));
+      expect(probeAt).toBeGreaterThan(-1);
+      expect(lines.slice(probeAt + 1)).toContain('echo "point_at=$(date +%s)" >> "$GITHUB_OUTPUT"');
+      expect(countsStep().env).toMatchObject({ STARTED: `\${{ steps.${id}.outputs.started }}`, POINT_AT: `\${{ steps.${id}.outputs.point_at }}` });
+    });
+
+    it("on unavailable warns, names the permission and #30 in the summary, calls nothing further and ends 0", () => {
+      const res = countsRun({ probe: UNAVAILABLE });
+      expect(res.status, res.stderr + res.stdout).toBe(0);
+      expect(res.calls).toEqual(["tools/key-counts.mjs --probe"]);
+      expect(res.stdout.split("\n")).toContain(`::warning::${UNAVAILABLE}`);
+      expect(res.summary).toMatch(/^## Key counts$/m);
+      expect(res.summary).toContain("unavailable: the CLOUDFLARE_API_TOKEN lacks Account Analytics: Read; #30 is the owner's step");
+    });
+
+    it("with the point on the first read writes the read-back line and the week's table, in exactly three calls", () => {
+      const res = countsRun({});
+      expect(res.status, res.stderr + res.stdout).toBe(0);
+      expect(res.calls).toEqual([
+        "tools/key-counts.mjs --probe",
+        `tools/key-counts.mjs --since ${POINT_AT - 5} --repo-id 4242 --engine-version deploy-read-back --group outcome,path --json`,
+        "tools/key-counts.mjs --since 7d --group plan,outcome,path --markdown",
+      ]);
+      expect(res.sleeps).toEqual([]);
+      expect(res.stdout).toMatch(/^key counts: this run's point read back after \d+ s$/m);
+      expect(res.summary).toMatch(/this run's point read back after \d+ s/);
+      expect(res.summary).toContain(WEEK);
+      expect(res.stdout).not.toMatch(/::(warning|error)::/);
+    });
+
+    it("finds the point on a later read, sleeping between reads", () => {
+      const res = countsRun({ points: [point(0), point(0), point(2)] });
+      expect(res.status, res.stderr + res.stdout).toBe(0);
+      expect(res.calls.filter((c) => c.includes("--engine-version"))).toHaveLength(3);
+      expect(res.sleeps).toEqual([5, 10]);
+      expect(res.summary).toMatch(/this run's point read back after \d+ s/);
+    });
+
+    it("with the point absent on every read warns, says it was not queryable, still prints the week and ends 0, sleeping under 100 s", () => {
+      const res = countsRun({ points: [point(0)] });
+      expect(res.status, res.stderr + res.stdout).toBe(0);
+      const reads = res.calls.filter((c) => c.includes("--engine-version"));
+      expect(reads).toHaveLength(6);
+      expect(res.sleeps).toEqual([5, 10, 20, 30, 30]);
+      expect(res.sleeps.reduce((a, b) => a + b, 0)).toBeLessThan(100);
+      expect(res.stdout).toMatch(/^::warning::.*this run's point was not queryable within 95 s/m);
+      expect(res.summary).toContain("this run's point was not queryable within 95 s");
+      expect(res.calls.at(-1)).toBe("tools/key-counts.mjs --since 7d --group plan,outcome,path --markdown");
+      expect(res.summary).toContain(WEEK);
+    });
+
+    it("warns and ends 0 when the dataset does not exist yet, calling nothing further", () => {
+      const res = countsRun({ probe: "key counts: available, dataset claudinite_key_counts absent" });
+      expect(res.status, res.stderr + res.stdout).toBe(0);
+      expect(res.calls).toEqual(["tools/key-counts.mjs --probe"]);
+      expect(res.stdout).toMatch(/^::warning::key counts: available, dataset claudinite_key_counts absent$/m);
+      expect(res.summary).toContain("the dataset does not exist yet: no point has been written");
+    });
+
+    for (const [fail, flag] of [["probe", "--probe"], ["point", "--since"], ["week", "--since 7d"]] as const) {
+      it(`never fails the step, which runs after promotion: a tool failing on the ${fail} query is a warning naming its error`, () => {
+        const res = countsRun({ fail });
+        expect(res.status, res.stderr + res.stdout).toBe(0);
+        expect(res.stdout).toMatch(new RegExp(`^::warning::tools/key-counts\\.mjs ${flag} failed: key-counts: POST answered 400: bad ${fail} query`, "m"));
+        expect(res.summary).toMatch(/^## Key counts$/m);
+        expect(res.summary).toContain(`bad ${fail} query`);
+        if (fail === "point") expect(res.calls.filter((c) => c.includes("--engine-version"))).toHaveLength(1);
+        if (fail !== "probe") expect(res.calls.at(-1)).toBe("tools/key-counts.mjs --since 7d --group plan,outcome,path --markdown");
+      });
+    }
+  });
+
   describe("D1 read replication", () => {
     const replicationStep = () => steps.find((s) => s.name === "Turn on D1 read replication when D1_READ_REPLICATION says so")!;
     const readBack = () => steps.find((s) => s.name === "Read back the live Workers")!;

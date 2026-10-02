@@ -173,6 +173,13 @@ Worker writes: index the repo id, blobs plan (or `none`), outcome (`issued-<stat
 body, a bad repo or nonce, and GitHub refusing the token (`token-invalid`) answer without a point,
 so a stranger cannot fill the dataset.
 
+The blob order is `KEY_COUNT_BLOBS` in `packages/licensing`, which both key Workers write with and
+`tools/key-counts.mjs` reads `blob1`…`blob5` back by. That tool queries the dataset through the
+Analytics Engine SQL API with a Cloudflare API token, counting `sum(_sample_interval)` grouped by
+any of those names over a time range, optionally for one repo id and engine version. A token
+without the `Account Analytics: Read` permission answers `unavailable`, naming it, and exits 0.
+Points are kept three months.
+
 Every answer, on every route and status, carries `X-Claudinite-Version`, the id of the Cloudflare
 version that served it, from the `version_metadata` binding `CF_VERSION_METADATA`; the deploy's
 canary probe tells a split's two versions apart by it. The id is public by design.

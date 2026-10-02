@@ -27,8 +27,8 @@ jobs:
     env:
       WRANGLER_SEND_METRICS: "false"
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
@@ -89,9 +89,9 @@ jobs:
           fi
           echo "skip=false" >> "$GITHUB_OUTPUT"
       - if: steps.gate.outputs.skip == 'false'
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - if: steps.gate.outputs.skip == 'false'
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
@@ -456,6 +456,7 @@ jobs:
             node tools/stage.mjs triggers --config "workers/$w/wrangler.jsonc"
           done
       - if: steps.gate.outputs.skip == 'false'
+        id: read-back
         name: Read back the live Workers
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -482,6 +483,7 @@ jobs:
             return 1
           }
           started=$(date +%s)
+          echo "started=$started" >> "$GITHUB_OUTPUT"
           token=$(cat "$RUNNER_TEMP/sync-admin-token")
           rm "$RUNNER_TEMP/sync-admin-token"
           # ip_limit is what the per-address cap made of that very read: `counted` proves the live
@@ -513,6 +515,8 @@ jobs:
           oidc=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=claudinite" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>process.stdout.write(JSON.parse(s).value))')
           echo "::add-mask::$oidc"
           probe 403 'b.refused==="workflow-not-pinned"' -- -X POST -H "Authorization: Bearer $oidc" -H 'content-type: application/json' -d '{"engine_version":"deploy-read-back"}' https://license.claudinite.com/v1/actions-key
+          # That refusal counted one key point; the key counts read-back looks for it from this time.
+          echo "point_at=$(date +%s)" >> "$GITHUB_OUTPUT"
       - if: steps.gate.outputs.skip == 'false'
         name: Read back D1 read replication and where the key Worker's read was served
         env:
@@ -542,6 +546,62 @@ jobs:
             echo "claudinite-licenses read replication: \`${mode:-nothing}\`. The key Worker's health read from this runner: $served."
             [ -z "$warning" ] || { echo; echo "Warning: $warning"; }
           } >> "$GITHUB_STEP_SUMMARY"
+      - if: steps.gate.outputs.skip == 'false'
+        name: Read back the key counts
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          STARTED: ${{ steps.read-back.outputs.started }}
+          POINT_AT: ${{ steps.read-back.outputs.point_at }}
+        run: |
+          # Observability only: it runs after promotion, where any failure rolls back a healthy
+          # release, so every answer, a missing permission (#30), a missing dataset, a point not yet
+          # queryable or the tool failing, is a warning and the step ends 0.
+          err="$RUNNER_TEMP/key-counts.err"
+          summary() { { echo "## Key counts"; echo; printf '%s\n' "$@"; } >> "$GITHUB_STEP_SUMMARY"; }
+          failed() { msg="tools/key-counts.mjs $1 failed: $(tr '\n' ' ' < "$err" | cut -c1-300)"; echo "::warning::$msg"; }
+          if ! probe=$(node tools/key-counts.mjs --probe 2> "$err"); then
+            failed --probe
+            summary "the counts could not be read: $msg"
+            exit 0
+          fi
+          echo "$probe"
+          case "$probe" in
+            "key counts: unavailable"*)
+              echo "::warning::$probe"
+              summary "unavailable: the CLOUDFLARE_API_TOKEN lacks Account Analytics: Read; #30 is the owner's step."
+              exit 0 ;;
+            "key counts: available, dataset claudinite_key_counts absent")
+              echo "::warning::$probe"
+              summary "the dataset does not exist yet: no point has been written."
+              exit 0 ;;
+          esac
+          # The read-back's actions-key refusal wrote one point: engine version deploy-read-back,
+          # indexed by this repository's id, path actions, a little before point_at.
+          since=$(( ${POINT_AT:-$STARTED} - 5 ))
+          line=""
+          for wait in 0 5 10 20 30 30; do
+            [ "$wait" = 0 ] || sleep "$wait"
+            if ! point=$(node tools/key-counts.mjs --since "$since" --repo-id "$GITHUB_REPOSITORY_ID" --engine-version deploy-read-back --group outcome,path --json 2> "$err"); then
+              failed --since
+              line="this run's point could not be read: $msg"
+              break
+            fi
+            if P="$point" node -e 'const p=JSON.parse(process.env.P);process.exit(p.available&&p.rows.some((r)=>r.requests>=1)?0:1)'; then
+              line="this run's point read back after $(( $(date +%s) - ${POINT_AT:-$STARTED} )) s"
+              echo "key counts: $line"
+              break
+            fi
+          done
+          if [ -z "$line" ]; then
+            line="this run's point was not queryable within 95 s"
+            echo "::warning::key counts: $line"
+          fi
+          if ! week=$(node tools/key-counts.mjs --since 7d --group plan,outcome,path --markdown 2> "$err"); then
+            failed "--since 7d"
+            week="The week's counts could not be read: $msg"
+          fi
+          summary "$line." "" "### The last 7 days, by plan, outcome and path" "" "$week"
       - if: steps.gate.outputs.skip == 'false'
         name: Read back the alerts
         run: |

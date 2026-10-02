@@ -36,7 +36,7 @@ with `alerts: []`.
 Every answered request writes one Analytics Engine point to `KEY_COUNTS`: index the repo id, blobs
 plan, outcome (`issued`, `refused-private`, `refused-sender`, `refused-<reason>` on the desktop
 path, `github-error`), owner type, engine version and the path the request came by (`web` or
-`desktop`).
+`desktop`). The order is the key Worker's, `KEY_COUNT_BLOBS` in `packages/licensing`.
 
 ## Secrets
 
