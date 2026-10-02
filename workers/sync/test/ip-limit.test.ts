@@ -72,11 +72,16 @@ describe("the sync Worker's per-address cap", () => {
     });
   }
 
-  it("refuses an unsigned delivery past the cap with no incident written, and never caps a signed one", async () => {
+  it("refuses a badly signed delivery past the cap with no incident written, and never caps a signed one", async () => {
     const e = env(1);
-    expect((await send(request("POST", "/v1/sync/polar-webhook"), e)).status).toBe(401);
+    const badlySigned = async () => {
+      const req = await polarDelivery("subscription.created", polarSub(), { secret: `whsec_${btoa("another secret, of 32 bytes!!!!!")}` });
+      req.headers.set("CF-Connecting-IP", "192.0.2.1");
+      return req;
+    };
+    expect((await send(await badlySigned(), e)).status).toBe(401);
     expect(await incidents()).toBe(1);
-    const past = await send(request("POST", "/v1/sync/polar-webhook"), e);
+    const past = await send(await badlySigned(), e);
     expect([past.status, await past.json()]).toEqual([429, { refused: "rate-limited" }]);
     expect(await incidents()).toBe(1);
     const signed = await polarDelivery("subscription.created", polarSub());

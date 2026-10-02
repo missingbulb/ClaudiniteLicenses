@@ -1,8 +1,10 @@
 // Polar's signed webhooks: subscription events upsert the subscriptions table; every other event,
 // checkout.created included, is acknowledged with no write. A verified delivery stamps
 // last_polar_webhook_at; a refused one stamps nothing and records a polar-webhook-refused incident,
-// so a secret that stops matching shows as a stale stamp and, repeated, as an alert. A refusal meets
-// the caller's per-address cap before that write; a verified delivery is Polar's and never does.
+// so a secret that stops matching shows as a stale stamp and, repeated, as an alert. A post carrying
+// none of the Standard Webhooks headers is nobody's delivery, the outside probe's unsigned check
+// among them, so it is refused and logged but records no incident. A refusal meets the caller's
+// per-address cap before that write; a verified delivery is Polar's and never does.
 import { SUBSCRIPTION_EVENTS, verifyWebhook, type PolarSubscription } from "../../../packages/polar/src/index.ts";
 import { BODY_MAX_WEBHOOK, ipLimited, readCapped } from "../../../packages/http/src/index.ts";
 import { insertCappedIncident } from "./incidents.ts";
@@ -14,9 +16,13 @@ export interface PolarWebhookEnv {
   POLAR_WEBHOOK_SECRET?: string;
 }
 
-async function refuse(db: D1Database, reason: string, nowS: number, withinCap: () => Promise<boolean>): Promise<Response> {
+const SIGNATURE_HEADERS = ["webhook-id", "webhook-timestamp", "webhook-signature"] as const;
+
+async function refuse(req: Request, db: D1Database, reason: string, nowS: number, withinCap: () => Promise<boolean>): Promise<Response> {
   if (!(await withinCap())) return ipLimited();
-  console.log(JSON.stringify({ marker: "polar-webhook-refused", reason }));
+  const signed = SIGNATURE_HEADERS.some((h) => req.headers.has(h));
+  console.log(JSON.stringify({ marker: "polar-webhook-refused", reason, incident: signed }));
+  if (!signed) return new Response(reason, { status: 401 });
   try {
     // Anyone can post here unsigned, so the record is capped per hour.
     await insertCappedIncident(db, "polar-webhook-refused", nowS, reason).run();
@@ -31,9 +37,9 @@ export async function polarWebhook(req: Request, env: PolarWebhookEnv, nowS: num
   const bytes = await readCapped(req, BODY_MAX_WEBHOOK);
   if (bytes === null) return new Response("payload-too-large", { status: 413 });
   const body = new TextDecoder().decode(bytes);
-  if (!env.POLAR_WEBHOOK_SECRET) return refuse(env.DB, "secret-unset", nowS, withinCap);
+  if (!env.POLAR_WEBHOOK_SECRET) return refuse(req, env.DB, "secret-unset", nowS, withinCap);
   const verdict = await verifyWebhook(req.headers, body, env.POLAR_WEBHOOK_SECRET, nowS);
-  if (!verdict.ok) return refuse(env.DB, verdict.reason, nowS, withinCap);
+  if (!verdict.ok) return refuse(req, env.DB, verdict.reason, nowS, withinCap);
   const { type, data } = verdict.event;
   const seen = stamp(env.DB, "last_polar_webhook_at", nowS);
   if (!(SUBSCRIPTION_EVENTS as readonly string[]).includes(type)) {

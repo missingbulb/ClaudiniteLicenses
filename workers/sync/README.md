@@ -74,8 +74,11 @@ over it answers 429 `rate-limited` with `Retry-After: 60` and writes nothing; a 
 body past 1 MiB is refused 413 `payload-too-large` before the signature is checked. Otherwise a
 refusal writes nothing but a `polar-webhook-refused` incident naming the reason (at
 most a hundred an hour, since anyone can post here), stamps nothing and logs
-`{ "marker": "polar-webhook-refused" }`, so a secret that stops matching shows as a stale
-`last_polar_webhook_at` and, repeated, as an alert. A verified delivery
+`{ "marker": "polar-webhook-refused", "incident": true }`, so a secret that stops matching shows as a
+stale `last_polar_webhook_at` and, repeated, as an alert. A post carrying none of `webhook-id`,
+`webhook-timestamp` and `webhook-signature` is no delivery at all, the outside probe's
+`polar-webhook-unsigned` check among them: it is refused and logged with `"incident": false`, and
+records no incident, so the probe cannot raise the alert it reads. A verified delivery
 stamps `last_polar_webhook_at`; then `subscription.created`, `.updated`, `.active`, `.canceled`,
 `.uncanceled`, `.revoked` and `.past_due` upsert the subscription, and every other event,
 `checkout.created` included, answers 204 with no write.
