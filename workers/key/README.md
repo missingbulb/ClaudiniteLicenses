@@ -6,6 +6,15 @@ plan, and decides from D1 reads alone. It writes nothing to D1: each key's usage
 records go onto the writes queue, which the sync Worker consumes as D1's only writer. A test pins
 that no `INSERT`, `UPDATE` or `DELETE` appears under `src/`, since D1 has no read-only binding.
 
+Every read goes through `reader(env)` (`src/db.ts`): one D1 session per request, opened
+`first-unconstrained`, so the first read may be served by the nearest read replica and every later
+read in that request is at least as fresh. The key Worker reads nothing it wrote, so it needs no
+bookmark and never opens a `first-primary` session, which a test pins. A replica behind the primary
+can make it queue a `usage` or `grace-start` message the primary already holds. Every seat
+statement is idempotent, so that costs one extra message, never a wrong row. The item grant reads
+no D1 and opens no session. Whether replication is on is the deploy's `D1_READ_REPLICATION`
+(`db/README.md`).
+
 ## Plans
 
 One function, `resolvePlan` (`src/plan.ts`, with the seat reads in `src/seats.ts`), serves every
@@ -168,8 +177,12 @@ Every answer, on every route and status, carries `X-Claudinite-Version`, the id 
 version that served it, from the `version_metadata` binding `CF_VERSION_METADATA`; the deploy's
 canary probe tells a split's two versions apart by it. The id is public by design.
 
-`GET /v1/key/health` answers `{ ok, kid, cert_exp, cert_days_left, d1, queue, polar, trust_roots,
-fail_open, ip_limit, version, alerts }`, `fail_open` the live `FAIL_OPEN` as a boolean, `ip_limit` what the per-address cap made of that very read (`counted`, `unavailable` when the limiter threw, `unbound` when the binding is missing; the deploy reads back `counted`), `version` the same id as the header: `cert_days_left` is the whole days to `cert_exp`, `d1` is `ok` or `unreadable` after one
+`GET /v1/key/health` answers `{ ok, kid, cert_exp, cert_days_left, d1, d1_served_by_primary,
+d1_served_by_region, d1_ms, queue, polar, trust_roots, fail_open, ip_limit, version, alerts }`.
+`d1_served_by_primary`, `d1_served_by_region` and `d1_ms` say where and how fast its `SELECT 1`
+was served (the result's `meta.served_by_primary`, `meta.served_by_region` and `meta.duration`).
+Each is `null` when D1 does not fill it, as the local runtime leaves the first two, and while D1
+is unreadable. They are reported, never judged. `fail_open` the live `FAIL_OPEN` as a boolean, `ip_limit` what the per-address cap made of that very read (`counted`, `unavailable` when the limiter threw, `unbound` when the binding is missing; the deploy reads back `counted`), `version` the same id as the header: `cert_days_left` is the whole days to `cert_exp`, `d1` is `ok` or `unreadable` after one
 `SELECT 1`, `queue` is `bound` or `unbound`, `polar` is `configured` when both `POLAR_API_BASE`
 and `POLAR_ACCESS_TOKEN` are set, else `unconfigured`, and `trust_roots` is `ok` or `invalid`. It
 judges itself: while any of `cert-expiring` (fewer than 14 days left, the issuing keys' overlap),

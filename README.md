@@ -74,7 +74,15 @@ gh workflow run d1-restore.yml -f bookmark=<bookmark from the summary>
 
 A restore is in place and reverts every row written after the bookmark; see `db/README.md` before
 running it. The `rehearse_d1_restore` dispatch input runs the same restore command on a throwaway
-database first.
+database first, with read replication on.
+
+Right after the rehearsal step, `Turn on D1 read replication when D1_READ_REPLICATION says so`
+reads D1's read replication mode and writes it to the summary. It changes the mode only when the
+repository variable `D1_READ_REPLICATION` is `auto`. The variable stays unset until a
+`rehearse_d1_restore` run, which waits on the owner's approval, has proven the restore on a
+replicated database (`db/README.md`). The read-back prints the mode, accepting `auto` or
+`disabled`, and requires `/v1/key/health` to carry `d1_served_by_primary`, `d1_served_by_region`
+and `d1_ms`, printing all three to the summary.
 
 The key Worker's fail-open (`FAIL_OPEN`, `workers/key/README.md`) can be turned off without a
 commit: set the repository variable and run a deploy, then delete the variable and deploy again to
@@ -121,7 +129,8 @@ API key.
 `tools/probe.mjs` checks the same from outside Cloudflare, plus the router's signature check, the
 desktop path reaching GitHub and, with an OIDC token, the Actions verifier and pin; the public key
 and key health checks also require `ip_limit: counted`, so a version without its per-address cap
-fails the canary at one tenth. The `probe`
+fails the canary at one tenth. The `key-health` row carries the health's `d1_served_by_primary`,
+`d1_served_by_region` and `d1_ms`, each `null` when absent, without judging them. The `probe`
 workflow runs it at minutes 7, 22, 37 and 52 of every hour and on dispatch, and keeps one standing
 issue titled `License server probe`, labelled `probe`: opened or commented on by a failing run,
 closed by the next passing one. GitHub fires a cron late or not at all under load and disables it

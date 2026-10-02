@@ -27,6 +27,10 @@ health body's `version` are. Each `scheduled` and `queue` invocation also logs
 queue consumer is now one health field away, but it stays open: it can only be read from a split of
 this Worker, and until one is tried the sync Worker stays at 100%.
 
+Its reads stay on the primary: it opens no D1 session, so D1 serves every query from the primary
+whether or not read replication is on, and its reconciles, alerts and stamps see its own writes.
+`test/primary-reads.test.ts` pins that no `withSession` appears under `src/`.
+
 ## Repos
 
 The router forwards the Claudinite App's `installation`, `installation_repositories` and
