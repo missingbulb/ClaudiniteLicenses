@@ -1,8 +1,9 @@
-import { createExecutionContext } from "cloudflare:test";
+import { createExecutionContext, createMessageBatch } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import record from "../../../docs/license-record.md?raw";
 import { routeTable } from "../../../tools/route-table.mjs";
 import worker, { type Env } from "../src/index.ts";
+import { WRITES_QUEUE } from "../src/writes.ts";
 import { env as base, freshDatabase } from "./github.ts";
 import { polarDelivery, polarSub } from "./polar.ts";
 
@@ -13,7 +14,6 @@ const rows = routeTable(record).filter((r) => r.worker === "sync");
 const WEBHOOK_KEY = btoa("SENTINEL-POLAR-WEBHOOK-SECRET-32");
 const SECRETS = {
   GITHUB_APP_ID: "SENTINEL-GITHUB-APP-ID",
-  SYNC_ADMIN_TOKEN: "SENTINEL-SYNC-ADMIN-TOKEN",
   POLAR_ACCESS_TOKEN: "SENTINEL-POLAR-ACCESS-TOKEN",
   POLAR_WEBHOOK_SECRET: `whsec_${WEBHOOK_KEY}`,
   // It must parse, so the pool's own PEM stands in.
@@ -30,15 +30,12 @@ const e = (): Env => ({ ...base, ...SECRETS, IP_LIMIT: { limit: async () => ({ s
 const send = (req: Request) => worker.fetch(req, e(), createExecutionContext());
 const req = (method: string, path: string, init: { body?: string; headers?: Record<string, string> } = {}) =>
   new Request(`https://license.claudinite.com${path}`, { method, headers: { "Content-Type": "application/json", ...init.headers }, body: init.body });
-const admin = { Authorization: `Bearer ${SECRETS.SYNC_ADMIN_TOKEN}` };
 const repo = { id: 1001, name: "acme-repo", full_name: "acme-user/acme-repo", private: false, visibility: "public" };
 
 const SCENARIOS: Record<string, (() => Promise<Response>)[]> = {
   "GET /v1/sync/health": [() => send(req("GET", "/v1/sync/health"))],
   "GET /v1/sync/alerts": [() => send(req("GET", "/v1/sync/alerts"))],
   "POST /v1/sync/polar-webhook": [async () => send(await polarDelivery("subscription.created", polarSub(), { secret: SECRETS.POLAR_WEBHOOK_SECRET })), () => send(req("POST", "/v1/sync/polar-webhook", { body: "{}" }))],
-  "POST /v1/sync/polar-reconcile": [() => send(req("POST", "/v1/sync/polar-reconcile", { headers: admin })), () => send(req("POST", "/v1/sync/polar-reconcile", { headers: { Authorization: "Bearer wrong" } }))],
-  "POST /v1/sync/reconcile": [() => send(req("POST", "/v1/sync/reconcile", { headers: admin })), () => send(req("POST", "/v1/sync/reconcile"))],
   "POST /webhook": [
     () =>
       send(
@@ -90,5 +87,16 @@ describe("secrets never leave the sync Worker", () => {
         for (const { name, n } of needles) for (const text of seen) expect(text.includes(n), `${name} in ${text.slice(0, 200)}`).toBe(false);
       });
     }
+  }
+
+  for (const upstream of ["healthy", "failing"]) {
+    it(`keeps every secret out of the log lines of the reconciles the writes queue requests, upstream ${upstream}`, async () => {
+      failing = upstream === "failing";
+      const at = Math.floor(Date.now() / 1000);
+      const bodies = ["reconcile-now", "polar-reconcile-now"].map((marker) => ({ v: 1, kind: "incident", at, marker }));
+      await worker.queue(createMessageBatch(WRITES_QUEUE, bodies.map((body, i) => ({ id: `m${i}`, timestamp: new Date(), attempts: 1, body }))), e(), createExecutionContext());
+      expect(logs.some((l) => l.includes('"requested":"polar-reconcile-now"'))).toBe(true);
+      for (const { name, n } of needles) for (const text of logs) expect(text.includes(n), `${name} in ${text.slice(0, 200)}`).toBe(false);
+    });
   }
 });

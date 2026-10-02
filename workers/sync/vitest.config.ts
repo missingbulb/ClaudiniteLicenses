@@ -13,7 +13,6 @@ export default defineProject({
           TEST_MIGRATIONS: await readD1Migrations(new URL("../../db/migrations", import.meta.url).pathname),
           GITHUB_APP_ID: "4242",
           GITHUB_APP_PRIVATE_KEY: privateKey,
-          SYNC_ADMIN_TOKEN: "acme-admin-token",
           GITHUB_API_BASE: "https://github-api.test",
           POLAR_API_BASE: "https://polar-api.test",
           POLAR_ACCESS_TOKEN: "polar_oat_acme",

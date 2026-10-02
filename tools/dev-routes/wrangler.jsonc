@@ -13,5 +13,6 @@
     { "binding": "CLAUDINITE_PUBLIC_KEY", "service": "claudinite-public-key" },
     { "binding": "CLAUDINITE_KEY", "service": "claudinite-key" },
     { "binding": "CLAUDINITE_SYNC", "service": "claudinite-sync" }
-  ]
+  ],
+  "queues": { "producers": [{ "binding": "WRITES", "queue": "claudinite-licenses-writes" }] }
 }

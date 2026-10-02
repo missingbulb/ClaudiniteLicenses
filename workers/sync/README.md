@@ -61,8 +61,7 @@ a `metadata: read` installation token, skipping a suspended installation (it wou
 token) so its rows are deleted, upserts each row that differs, deletes each row no
 installation lists, and stamps `last_reconcile_at` and `last_reconcile_corrections` (the number of
 rows it wrote or deleted). It writes nothing unless every listing was read. It runs on the cron
-`17 3 * * *` and on `POST /v1/sync/reconcile` with `Authorization: Bearer $SYNC_ADMIN_TOKEN`, which
-answers `{ ok, repos, corrections }`, or 502 when GitHub fails.
+`17 3 * * *` and on a `reconcile-now` request from the writes queue (below).
 
 ## Subscriptions, from Polar
 
@@ -107,9 +106,8 @@ or differs from Polar in any column but `raw`, whatever the stored `modified_at`
 nothing. It stamps `last_polar_reconcile_at` and `last_polar_reconcile_corrections` (the rows it
 wrote) and clears `last_polar_reconcile_error`; a failure stamps `last_polar_reconcile_error` with
 Polar's status and writes nothing else. The cron `17 3 * * *` runs it after the GitHub reconcile;
-`47 * * * *` runs it only when the last attempt failed or the last success is a day old. `POST
-/v1/sync/polar-reconcile` with the admin bearer runs it at once, answering `{ ok, subscriptions,
-corrections }`, or 502 when Polar fails.
+`47 * * * *` runs it only when the last attempt failed or the last success is a day old. A
+`polar-reconcile-now` request from the writes queue (below) runs it at once.
 
 ## The writes queue
 
@@ -122,7 +120,7 @@ message order, acked on success and retried whole when D1 throws:
 | `usage` | the `usage` row for `(repo_id, user_id, day)` if missing; the seat of `(licenseeOf(plan, owner_id, repo_id), user_id)`: inserted at `at`, else `last_key_at` raised to `at`, and `first_key_at` reset to `at` when the old `last_key_at` is more than 30 days before it |
 | `grace-start` | the owner's `overuse` row: `grace_started_at` kept if set, else `at`; `grace_spent_until` raised to `at` + 30 days |
 | `grace-reset` | `grace_started_at` cleared when it is no later than the message's `at`, `grace_spent_until` kept: delivery order is best-effort, so a reset delivered after a later `grace-start` leaves that start alone |
-| `incident` | an `incidents` row of `marker`, `at` and `detail`; `deploy-read-back` is the one the deploy's judge pushes, written and pruned like the rest and counted by no alert |
+| `incident` | an `incidents` row of `marker`, `at` and `detail`; `deploy-read-back` is the one the deploy's judge pushes, and `reconcile-now` and `polar-reconcile-now` the ones its read-back pushes, written and pruned like the rest and counted by no alert |
 
 Every seat statement is idempotent; a redelivered incident is one more row, which only errs toward
 an alert. A message this version cannot read is acked and logged `{ "marker": "write-malformed" }`.
@@ -131,6 +129,15 @@ Each batch stamps `last_queue_at`, `last_queue_version`, the version that consum
 only when the writes land. A dead-letter batch writes no seat: each message is logged
 `{ "marker": "write-dead-lettered", kind, at }` and written as a `write-dead-lettered` incident
 naming its kind, and `last_dead_letter_at` and `last_queue_version` are stamped, in one D1 batch.
+
+Once a batch's writes land, each reconcile it requested runs once, the GitHub one for
+`reconcile-now` and the Polar one for `polar-reconcile-now`, unless that reconcile last succeeded
+having started in a later second than the batch's latest request of it, which is logged
+`{ "reconcile": "already-answered" }`, so a redelivered request runs nothing again. The outcome is logged as the cron's is, with `requested`
+naming the marker; a failure leaves its stamp unmoved and is never retried, so the read-back sees it
+as a stale stamp. A dead-letter or retried batch runs none. This is the only way to run a reconcile
+outside its crons: the deploy pushes these with the Cloudflare API token it already holds, and no
+public route or Worker secret is involved.
 
 Every cron, the hourly one included, first stamps `last_cron_at` (its detail the cron expression
 that ran) and `last_cron_version` in one batch, before its work and whether or not the Polar
@@ -148,7 +155,7 @@ least one. It stamps `sync_state.paying_uncovered` with the number of uncovered 
 under a plan) and logs one line per account, `{ "marker": "paying-uncovered", owner_id, plan,
 repo_ids }`, the missing repos under `private-repo`. The ids stay in the log, never in a public
 body. It runs at the end of the nightly cron after both reconciles, and at the end of each
-reconcile route, so a deploy's read-back re-judges it.
+reconcile a queued request runs, so a deploy's read-back re-judges it.
 
 ## Alerts
 
@@ -179,7 +186,7 @@ batch rather than read as the queue's live depth, which only Cloudflare's dashbo
 
 ## Health
 
-`/v1/sync/health`, `/v1/sync/alerts`, `/v1/sync/reconcile` and `/v1/sync/polar-reconcile` first
+`/v1/sync/health` and `/v1/sync/alerts` first
 spend one request of `IP_LIMIT`, 300 per 60 seconds per `CF-Connecting-IP` (an IPv6 caller by its /64), answering 429
 `rate-limited` over it and letting the request through when the binding cannot answer
 (`packages/http`). The service-binding `POST /webhook` answers a body past 1 MiB 413
@@ -218,7 +225,3 @@ file omits from the previous version.
 Like the three request-path Workers, whose secrets travel with each uploaded version, the sync
 Worker's travel with the version its `wrangler deploy --secrets-file` makes; no step runs
 `wrangler secret bulk`.
-
-`SYNC_ADMIN_TOKEN` is no repository secret: `deploy.yml` generates a fresh one on every run, stores
-it with the others and uses it once to run the reconcile in its read-back, so nobody holds a copy
-and the next deploy rotates it.

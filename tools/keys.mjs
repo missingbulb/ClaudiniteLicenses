@@ -92,7 +92,7 @@ export async function devChain(out) {
     ISSUING_KEY_CERT: JSON.stringify(licCert),
     TRUST_ROOTS: JSON.stringify([root.publicKey, standby.publicKey]),
   };
-  const syncVars = { GITHUB_APP_ID: "1", GITHUB_APP_PRIVATE_KEY: privateKey, SYNC_ADMIN_TOKEN: randomBytes(32).toString("hex") };
+  const syncVars = { GITHUB_APP_ID: "1", GITHUB_APP_PRIVATE_KEY: privateKey };
   writeNew(join(out, "public-key.dev.vars"), formatDevVars(publicKeyVars), 0o600);
   writeNew(join(out, "key.dev.vars"), formatDevVars(keyVars), 0o600);
   writeNew(join(out, "sync.dev.vars"), formatDevVars(syncVars), 0o600);

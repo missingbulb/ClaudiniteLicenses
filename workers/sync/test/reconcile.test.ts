@@ -101,30 +101,6 @@ describe("scheduled, when GitHub fails", () => {
   });
 });
 
-describe("POST /v1/sync/reconcile", () => {
-  it("refuses a wrong or missing bearer with 401 and calls nothing", async () => {
-    gh.installations = [{ id: 5005, account: ACCOUNT, repos: [repo(1)] }];
-    for (const headers of [{ Authorization: "Bearer wrong" }, {} as Record<string, string>, { Authorization: "acme-admin-token" }]) {
-      expect((await fetchPath("/v1/sync/reconcile", { method: "POST", headers })).status).toBe(401);
-    }
-    expect(gh.calls).toEqual([]);
-  });
-
-  it("with the admin token runs the reconcile, as the cron does", async () => {
-    gh.installations = [{ id: 5005, account: ACCOUNT, repos: [repo(1), repo(2)] }];
-    const res = await fetchPath("/v1/sync/reconcile", { method: "POST", headers: { Authorization: "Bearer acme-admin-token" } });
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, repos: 2, corrections: 2 });
-    expect((await rows()).map((r) => r.repo_id)).toEqual([1, 2]);
-  });
-
-  it("answers 502 when GitHub fails, so a deploy's read-back sees it", async () => {
-    vi.mocked(globalThis.fetch).mockImplementation(async () => Response.json({ message: "boom" }, { status: 500 }));
-    const res = await fetchPath("/v1/sync/reconcile", { method: "POST", headers: { Authorization: "Bearer acme-admin-token" } });
-    expect(res.status).toBe(502);
-  });
-});
-
 describe("GET /v1/sync/health", () => {
   it("reads back the GitHub stamps as null on a fresh database", async () => {
     const res = await fetchPath("/v1/sync/health");
@@ -144,7 +120,7 @@ describe("GET /v1/sync/health", () => {
       env,
       createExecutionContext(),
     );
-    await fetchPath("/v1/sync/reconcile", { method: "POST", headers: { Authorization: "Bearer acme-admin-token" } });
+    await reconcileInstallations(env, Math.floor(Date.now() / 1000));
     const body = await healthy();
     expect(body).toMatchObject({ ok: true, repos: 2, last_reconcile_corrections: 1 });
     expect(typeof body.last_webhook_at).toBe("number");

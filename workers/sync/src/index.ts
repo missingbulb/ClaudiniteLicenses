@@ -2,10 +2,8 @@
 // webhooks, forwarded by the router, keep the repos table current; Polar's signed webhooks and the
 // Polar reconcile keep subscriptions current; and the writes queue brings the seat, usage and
 // overuse records and the incidents the key Worker produces. The nightly reconciles repair whatever
-// a lost or reordered webhook left, the coverage audit after them finds paying accounts the App no
+// a lost or reordered webhook left, and a marker on the writes queue runs either one at once, the coverage audit after them finds paying accounts the App no
 // longer covers, and GET /v1/sync/alerts judges it all. It holds no signing key.
-import { GitHubError } from "../../../packages/github-app/src/index.ts";
-import { PolarError } from "../../../packages/polar/src/index.ts";
 import { alertsRoute } from "./alerts.ts";
 import { auditCoverage } from "./coverage.ts";
 import { pruneIncidents } from "./incidents.ts";
@@ -13,7 +11,7 @@ import { polarReconcileDue, reconcilePolar } from "./polar-reconcile.ts";
 import { polarWebhook } from "./polar-webhook.ts";
 import { githubClient, reconcileInstallations } from "./reconcile.ts";
 import { applyWebhook, stamp } from "./repos.ts";
-import { consumeWrites } from "./writes.ts";
+import { consumeWrites, type ReconcileRequests } from "./writes.ts";
 import { BODY_MAX_WEBHOOK, ipLimited, ipLimitState, readJsonCapped, withinIpLimit, type IpLimitEnv, type IpLimitState } from "../../../packages/http/src/index.ts";
 import { versionOf, withVersion, type VersionEnv } from "../../../packages/version/src/index.ts";
 
@@ -21,7 +19,6 @@ export interface Env extends VersionEnv, IpLimitEnv {
   DB: D1Database;
   GITHUB_APP_ID: string;
   GITHUB_APP_PRIVATE_KEY: string;
-  SYNC_ADMIN_TOKEN?: string;
   GITHUB_API_BASE?: string;
   POLAR_API_BASE?: string;
   POLAR_ACCESS_TOKEN?: string;
@@ -33,15 +30,6 @@ const NIGHTLY_CRON = "17 3 * * *";
 const HOURLY_CRON = "47 * * * *";
 
 const nowS = () => Math.floor(Date.now() / 1000);
-
-async function bearerMatches(req: Request, secret: string | undefined): Promise<boolean> {
-  const given = /^Bearer (.+)$/.exec(req.headers.get("Authorization") ?? "")?.[1];
-  if (!secret || !given) return false;
-  // Compares digests, so the comparison takes the same time whatever the token.
-  const digest = async (s: string) => new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)));
-  const [a, b] = await Promise.all([digest(given), digest(secret)]);
-  return a.every((x, i) => x === b[i]);
-}
 
 async function health(env: Env, ipLimit: IpLimitState | null): Promise<Response> {
   const nowS = Math.floor(Date.now() / 1000);
@@ -90,36 +78,11 @@ async function audited(db: D1Database, at: number): Promise<void> {
   }
 }
 
-async function reconcileNow(env: Env): Promise<Response> {
-  try {
-    const out = await reconcileInstallations(env, nowS());
-    console.log(JSON.stringify({ reconcile: "ok", ...out }));
-    await audited(env.DB, nowS());
-    return Response.json({ ok: true, ...out });
-  } catch (err) {
-    if (!(err instanceof GitHubError)) throw err;
-    console.error(JSON.stringify({ reconcile: "failed", githubError: err.call, status: err.status }));
-    return Response.json({ ok: false, error: `${err.call} answered ${err.status}` }, { status: 502 });
-  }
-}
-
-async function polarReconcileNow(env: Env): Promise<Response> {
-  try {
-    const out = await reconcilePolar(env, nowS());
-    console.log(JSON.stringify({ reconcile: "polar", ...out }));
-    await audited(env.DB, nowS());
-    return Response.json({ ok: true, ...out });
-  } catch (err) {
-    if (!(err instanceof PolarError)) throw err;
-    console.error(JSON.stringify({ reconcile: "polar-failed", call: err.call, status: err.status }));
-    return Response.json({ ok: false, error: err.message }, { status: 502 });
-  }
-}
-
-function logged(names: { ok: string; failed: string }, cron: string, work: Promise<unknown>): Promise<void> {
+/** Logs a reconcile's outcome with what started it; a failure is logged, never thrown. */
+function logged(names: { ok: string; failed: string }, trigger: { cron: string } | { requested: string }, work: Promise<unknown>): Promise<void> {
   return work.then(
-    (out) => console.log(JSON.stringify({ reconcile: names.ok, cron, ...(out as object) })),
-    (err) => console.error(JSON.stringify({ reconcile: names.failed, cron, error: String(err) })),
+    (out) => console.log(JSON.stringify({ reconcile: names.ok, ...trigger, ...(out as object) })),
+    (err) => console.error(JSON.stringify({ reconcile: names.failed, ...trigger, error: String(err) })),
   );
 }
 
@@ -127,10 +90,40 @@ const GITHUB_LOG = { ok: "ok", failed: "failed" };
 const POLAR_LOG = { ok: "polar", failed: "polar-failed" };
 
 /**
+ * Runs each reconcile a committed batch requested, unless one has succeeded since its latest
+ * request, so a redelivered request runs nothing again; coverage is re-judged after any that ran.
+ */
+async function requestedReconciles(env: Env, requested: ReconcileRequests): Promise<void> {
+  const runs = [
+    { marker: "reconcile-now", stamp: "last_reconcile_at", names: GITHUB_LOG, run: (at: number) => reconcileInstallations(env, at) },
+    { marker: "polar-reconcile-now", stamp: "last_polar_reconcile_at", names: POLAR_LOG, run: (at: number) => reconcilePolar(env, at) },
+  ] as const;
+  const wanted = runs.filter((r) => requested[r.marker] !== undefined);
+  if (wanted.length === 0) return;
+  try {
+    const { results } = await env.DB.prepare("SELECT name, at FROM sync_state WHERE name IN ('last_reconcile_at', 'last_polar_reconcile_at')").all<{ name: string; at: number }>();
+    let ran = false;
+    for (const r of wanted) {
+      const last = results.find((s) => s.name === r.stamp)?.at ?? null;
+      // A reconcile stamps the second it started, so only a later second is sure to follow the request.
+      if (last !== null && last > requested[r.marker]!) {
+        console.log(JSON.stringify({ reconcile: "already-answered", requested: r.marker, [r.stamp]: last }));
+        continue;
+      }
+      await logged(r.names, { requested: r.marker }, r.run(nowS()));
+      ran = true;
+    }
+    if (ran) await audited(env.DB, nowS());
+  } catch (err) {
+    console.error(JSON.stringify({ reconcile: "request-failed", requested: wanted.map((r) => r.marker), error: String(err) }));
+  }
+}
+
+/**
  * Every route Cloudflare serves to the world that meets the per-address cap before anything else.
  * Polar's webhook is public too, and meets the cap only once its signature has failed.
  */
-export const CAPPED_ROUTES = ["GET /v1/sync/health", "GET /v1/sync/alerts", "POST /v1/sync/polar-reconcile", "POST /v1/sync/reconcile"];
+export const CAPPED_ROUTES = ["GET /v1/sync/health", "GET /v1/sync/alerts"];
 
 async function route(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url);
@@ -145,14 +138,6 @@ async function route(req: Request, env: Env): Promise<Response> {
   if (req.method === "GET" && url.pathname === "/v1/sync/health") return health(env, ipLimit);
   if (req.method === "GET" && url.pathname === "/v1/sync/alerts") return alertsRoute(env.DB, nowS());
   if (req.method === "POST" && url.pathname === "/v1/sync/polar-webhook") return polarWebhook(req, env, nowS(), () => withinIpLimit(env, req));
-  if (req.method === "POST" && url.pathname === "/v1/sync/polar-reconcile") {
-    if (!(await bearerMatches(req, env.SYNC_ADMIN_TOKEN))) return new Response("unauthorized", { status: 401 });
-    return polarReconcileNow(env);
-  }
-  if (req.method === "POST" && url.pathname === "/v1/sync/reconcile") {
-    if (!(await bearerMatches(req, env.SYNC_ADMIN_TOKEN))) return new Response("unauthorized", { status: 401 });
-    return reconcileNow(env);
-  }
   return new Response("not found", { status: 404 });
 }
 
@@ -172,11 +157,11 @@ export default {
         console.error(JSON.stringify({ cron: "stamp-failed", error: String(err) })),
       );
       if (cron === HOURLY_CRON) {
-        if (await polarReconcileDue(env.DB, at)) await logged(POLAR_LOG, cron, reconcilePolar(env, at));
+        if (await polarReconcileDue(env.DB, at)) await logged(POLAR_LOG, { cron }, reconcilePolar(env, at));
         return;
       }
-      await logged(GITHUB_LOG, cron, reconcileInstallations(env, at));
-      await logged(POLAR_LOG, cron, reconcilePolar(env, at));
+      await logged(GITHUB_LOG, { cron }, reconcileInstallations(env, at));
+      await logged(POLAR_LOG, { cron }, reconcilePolar(env, at));
       await audited(env.DB, at);
       await pruneIncidents(env.DB, at).then(
         (pruned) => console.log(JSON.stringify({ incidents: "pruned", pruned })),
@@ -188,6 +173,6 @@ export default {
 
   async queue(batch: MessageBatch, env: Env, _ctx: ExecutionContext): Promise<void> {
     console.log(JSON.stringify({ invocation: "queue", messages: batch.messages.length, version: versionOf(env) }));
-    await consumeWrites(batch, env, nowS());
+    await requestedReconciles(env, await consumeWrites(batch, env, nowS()));
   },
 };

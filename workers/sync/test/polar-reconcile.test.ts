@@ -94,24 +94,6 @@ describe("the crons", () => {
   });
 });
 
-describe("POST /v1/sync/polar-reconcile", () => {
-  it("refuses the wrong bearer with 401 and no Polar call, and runs with the right one", async () => {
-    expect((await fetchPath("/v1/sync/polar-reconcile", { method: "POST", headers: { Authorization: "Bearer acme-wrong" } })).status).toBe(401);
-    expect((await fetchPath("/v1/sync/polar-reconcile", { method: "POST" })).status).toBe(401);
-    expect(polarCalls()).toBe(0);
-    polar.subscriptions = [polarSub()];
-    const res = await fetchPath("/v1/sync/polar-reconcile", { method: "POST", headers: { Authorization: "Bearer acme-admin-token" } });
-    expect([res.status, await res.json()]).toEqual([200, { ok: true, subscriptions: 1, corrections: 1 }]);
-  });
-
-  it("answers 502 naming Polar's status when the listing fails", async () => {
-    polar.status = 503;
-    const res = await fetchPath("/v1/sync/polar-reconcile", { method: "POST", headers: { Authorization: "Bearer acme-admin-token" } });
-    expect(res.status).toBe(502);
-    expect(await res.json()).toMatchObject({ ok: false });
-  });
-});
-
 describe("GET /v1/sync/health", () => {
   it("reads null for every stamp on a fresh database, and whether the webhook secret is set", async () => {
     expect(await health()).toEqual({
