@@ -97,10 +97,32 @@ describe("the sync Worker's own incidents", () => {
     ]);
   });
 
-  it("stops recording refusals past a hundred an hour, so an unsigned flood cannot grow the table without bound", async () => {
+  it("records no incident for a post carrying none of the signature headers, so the outside probe's unsigned check cannot raise the alert", async () => {
+    const send = (req: Request) => worker.fetch(req, env, createExecutionContext());
+    // The probe's polar-webhook-unsigned request, sent as often as the alert's threshold.
+    for (let i = 0; i < 3; i++) {
+      const res = await send(new Request("https://license.claudinite.com/v1/sync/polar-webhook", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }));
+      expect([res.status, await res.text()]).toEqual([401, "signature-missing"]);
+    }
+    expect(await incidents()).toEqual([]);
+    const alerts = await send(new Request("https://license.claudinite.com/v1/sync/alerts"));
+    expect(alerts.status).toBe(200);
+  });
+
+  it("still records signature-missing when a delivery carries some of the signature headers but not all", async () => {
+    const signed = await polarDelivery("subscription.created", polarSub());
+    const headers = new Headers(signed.headers);
+    headers.delete("webhook-signature");
+    const res = await worker.fetch(new Request(signed.url, { method: "POST", headers, body: await signed.text() }), env, createExecutionContext());
+    expect([res.status, await res.text()]).toEqual([401, "signature-missing"]);
+    expect(await incidents()).toEqual([{ marker: "polar-webhook-refused", at: expect.any(Number), detail: "signature-missing" }]);
+  });
+
+  it("stops recording refusals past a hundred an hour, so a flood of badly signed posts cannot grow the table without bound", async () => {
     const now = Math.floor(Date.now() / 1000);
     await env.DB.batch(Array.from({ length: 100 }, () => env.DB.prepare("INSERT INTO incidents (marker, at) VALUES ('polar-webhook-refused', ?)").bind(now - 60)));
-    const res = await worker.fetch(new Request("https://license.claudinite.com/v1/sync/polar-webhook", { method: "POST", body: "{}" }), env, createExecutionContext());
+    const wrong = await polarDelivery("subscription.created", polarSub(), { secret: `whsec_${btoa("another secret, of 32 bytes!!!!!")}` });
+    const res = await worker.fetch(wrong, env, createExecutionContext());
     expect(res.status).toBe(401);
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM incidents").first()).toEqual({ n: 100 });
   });

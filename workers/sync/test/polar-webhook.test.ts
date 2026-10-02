@@ -95,7 +95,12 @@ describe("POST /v1/sync/polar-webhook", () => {
     expect(unset.status).toBe(401);
     expect(await subscriptionRows()).toEqual([]);
     expect(await stamp()).toBeNull();
-    expect(logs.filter((l) => l.includes('"marker":"polar-webhook-refused"')).map((l) => JSON.parse(l).reason)).toEqual(["signature-mismatch", "timestamp-skew", "signature-missing", "secret-unset"]);
+    expect(logs.filter((l) => l.includes('"marker":"polar-webhook-refused"')).map((l) => [JSON.parse(l).reason, JSON.parse(l).incident])).toEqual([
+      ["signature-mismatch", true],
+      ["timestamp-skew", true],
+      ["signature-missing", false],
+      ["secret-unset", true],
+    ]);
   });
 
   it("answers checkout.created and any other event 204 with no write, and stamps", async () => {

@@ -484,13 +484,13 @@ const cleared = await alerts();
 if (covered?.paying_uncovered !== 0 || cleared.status !== 200 || cleared.ids.length !== 0) await fail(`after the repos returned: health ${JSON.stringify(covered)}, alerts ${cleared.status} ${JSON.stringify(cleared.ids)}`);
 console.log("coverage: the repos returned, paying_uncovered 0, alerts 200");
 
-// An unsigned Polar delivery is refused signature-missing, and records at most one capped incident.
+// An unsigned Polar post is refused signature-missing and records no incident.
 const refusedBefore = (await localSql("SELECT COUNT(*) AS n FROM incidents WHERE marker = 'polar-webhook-refused'").catch((err) => fail(String(err))))[0].n;
 const unsigned = await call("/v1/sync/polar-webhook", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
 if (unsigned.status !== 401 || unsigned.text.trim() !== "signature-missing" || !unsigned.version) await fail(`the unsigned Polar delivery answered ${unsigned.status} ${unsigned.text}`);
 const refusedAfter = (await localSql("SELECT COUNT(*) AS n FROM incidents WHERE marker = 'polar-webhook-refused'").catch((err) => fail(String(err))))[0].n;
-if (refusedAfter - refusedBefore > 1) await fail(`one unsigned delivery wrote ${refusedAfter - refusedBefore} incidents`);
-console.log(`polar webhook: an unsigned delivery refused 401 signature-missing, ${refusedAfter - refusedBefore} capped incident recorded`);
+if (refusedAfter !== refusedBefore) await fail(`one unsigned post wrote ${refusedAfter - refusedBefore} incidents`);
+console.log("polar webhook: an unsigned post refused 401 signature-missing, no incident recorded");
 
 // A desktop body over 16 KiB is refused before the GitHub stub sees a call.
 const callsBefore = stub.state.requests.length;
