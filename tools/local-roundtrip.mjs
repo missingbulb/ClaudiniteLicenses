@@ -355,6 +355,12 @@ await healthUntil("the seat for C", (h) => h.seats === 4);
 await desktopKey("personal, user D", tokenD, PRIVATE.id, { plan: "personal", state: "degraded", features: [], seats: { paid: 2, counted: 4, headroom: 1 }, notice: "seat-refused" });
 await healthUntil("the seat for D", (h) => h.seats === 5);
 
+// The consumer stamps the version that wrote each batch; no cron has run here, so its stamps are null.
+const stamped = await call("/v1/sync/health");
+if (!stamped.version || stamped.json?.last_queue_version !== stamped.version) await fail(`sync health's last_queue_version is ${stamped.json?.last_queue_version}, its ${VERSION_HEADER} ${stamped.version}`);
+if (stamped.json.last_cron_at !== null || stamped.json.last_cron !== null || stamped.json.last_cron_version !== null) await fail(`sync health reports a cron before any ran: ${JSON.stringify(stamped.json)}`);
+console.log(`queue: last_queue_version ${stamped.json.last_queue_version}, the sync Worker's own; last_cron_at, last_cron and last_cron_version null before any cron`);
+
 // The Actions key takes its licensee's state; an item grant carries it with the work item's issue.
 const actionsStarted = performance.now();
 const actions = await call("/v1/actions-key", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${oidcFor(PRIVATE)}` }, body: JSON.stringify({ engine_version: "local-roundtrip" }) });
