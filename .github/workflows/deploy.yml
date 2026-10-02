@@ -279,26 +279,45 @@ jobs:
             echo "::error::claudinite-sync's health reports ip_limit $ip_limit after its deploy; the per-address cap is not wired"
             exit 1
           fi
-          # The write path, proven from outside: one message pushed onto the writes queue must come
-          # back as the consumer's stamps on the deployed version. That covers the queue bound to the
-          # deployed version, the consumer running on it, one D1 write through it, and the stamps.
+          # The write path, proven from outside: after one message is pushed onto the writes queue, the
+          # consumer's stamps must show a batch landed on the deployed version. That covers the queue
+          # bound to the deployed version, the consumer running on it, one D1 write through it, and the
+          # stamps. The lag bound is the queue-lagging alert's, so a draining backlog is not a rollback.
           started=$(date +%s)
-          node tools/push-queue-message.mjs --queue claudinite-licenses-writes --marker deploy-read-back --detail "$RUN_URL" || {
-            echo "::error::could not push the deploy-read-back message onto claudinite-licenses-writes, so the queue consumer is unproven; the CLOUDFLARE_API_TOKEN needs the Queues Edit (or Workers Scripts Edit) permission and the queue must exist"
-            exit 1
+          push() {
+            pushed=$(date +%s)
+            node tools/push-queue-message.mjs --queue claudinite-licenses-writes --marker deploy-read-back --detail "$RUN_URL" || {
+              echo "::error::could not push the deploy-read-back message onto claudinite-licenses-writes, so the queue consumer is unproven; the CLOUDFLARE_API_TOKEN needs the Queues Edit (or Workers Scripts Edit) permission and the queue must exist"
+              exit 1
+            }
           }
-          # The consumer waits up to its max_batch_timeout, 5 seconds, before it runs.
+          push
+          pushes=1
+          # The consumer waits up to its max_batch_timeout, 5 seconds, before it runs. For a while after
+          # wrangler deploy the previous version can still be the one consuming: a batch that landed
+          # after the last push on another version (exit 2) is answered with one more push.
           stamps=""
-          for i in 1 2 3 4 5 6; do
+          for i in 1 2 3 4 5 6 7 8; do
             sleep $((i * 3))
             status=$(curl -sS -o "$RUNNER_TEMP/sync-health.json" -w '%{http_code}' --max-time 20 https://license.claudinite.com/v1/sync/health || true)
-            stamps=$(node -e 'let b={};try{b=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))}catch{}process.stdout.write(`last_queue_at ${b.last_queue_at} last_queue_version ${b.last_queue_version} queue_lag_s ${b.queue_lag_s}`);process.exitCode=(typeof b.last_queue_at==="number"&&b.last_queue_at>=Number(process.argv[2])&&b.last_queue_version===process.argv[3]&&typeof b.queue_lag_s==="number"&&b.queue_lag_s<=60)?0:1' "$RUNNER_TEMP/sync-health.json" "$started" "$SYNC_VERSION") && {
-              echo "ok the writes queue's consumer wrote the deploy's message: $stamps"
+            if stamps=$(node -e 'let b={};try{b=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))}catch{}const[,,started,pushed,want]=process.argv.map(String);process.stdout.write(`last_queue_at ${b.last_queue_at} last_queue_version ${b.last_queue_version} queue_lag_s ${b.queue_lag_s}`);const at=typeof b.last_queue_at==="number"?b.last_queue_at:-1;process.exitCode=(at>=Number(started)&&b.last_queue_version===want&&typeof b.queue_lag_s==="number"&&b.queue_lag_s<=900)?0:(at>=Number(pushed)&&b.last_queue_version!==want)?2:1' "$RUNNER_TEMP/sync-health.json" "$started" "$pushed" "$SYNC_VERSION"); then
+              echo "ok a writes-queue batch landed on the deployed version after the push: $stamps"
               break
-            }
-            stamps="status $status, $stamps"
-            if [ "$i" = 6 ]; then
-              echo "::error::claudinite-sync's queue consumer did not stamp the deploy's message on $SYNC_VERSION since $started: $stamps"
+            else
+              verdict=$?
+            fi
+            if [ "$verdict" = 2 ] && [ "$pushes" -lt 4 ]; then
+              echo "a batch landed after the push on another version ($stamps); pushing again"
+              push
+              pushes=$((pushes + 1))
+              continue
+            fi
+            if [ "$verdict" = 2 ] && [ "$pushes" -ge 4 ]; then
+              echo "::error::claudinite-sync's queue consumer answered all $pushes deploy-read-back pushes on another version (status $status, $stamps), not $SYNC_VERSION"
+              exit 1
+            fi
+            if [ "$i" = 8 ]; then
+              echo "::error::claudinite-sync's queue consumer did not stamp the deploy's message on $SYNC_VERSION since $started: status $status, $stamps"
               exit 1
             fi
           done
