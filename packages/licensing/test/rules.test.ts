@@ -173,8 +173,8 @@ describe("isWriteMessage", () => {
     for (const marker of INCIDENT_MARKERS) expect(isWriteMessage({ ...incident, marker }), marker).toBe(true);
   });
 
-  it("names the six markers the alerts count, and not queue-send-failed, which no queued message can carry", () => {
-    expect([...INCIDENT_MARKERS]).toEqual(["d1-unreadable", "polar-unreachable", "app-not-installed", "polar-webhook-refused", "write-dead-lettered", "secondary-rate-limit"]);
+  it("names the six markers the alerts count and the deploy's deploy-read-back, and not queue-send-failed, which no queued message can carry", () => {
+    expect([...INCIDENT_MARKERS]).toEqual(["d1-unreadable", "polar-unreachable", "app-not-installed", "polar-webhook-refused", "write-dead-lettered", "secondary-rate-limit", "deploy-read-back"]);
     expect(isWriteMessage({ ...incident, marker: "queue-send-failed" })).toBe(false);
   });
 

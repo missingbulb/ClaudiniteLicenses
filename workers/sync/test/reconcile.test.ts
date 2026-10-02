@@ -1,6 +1,7 @@
-import { createExecutionContext, createScheduledController, waitOnExecutionContext } from "cloudflare:test";
+import { createExecutionContext, createMessageBatch, createScheduledController, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
+import { WRITES_QUEUE } from "../src/writes.ts";
 import { reconcileInstallations } from "../src/reconcile.ts";
 import { env, fakeGitHub, freshDatabase, repo, rows, seed, type FakeGitHub } from "./github.ts";
 
@@ -154,4 +155,21 @@ describe("GET /v1/sync/health", () => {
 it("answers 404 off its routes", async () => {
   expect((await fetchPath("/v1/sync/other")).status).toBe(404);
   expect((await fetchPath("/webhook")).status).toBe(404);
+});
+
+describe("GET /v1/sync/health, the version stamps", () => {
+  const ID = (env as unknown as { CF_VERSION_METADATA: { id: string } }).CF_VERSION_METADATA.id;
+
+  it("reports last_queue_version, last_cron_at, last_cron and last_cron_version: null on a fresh database, set after a batch and a cron", async () => {
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    expect(await healthy()).toMatchObject({ last_queue_at: null, last_queue_version: null, last_cron_at: null, last_cron: null, last_cron_version: null });
+    const now = Math.floor(Date.now() / 1000);
+    await worker.queue(createMessageBatch(WRITES_QUEUE, [{ id: "m0", timestamp: new Date(), attempts: 1, body: { v: 1, kind: "incident", at: now, marker: "deploy-read-back" } }]), env, createExecutionContext());
+    const ctx = createExecutionContext();
+    await worker.scheduled(createScheduledController({ scheduledTime: new Date(now * 1000), cron: "17 3 * * *" }), env, ctx);
+    await waitOnExecutionContext(ctx);
+    const body = await healthy();
+    expect(body).toMatchObject({ last_queue_version: ID, last_cron_at: now, last_cron: "17 3 * * *", last_cron_version: ID, version: ID });
+    expect(body.last_queue_at).toBeGreaterThanOrEqual(now);
+  });
 });

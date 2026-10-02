@@ -25,7 +25,10 @@ export type StampName =
   | "last_polar_reconcile_corrections"
   | "last_polar_reconcile_error"
   | "last_queue_at"
+  | "last_queue_version"
   | "queue_lag_s"
+  | "last_cron_at"
+  | "last_cron_version"
   | "last_dead_letter_at"
   | "paying_uncovered";
 

@@ -17,6 +17,7 @@ import { parseArgs } from "node:util";
  *   dispatchStatus?: number,
  *   dispatchDelays?: (number | null)[],
  *   dispatchSenderType?: string,
+ *   dispatchOutputs?: { title: string, summary: string, text?: string }[],
  *   checkRunStatus?: number,
  *   checkRunBody?: string,
  *   headSha?: string,
@@ -112,7 +113,8 @@ export async function startStub(opts = {}) {
       state.dispatches.push(body);
       const status = opts.dispatchStatus ?? 204;
       if (status !== 204) return send(status, { message: "Resource not accessible by integration" });
-      const delay = opts.dispatchDelays ? opts.dispatchDelays[dispatchCount] : 0;
+      const index = dispatchCount;
+      const delay = opts.dispatchDelays ? opts.dispatchDelays[index] : 0;
       dispatchCount++;
       if (delay !== null && delay !== undefined) {
         const t = setTimeout(() => {
@@ -124,7 +126,7 @@ export async function startStub(opts = {}) {
             external_id: body.client_payload?.nonce,
             status: "completed",
             conclusion: "neutral",
-            output: { title: "Claudinite key", summary: `public key for @acme-user (sender type ${opts.dispatchSenderType ?? "User"}), issued ${new Date().toISOString()}`, text: "{}" },
+            output: opts.dispatchOutputs?.[index] ?? { title: "Claudinite key", summary: `public key for @acme-user (sender type ${opts.dispatchSenderType ?? "User"}), issued ${new Date().toISOString()}`, text: "{}" },
           });
         }, delay);
         timers.add(t);

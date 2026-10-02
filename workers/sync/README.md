@@ -6,19 +6,23 @@ the Polar reconcile, and `seats`, `usage`, `overuse` and `incidents` from the wr
 Worker fills. It audits whether the App still covers every paying account and judges every alert at
 `GET /v1/sync/alerts`.
 
-It deploys at 100% with `wrangler deploy`, never through the split the request-path Workers take:
-which version a split hands a cron or a queue consumer is not documented, and its deploy never
-touches key issuance. Its own health and alerts judge it right after, and a failure rolls it back
-to the version that was live. Each `scheduled` and `queue` invocation logs
-`{ invocation, version }` at its start, every answer carries `X-Claudinite-Version` and the health
-body `version`, from the `version_metadata` binding `CF_VERSION_METADATA`. The first staged
-deploy (run 36927209537) split the three request-path Workers 90/10 with no fallback, so the
-account does get percentage splits. The sync Worker itself was deployed at 100%
-(`3bb69d3d-3cbe-45f5-af5e-936f754b6087`), and its `scheduled` and `queue` version lines are
-Worker logs, absent from the deploy's job log; they still need reading from Cloudflare's logs, and
-since the sync Worker never stood under a split they can only confirm that one version. Which
-version a split hands a cron or a queue consumer is therefore still unknown, and until it is read
-from a split of this Worker the sync Worker stays at 100%.
+It deploys at 100% with `wrangler deploy --secrets-file`, never through the split the
+request-path Workers take: which version a split hands a cron or a queue consumer is not
+documented, and its deploy never touches key issuance. Its secrets travel with the version that
+deploy makes, so the version a rollback returns to holds the secrets it ran with. Its judge right
+after reads its health, pushes one `deploy-read-back` message onto the writes queue through the
+Queues REST API (`tools/push-queue-message.mjs`) and requires the consumer's stamps to show it
+wrote that message on the version just deployed (`last_queue_at` at or after the push,
+`last_queue_version` the deployed id, `queue_lag_s` at most 60), then reads its alerts; any failure
+rolls it back to the version that was live. That proves the queue bound to the deployed version,
+the consumer running on it and one D1 write through it.
+
+Each consumed batch stamps `last_queue_version` and each cron `last_cron_version`, both from the
+`version_metadata` binding `CF_VERSION_METADATA`, as every answer's `X-Claudinite-Version` and the
+health body's `version` are. Each `scheduled` and `queue` invocation also logs
+`{ invocation, version }` at its start. So the question of which version a split hands a cron or a
+queue consumer is now one health field away, but it stays open: it can only be read from a split of
+this Worker, and until one is tried the sync Worker stays at 100%.
 
 ## Repos
 
@@ -108,14 +112,19 @@ message order, acked on success and retried whole when D1 throws:
 | `usage` | the `usage` row for `(repo_id, user_id, day)` if missing; the seat of `(licenseeOf(plan, owner_id, repo_id), user_id)`: inserted at `at`, else `last_key_at` raised to `at`, and `first_key_at` reset to `at` when the old `last_key_at` is more than 30 days before it |
 | `grace-start` | the owner's `overuse` row: `grace_started_at` kept if set, else `at`; `grace_spent_until` raised to `at` + 30 days |
 | `grace-reset` | `grace_started_at` cleared when it is no later than the message's `at`, `grace_spent_until` kept: delivery order is best-effort, so a reset delivered after a later `grace-start` leaves that start alone |
-| `incident` | an `incidents` row of `marker`, `at` and `detail` |
+| `incident` | an `incidents` row of `marker`, `at` and `detail`; `deploy-read-back` is the one the deploy's judge pushes, written and pruned like the rest and counted by no alert |
 
 Every seat statement is idempotent; a redelivered incident is one more row, which only errs toward
 an alert. A message this version cannot read is acked and logged `{ "marker": "write-malformed" }`.
-Each batch stamps `last_queue_at` and `queue_lag_s`, the age of its oldest message. A dead-letter
-batch writes no seat: each message is logged `{ "marker": "write-dead-lettered", kind, at }` and
-written as a `write-dead-lettered` incident naming its kind, and `last_dead_letter_at` is stamped,
-in one D1 batch.
+Each batch stamps `last_queue_at`, `last_queue_version`, the version that consumed it, and
+`queue_lag_s`, the age of its oldest message, in the same D1 batch as its writes, so the stamps move
+only when the writes land. A dead-letter batch writes no seat: each message is logged
+`{ "marker": "write-dead-lettered", kind, at }` and written as a `write-dead-lettered` incident
+naming its kind, and `last_dead_letter_at` and `last_queue_version` are stamped, in one D1 batch.
+
+Every cron, the hourly one included, first stamps `last_cron_at` (its detail the cron expression
+that ran) and `last_cron_version` in one batch, before its work and whether or not the Polar
+reconcile is due, so a cron that stops running shows as a stale stamp rather than silence.
 
 The nightly cron deletes incidents older than 7 days, since no alert window is longer than a day
 and the record's job is the alert, not history.
@@ -168,8 +177,11 @@ spend one request of `IP_LIMIT`, 300 per 60 seconds per `CF-Connecting-IP` (an I
 
 `GET /v1/sync/health` answers `{ ok, repos, subscriptions, seats, last_webhook_at,
 last_reconcile_at, last_reconcile_corrections, last_polar_webhook_at, last_polar_reconcile_at,
-last_polar_reconcile_corrections, last_polar_reconcile_error, last_queue_at, queue_lag_s,
-last_dead_letter_at, paying_uncovered, polar_webhook_secret, ip_limit, version }`. `seats` counts rows whose last key
+last_polar_reconcile_corrections, last_polar_reconcile_error, last_queue_at, last_queue_version,
+queue_lag_s, last_dead_letter_at, last_cron_at, last_cron, last_cron_version, paying_uncovered,
+polar_webhook_secret, ip_limit, version }`. `last_cron` is the expression of the cron that last
+stamped `last_cron_at`; `last_queue_version` and `last_cron_version` are the versions that last
+consumed a batch and ran a cron. `seats` counts rows whose last key
 is within 30 days; each stamp is null where it was never written, `paying_uncovered` until the first
 audit; `polar_webhook_secret` says whether the secret
 is set, never its value, and is what `deploy.yml` reads to decide whether to make a new endpoint.
@@ -189,10 +201,13 @@ The var `POLAR_API_BASE` is `https://sandbox-api.polar.sh`.
 it creates the endpoint, and the job's token cannot write repository secrets. `deploy.yml` runs
 `tools/ensure-polar-webhook.mjs`, which keeps the existing endpoint, or, when the live Worker's
 health reports no secret or the dispatch input `rotate_polar_webhook` is on, makes a new one and
-writes its secret to a file the Worker's secrets step stores.
+writes its secret to a file the Worker's deploy step puts in its secrets file. A run that makes no
+new endpoint leaves `POLAR_WEBHOOK_SECRET` out of the file, and `--secrets-file` keeps a secret the
+file omits from the previous version.
 
-Unlike the three request-path Workers, whose secrets travel with each uploaded version, the sync
-Worker's are stored with `wrangler secret bulk` before its `wrangler deploy`.
+Like the three request-path Workers, whose secrets travel with each uploaded version, the sync
+Worker's travel with the version its `wrangler deploy --secrets-file` makes; no step runs
+`wrangler secret bulk`.
 
 `SYNC_ADMIN_TOKEN` is no repository secret: `deploy.yml` generates a fresh one on every run, stores
 it with the others and uses it once to run the reconcile in its read-back, so nobody holds a copy

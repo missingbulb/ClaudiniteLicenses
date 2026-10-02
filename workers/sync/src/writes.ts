@@ -2,15 +2,17 @@
 // queues, written in message order as one D1 batch per delivery. Every seat statement is idempotent,
 // so a redelivered message changes nothing there; a redelivered incident is one more row, which only
 // errs toward an alert. A batch from the dead-letter queue is logged, stamped and counted as
-// incidents, never written, so a lost seat record is seen rather than silent.
+// incidents, never written, so a lost seat record is seen rather than silent. Every batch stamps the
+// version that consumed it beside its time, so health names the consumer's version.
 import { GRACE_SPENT_S, isWriteMessage, licenseeOf, SEAT_WINDOW_S, type WriteMessage } from "../../../packages/licensing/src/index.ts";
 import { insertIncident } from "./incidents.ts";
 import { stamp } from "./repos.ts";
+import { versionOf, type VersionEnv } from "../../../packages/version/src/index.ts";
 
 export const WRITES_QUEUE = "claudinite-licenses-writes";
 export const DEAD_LETTER_QUEUE = "claudinite-licenses-writes-dlq";
 
-export interface WritesEnv {
+export interface WritesEnv extends VersionEnv {
   DB: D1Database;
 }
 
@@ -55,7 +57,7 @@ export async function consumeWrites(batch: MessageBatch, env: WritesEnv, nowS: n
       console.log(JSON.stringify({ marker: "write-dead-lettered", kind: body?.kind ?? null, at: body?.at ?? null }));
       writes.push(insertIncident(db, "write-dead-lettered", nowS, typeof body?.kind === "string" ? body.kind : null));
     }
-    await db.batch([...writes, stamp(db, "last_dead_letter_at", nowS)]);
+    await db.batch([...writes, stamp(db, "last_dead_letter_at", nowS), stamp(db, "last_queue_version", nowS, versionOf(env))]);
     batch.ackAll();
     return;
   }
@@ -71,7 +73,7 @@ export async function consumeWrites(batch: MessageBatch, env: WritesEnv, nowS: n
     writes.push(...statementsFor(db, msg.body));
     oldest = Math.min(oldest, msg.body.at);
   }
-  writes.push(stamp(db, "last_queue_at", nowS), stamp(db, "queue_lag_s", nowS, String(Math.max(0, nowS - oldest))));
+  writes.push(stamp(db, "last_queue_at", nowS), stamp(db, "last_queue_version", nowS, versionOf(env)), stamp(db, "queue_lag_s", nowS, String(Math.max(0, nowS - oldest))));
   try {
     await db.batch(writes);
   } catch (err) {

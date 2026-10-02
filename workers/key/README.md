@@ -67,6 +67,7 @@ Each marker the alerts count is logged as a line and, when `WRITES` is bound, qu
 | `polar-unreachable` | a link call fails, runs out of time, or Polar is unconfigured | the call: `checkout`, `customer-session` or `unconfigured` |
 | `app-not-installed` | a desktop or Actions request for a repo with no row | the path |
 | `secondary-rate-limit` | GitHub refuses the web path's check run for its secondary rate limit | GitHub's call |
+| `deploy-read-back` | the deploy's judge of the sync Worker, through the Queues API; never queued by this Worker | the deploy run's URL |
 
 A fail-open key therefore queues its `usage` and its incident, and both wait in the queue until D1
 answers. `queue-send-failed` is never an incident, since a Worker that cannot reach the queue
