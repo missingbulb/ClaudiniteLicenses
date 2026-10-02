@@ -80,6 +80,14 @@ describe("a reconcile requested through the writes queue", () => {
     expect([githubListings(), polar.calls.length]).toEqual([1, 1]);
   });
 
+  it("runs a request from the very second the last reconcile started, and skips one from the second before it", async () => {
+    const at = nowS();
+    await env.DB.prepare("INSERT INTO sync_state (name, at) VALUES ('last_reconcile_at', ?), ('last_polar_reconcile_at', ?)").bind(at, at + 1).run();
+    await consume([request("reconcile-now", at), request("polar-reconcile-now", at)]);
+    expect([githubListings(), polar.calls.length]).toEqual([1, 0]);
+    expect(logs.filter((l) => l.includes('"reconcile":"already-answered"') && l.includes('"requested":"polar-reconcile-now"'))).toHaveLength(1);
+  });
+
   it("logs a failing reconcile, leaves its stamp alone and still acks, so the request is not repeated", async () => {
     vi.mocked(globalThis.fetch).mockImplementation(async () => Response.json({ message: "boom" }, { status: 500 }));
     const res = await consume([request("reconcile-now"), request("polar-reconcile-now")]);
