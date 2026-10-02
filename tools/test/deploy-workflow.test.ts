@@ -523,13 +523,14 @@ describe("deploy.yml", () => {
   const judgeStep = () => named("Judge claudinite-sync by its own health and alerts");
 
   // Runs the judge with a curl answering `health` on /v1/sync/health and 200 alerts, the marker the deploy wrote in place.
+  // `body` may list several health bodies separated by `|`, answered in turn, the last one repeating.
   function judgeRun(health: number, body = '{"ok":true,"ip_limit":"counted"}') {
     const dir = mkdtempSync(join(tmpdir(), "acme-judge-"));
     mkdirSync(join(dir, "staged"));
     writeFileSync(join(dir, "staged/sync"), "live-sync");
     writeFileSync(
       join(dir, "curl"),
-      `#!/usr/bin/env bash\nout=""; url=""\nwhile [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift;; https://*) url=$1;; esac; shift; done\nif [ "\${url##*/}" = health ]; then printf '%s' '${body}' > "$out"; printf '${health}'; else printf '{"ok":true,"alerts":[]}' > "$out"; printf 200; fi\n`,
+      `#!/usr/bin/env bash\nout=""; url=""\nwhile [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift;; https://*) url=$1;; esac; shift; done\nif [ "\${url##*/}" = health ]; then n=$(( $(cat "${dir}/reads" 2>/dev/null || echo 0) + 1 )); echo $n > "${dir}/reads"; IFS='|' read -ra bodies <<< '${body}'; i=$(( n <= \${#bodies[@]} ? n - 1 : \${#bodies[@]} - 1 )); printf '%s' "\${bodies[$i]}" > "$out"; printf '${health}'; else printf '{"ok":true,"alerts":[]}' > "$out"; printf 200; fi\n`,
     );
     writeFileSync(join(dir, "sleep"), "#!/usr/bin/env bash\n");
     for (const f of ["curl", "sleep"]) chmodSync(join(dir, f), 0o755);
@@ -556,6 +557,13 @@ describe("deploy.yml", () => {
     }
     const missing = judgeRun(200, '{"ok":true}');
     expect(missing.status).not.toBe(0);
+  });
+
+  it("asks the sync Worker's health again when the limiter was unavailable once, and passes on the next counted read", () => {
+    const res = judgeRun(200, '{"ok":true,"ip_limit":"unavailable"}|{"ok":true,"ip_limit":"counted"}');
+    expect(res.status, res.stderr + res.stdout).toBe(0);
+    expect(readFileSync(join(res.dir, "reads"), "utf8").trim()).toBe("2");
+    expect(existsSync(join(res.dir, "staged/sync"))).toBe(false);
   });
 
   // The rollback step after a failure, with markers as the steps before it left them.

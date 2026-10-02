@@ -110,7 +110,9 @@ Each Worker judges its own health and the sync Worker judges the shared state, s
 API key.
 
 `tools/probe.mjs` checks the same from outside Cloudflare, plus the router's signature check, the
-desktop path reaching GitHub and, with an OIDC token, the Actions verifier and pin. The `probe`
+desktop path reaching GitHub and, with an OIDC token, the Actions verifier and pin; the public key
+and key health checks also require `ip_limit: counted`, so a version without its per-address cap
+fails the canary at one tenth. The `probe`
 workflow runs it at minutes 7, 22, 37 and 52 of every hour and on dispatch, and keeps one standing
 issue titled `License server probe`, labelled `probe`: opened or commented on by a failing run,
 closed by the next passing one. GitHub fires a cron late or not at all under load and disables it

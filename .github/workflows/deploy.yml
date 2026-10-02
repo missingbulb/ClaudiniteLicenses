@@ -254,17 +254,18 @@ jobs:
       - if: steps.gate.outputs.skip == 'false'
         name: Judge claudinite-sync by its own health and alerts
         run: |
+          # ip_limit is what the per-address cap made of that read: `counted` proves the binding is live
+          # and called. A limiter that threw once is asked again like a status that was not yet 200.
           for i in 1 2 3 4 5 6; do
             status=$(curl -sS -o "$RUNNER_TEMP/sync-health.json" -w '%{http_code}' --max-time 20 https://license.claudinite.com/v1/sync/health || true)
-            [ "$status" = 200 ] && break
+            ip_limit=$(node -e 'let b={};try{b=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))}catch{}process.stdout.write(String(b.ip_limit))' "$RUNNER_TEMP/sync-health.json")
+            [ "$status" = 200 ] && [ "$ip_limit" = counted ] && break
             sleep $((i * 5))
           done
           if [ "$status" != 200 ]; then
             echo "::error::claudinite-sync answered $status on /v1/sync/health after its deploy: $(head -c 300 "$RUNNER_TEMP/sync-health.json")"
             exit 1
           fi
-          # What the per-address cap made of that read: `counted` proves the binding is live and called.
-          ip_limit=$(node -e 'let b={};try{b=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))}catch{}process.stdout.write(String(b.ip_limit))' "$RUNNER_TEMP/sync-health.json")
           if [ "$ip_limit" != counted ]; then
             echo "::error::claudinite-sync's health reports ip_limit $ip_limit after its deploy; the per-address cap is not wired"
             exit 1

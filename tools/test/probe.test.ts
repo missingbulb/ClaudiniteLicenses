@@ -54,8 +54,8 @@ const WORKER_OF: Record<string, string> = {
 const reachesNew = (key: string | undefined) => key !== undefined && /^canary-\d*7$/.test(key);
 
 const HEALTHY: Stub["routes"] = {
-  "GET /v1/public/health": () => ({ status: 200, body: { ok: true, alerts: [] } }),
-  "GET /v1/key/health": () => ({ status: 200, body: { ok: true, d1: "ok", queue: "bound", polar: "configured", trust_roots: "ok", alerts: [] } }),
+  "GET /v1/public/health": () => ({ status: 200, body: { ok: true, ip_limit: "counted", alerts: [] } }),
+  "GET /v1/key/health": () => ({ status: 200, body: { ok: true, d1: "ok", queue: "bound", polar: "configured", trust_roots: "ok", ip_limit: "counted", alerts: [] } }),
   "GET /v1/sync/health": () => ({ status: 200, body: { ok: true } }),
   "GET /v1/sync/alerts": () => ({ status: 200, body: { ok: true, checked_at: 1, alerts: [] } }),
   "POST /github-webhook": () => ({ status: 401, body: "bad signature" }),
@@ -239,7 +239,7 @@ describe("tools/probe.mjs", () => {
   });
 
   it("fails check 2 when the key Worker answers 200 but its queue is unbound", async () => {
-    stub.routes["GET /v1/key/health"] = () => ({ status: 200, body: { ok: true, d1: "ok", queue: "unbound", polar: "configured", trust_roots: "ok" } });
+    stub.routes["GET /v1/key/health"] = () => ({ status: 200, body: { ok: true, d1: "ok", queue: "unbound", polar: "configured", trust_roots: "ok", ip_limit: "counted" } });
     expect((await probe([])).status).toBe(1);
   });
 
@@ -405,6 +405,32 @@ describe("tools/probe.mjs --expect-version", () => {
     expect(health).toMatchObject({ ok: false, version: "key-new" });
     expect(health.detail).toMatch(/^version key-new: want 200/);
     expect(rows(json).find((c) => c.name === "session-key-upstream")).toMatchObject({ ok: true, version: "key-new" });
+  });
+
+  it("fails key-health and public-health on a 200 whose health says the per-address cap did not count the read", async () => {
+    const json = join(dir, "probe.json");
+    for (const ip_limit of ["unbound", "unavailable", undefined]) {
+      stub.routes["GET /v1/key/health"] = () => ({ status: 200, body: { ok: true, d1: "ok", queue: "bound", polar: "configured", trust_roots: "ok", ip_limit } });
+      stub.routes["GET /v1/public/health"] = () => ({ status: 200, body: { ok: true, ip_limit, alerts: [] } });
+      expect((await probe(["--json", json])).status, String(ip_limit)).toBe(1);
+      for (const name of ["key-health", "public-health"]) {
+        const r = rows(json).find((c) => c.name === name)!;
+        expect(r, `${name} ${ip_limit}`).toMatchObject({ ok: false, status: 200 });
+        expect(r.detail, `${name} ${ip_limit}`).toContain(`ip_limit is ${JSON.stringify(ip_limit)}, want "counted"`);
+      }
+    }
+  });
+
+  it("fails the canary at one tenth when the new version's cap is unbound, while the old version is healthy", async () => {
+    stub.versions.key!.new = "key-new";
+    stub.versions["public-key"]!.new = "pk-new";
+    stub.newRoutes["GET /v1/key/health"] = () => ({ status: 200, body: { ok: true, d1: "ok", queue: "bound", polar: "configured", trust_roots: "ok", ip_limit: "unbound" } });
+    stub.newRoutes["GET /v1/public/health"] = () => ({ status: 200, body: { ok: true, ip_limit: "unbound", alerts: [] } });
+    const json = join(dir, "probe.json");
+    const res = await probe(["--expect-version", "key=key-new,public-key=pk-new", "--json", json]);
+    expect(res.status).toBe(1);
+    expect(rows(json).find((c) => c.name === "key-health")).toMatchObject({ ok: false, version: "key-new", detail: expect.stringMatching(/^version key-new: ip_limit is "unbound", want "counted"/) });
+    expect(rows(json).find((c) => c.name === "public-health")).toMatchObject({ ok: false, version: "pk-new", detail: expect.stringMatching(/^version pk-new: ip_limit is "unbound", want "counted"/) });
   });
 
   it("fails a pinned check whose version is never served, and runs the others unpinned", async () => {
