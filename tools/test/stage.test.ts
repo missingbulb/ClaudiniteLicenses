@@ -144,6 +144,25 @@ describe("tools/stage.mjs split", () => {
   });
 });
 
+describe("tools/stage.mjs tag", () => {
+  it("reads the tag a version was uploaded with, and null for one uploaded without", () => {
+    const view = (annotations: Record<string, string>) => ({ stdout: `${JSON.stringify({ id: "v-old", metadata: { created_on: "2026-10-01T00:00:00Z" }, annotations }, null, 2)}\n` });
+    const tagged = stage(["tag", "--config", CONFIG, "--id", "v-old"], { "versions view": view({ "workers/tag": "0123456", "workers/message": "run" }) });
+    expect(tagged.status, tagged.stderr).toBe(0);
+    expect(tagged.calls).toEqual([["versions", "view", "v-old", "--json", "-c", CONFIG]]);
+    expect(tagged.out).toEqual({ tag: "0123456" });
+    expect(stage(["tag", "--config", CONFIG, "--id", "v-old"], { "versions view": view({}) }).out).toEqual({ tag: null });
+  });
+
+  it("fails when wrangler fails or prints no version, and refuses a call without --id", () => {
+    expect(stage(["tag", "--config", CONFIG, "--id", "v-old"], { "versions view": { status: 1, stderr: "no such version" } }).status).toBe(1);
+    expect(stage(["tag", "--config", CONFIG, "--id", "v-old"], { "versions view": { stdout: "nothing" } }).status).toBe(1);
+    const res = stage(["tag", "--config", CONFIG]);
+    expect(res.status).toBe(2);
+    expect(res.calls).toEqual([]);
+  });
+});
+
 describe("tools/stage.mjs promote, rollback and triggers", () => {
   it("promote and rollback both deploy the one id at 100%, never through wrangler rollback", () => {
     for (const cmd of ["promote", "rollback"]) {

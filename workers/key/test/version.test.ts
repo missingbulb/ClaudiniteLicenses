@@ -30,7 +30,7 @@ describe("version", () => {
       await call("/webhook", { method: "POST", body: "{not json" }),
       await call("/elsewhere"),
     ];
-    expect(answers.map((r) => r.status)).toEqual([200, 503, 200, 503, 401, 401, 401, 400, 404]);
+    expect(answers.map((r) => r.status)).toEqual([200, 503, 200, 400, 401, 401, 401, 400, 404]);
     expect(answers.map((r) => r.headers.get("X-Claudinite-Version"))).toEqual(answers.map(() => ID));
   });
 

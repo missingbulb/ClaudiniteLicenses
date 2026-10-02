@@ -2,6 +2,8 @@ import { createExecutionContext } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import worker, { type Env } from "../src/index.ts";
 import wranglerConfig from "../wrangler.jsonc?raw";
+import routerSource from "../src/index.ts?raw";
+import { BODY_MAX_WEBHOOK } from "../../../packages/http/src/index.ts";
 
 const SECRET = "acme-webhook-secret";
 const URL_ = "https://license.claudinite.com/github-webhook";
@@ -127,6 +129,14 @@ describe("router", () => {
     // No secret in env: reaching the signature check would throw, so a 413 proves it came first.
     const res = await worker.fetch(req, {} as Env, createExecutionContext());
     expect(res.status).toBe(413);
+  });
+
+  it("reads its body through the shared webhook cap, keeping no cap of its own", async () => {
+    expect(routerSource).toMatch(/import \{[^}]*\bBODY_MAX_WEBHOOK\b[^}]*\breadCapped\b[^}]*\} from "\.\.\/\.\.\/\.\.\/packages\/http\/src\/index\.ts"/);
+    expect(routerSource).toContain("readCapped(req, BODY_MAX_WEBHOOK)");
+    expect(routerSource).not.toMatch(/1024 \* 1024/);
+    const atCap = new Request(URL_, { method: "POST", headers: { "X-GitHub-Event": "ping", "X-Hub-Signature-256": "sha256=00" }, body: "x".repeat(BODY_MAX_WEBHOOK + 1) });
+    expect((await worker.fetch(atCap, {} as Env, createExecutionContext())).status).toBe(413);
   });
 
   it("answers 404 off its one path and method", async () => {

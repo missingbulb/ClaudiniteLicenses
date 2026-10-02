@@ -8,8 +8,11 @@
 // Actions key, an item grant and the Polar reconcile; then the alerts: none on the fresh set, an
 // incident queued from a key whose Polar call ran out of time, the polar-unreachable alert firing
 // once three such keys have been asked for and clearing once those incidents are an hour old, an
-// account the App no longer covers firing and clearing across two reconciles, and the outside probe
-// passing against the local set. Each key is verified against the dev chain's roots and must carry
+// account the App no longer covers firing and clearing across two reconciles; then what stands in
+// front of the costly calls: an unsigned Polar delivery refused, a desktop body over 16 KiB refused
+// before GitHub is asked, a bogus desktop token stopped at GitHub, fail_open in the key health; the
+// outside probe passing against the local set with all ten checks; and last, since it spends the
+// address's budget for a minute, the 301st health read in a minute answered 429. Each key is verified against the dev chain's roots and must carry
 // the issuing key its Worker holds. Exits 0 only when every key and the grant verify, every stamp
 // moved and every alert came and went. With --serve it stops once everything is serving and leaves
 // it up, the stubs included, until interrupted.
@@ -474,9 +477,36 @@ const cleared = await alerts();
 if (covered?.paying_uncovered !== 0 || cleared.status !== 200 || cleared.ids.length !== 0) await fail(`after the repos returned: health ${JSON.stringify(covered)}, alerts ${cleared.status} ${JSON.stringify(cleared.ids)}`);
 console.log("coverage: the repos returned, paying_uncovered 0, alerts 200");
 
-// The outside probe, as the schedule runs it, against the local set: no issue, no OIDC token.
+// An unsigned Polar delivery is refused signature-missing, and records at most one capped incident.
+const refusedBefore = (await localSql("SELECT COUNT(*) AS n FROM incidents WHERE marker = 'polar-webhook-refused'").catch((err) => fail(String(err))))[0].n;
+const unsigned = await call("/v1/sync/polar-webhook", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+if (unsigned.status !== 401 || unsigned.text.trim() !== "signature-missing" || !unsigned.version) await fail(`the unsigned Polar delivery answered ${unsigned.status} ${unsigned.text}`);
+const refusedAfter = (await localSql("SELECT COUNT(*) AS n FROM incidents WHERE marker = 'polar-webhook-refused'").catch((err) => fail(String(err))))[0].n;
+if (refusedAfter - refusedBefore > 1) await fail(`one unsigned delivery wrote ${refusedAfter - refusedBefore} incidents`);
+console.log(`polar webhook: an unsigned delivery refused 401 signature-missing, ${refusedAfter - refusedBefore} capped incident recorded`);
+
+// A desktop body over 16 KiB is refused before the GitHub stub sees a call.
+const callsBefore = stub.state.requests.length;
+const oversized = await call("/v1/session-key", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${userToken}` }, body: JSON.stringify({ repo: repo.full_name, nonce: randomBytes(16).toString("hex"), pad: "a".repeat(16 * 1024) }) });
+if (oversized.status !== 413 || oversized.json?.refused !== "body-too-large" || stub.state.requests.length !== callsBefore) await fail(`a 16 KiB + 1 desktop body answered ${oversized.status} ${oversized.text} after ${stub.state.requests.length - callsBefore} GitHub calls`);
+console.log("body cap: a desktop body over 16 KiB refused 413 body-too-large, the GitHub stub never asked");
+
+// A bogus desktop token is stopped by GitHub's one answer; the pool pins that it writes no usage point,
+// which the local Analytics Engine dataset cannot show.
+const bogus = await call("/v1/session-key", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer ghu_bogus" }, body: JSON.stringify({ repo: repo.full_name, nonce: randomBytes(16).toString("hex"), engine_version: "local-roundtrip" }) });
+const bogusCalls = stub.state.requests.slice(callsBefore);
+if (bogus.status !== 401 || bogus.json?.refused !== "token-invalid" || JSON.stringify(bogusCalls) !== JSON.stringify(["GET /user"])) await fail(`a bogus desktop token answered ${bogus.status} ${bogus.text} after GitHub calls ${JSON.stringify(bogusCalls)}`);
+console.log("bogus token: refused 401 token-invalid after one GitHub call, GET /user");
+
+const keyHealth = (await call("/v1/key/health")).json;
+if (keyHealth?.fail_open !== true) await fail(`the key health's fail_open: ${JSON.stringify(keyHealth)}`);
+console.log("key health: fail_open true, the committed value");
+
+// The outside probe, as the deploy runs it, against the local set: no issue, an OIDC token from the
+// stub's issuer for a workflow the pin refuses.
+const probeOidc = stub.signOidcToken({ ...JSON.parse(Buffer.from(oidcFor(repo).split(".")[1], "base64url").toString("utf8")), job_workflow_ref: `${repo.full_name}/.github/workflows/deploy.yml@refs/heads/${repo.default_branch}` });
 const probed = await new Promise((ok) => {
-  const child = spawn(process.execPath, ["tools/probe.mjs", "--base", origin, "--json", join(SCRATCH, "probe.json")], { cwd: ROOT, env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, ["tools/probe.mjs", "--base", origin, "--oidc-token-env", "PROBE_OIDC", "--json", join(SCRATCH, "probe.json")], { cwd: ROOT, env: { ...env, PROBE_OIDC: probeOidc }, stdio: ["ignore", "pipe", "pipe"] });
   let out = "";
   child.stdout.on("data", (c) => (out += c));
   child.stderr.on("data", (c) => (out += c));
@@ -485,8 +515,24 @@ const probed = await new Promise((ok) => {
 const { code: probeCode, out: probeOut } = /** @type {{ code: number | null, out: string }} */ (probed);
 if (probeCode !== 0) await fail(`the outside probe exited ${probeCode}:\n${probeOut}`);
 const probeChecks = /** @type {{ name: string, version: string | null }[]} */ (JSON.parse(readFileSync(join(SCRATCH, "probe.json"), "utf8")).checks);
+if (probeChecks.length !== 10) await fail(`the outside probe ran ${probeChecks.length} checks, want 10:\n${probeOut}`);
 const unversioned = probeChecks.filter((c) => !c.version).map((c) => c.name);
-if (unversioned.length) await fail(`the outside probe read no version on ${unversioned.join(", ")}`);
-console.log(`probe: exit 0, ${probeOut.split("\n").filter((l) => l.startsWith("ok ")).length} checks passed, each naming the version that answered (${[...new Set(probeChecks.map((c) => c.version))].length} versions)`);
+if (JSON.stringify(unversioned) !== JSON.stringify(["private-paths-unrouted"])) await fail(`the outside probe read no version on ${unversioned.join(", ")}`);
+console.log(`probe: exit 0, ${probeChecks.length} checks passed, each a Worker answered naming its version (${[...new Set(probeChecks.map((c) => c.version).filter(Boolean))].length} versions), private-paths-unrouted answered by none`);
+
+// The per-address cap, last: the 300th health read in a minute answers, the 301st is 429 with the
+// version header. Reads already spent this minute count, so the walk stops at the first 429.
+let capped = 0;
+for (let i = 1; i <= 400; i++) {
+  const res = await call("/v1/key/health");
+  if (res.status === 429) {
+    if (!res.version || res.json?.refused !== "rate-limited") await fail(`the 429 after ${i} health reads: ${res.text}, version ${res.version}`);
+    capped = i;
+    break;
+  }
+  if (res.status !== 200) await fail(`health read ${i} answered ${res.status}: ${res.text}`);
+}
+if (!capped) await fail("400 health reads in a minute met no 429");
+console.log(`ip cap: health read ${capped} answered 429 rate-limited with the version header, every read before it 200`);
 
 await shutdown();

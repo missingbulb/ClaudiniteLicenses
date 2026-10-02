@@ -3,7 +3,7 @@
 // subscriptions; a private repo's state, notice and queued writes from the seat rules.
 import { dayOf, licenseeOf, paidSeats, planFeatures, type Notice, type PaidPlan, type SubscriptionRow, type WriteMessage } from "../../../packages/licensing/src/index.ts";
 import { FEATURES, type KeySeats, type Plan } from "../../../packages/signing/src/index.ts";
-import type { Path } from "./env.ts";
+import { failOpenEnabled, type Path } from "./env.ts";
 import { incident, type IncidentEnv } from "./incidents.ts";
 import { readLicensee, verdictFor } from "./seats.ts";
 
@@ -103,7 +103,7 @@ async function decide(env: PlanEnv, req: PlanRequest, row: RepoRow | null, subs:
 function failOpen(env: PlanEnv, req: PlanRequest, err: unknown, now: number, from: PlanContext): Resolution {
   // The design's third layer: issue rather than degrade, and leave an incident the alerts count.
   incident(env, from.ctx, "d1-unreadable", from.path, { repo_id: req.repoId, error: String(err) });
-  if (env.FAIL_OPEN !== "true") return { refused: "server-error" };
+  if (!failOpenEnabled(env)) return { refused: "server-error" };
   // The binary refuses a Public key on a private repo, so a private repo fails open on Private repo.
   const isPublic = req.visibility === "public";
   const writes = !isPublic && req.typ === "session" && req.userId !== null ? [usageMessage({ ...req, userId: req.userId }, "private-repo", now)] : [];

@@ -4,11 +4,12 @@
 // request is its whole record.
 import { b64urlDecode, certStanding, type Certificate } from "../../../packages/signing/src/index.ts";
 import { createKeyCheckRun, GitHubError, parseKeyDispatch, refusalSummary } from "../../../packages/github-app/src/index.ts";
+import { BODY_MAX_WEBHOOK, ipLimited, readJsonCapped, withinIpLimit, type IpLimitEnv } from "../../../packages/http/src/index.ts";
 import { versionOf, withVersion, type VersionEnv } from "../../../packages/version/src/index.ts";
 import { publicSessionKey } from "./desktop.ts";
 import { mintPublicSessionKey } from "./key.ts";
 
-export interface Env extends VersionEnv {
+export interface Env extends VersionEnv, IpLimitEnv {
   GITHUB_APP_ID: string;
   GITHUB_APP_PRIVATE_KEY: string;
   ISSUING_KEY_PRIVATE: string;
@@ -31,12 +32,9 @@ function certBody(env: Env): { keyId: string; notAfter: string } {
 
 async function webhook(req: Request, env: Env): Promise<Response> {
   const delivery = req.headers.get("X-GitHub-Delivery");
-  let payload: unknown;
-  try {
-    payload = await req.json();
-  } catch {
-    return refuse(400, "malformed-payload", delivery);
-  }
+  const read = await readJsonCapped(req, BODY_MAX_WEBHOOK);
+  if (!read.ok) return read.reason === "body-too-large" ? refuse(413, "payload-too-large", delivery) : refuse(400, "malformed-payload", delivery);
+  const payload = read.value;
   const parsed = parseKeyDispatch(payload);
   const seen = parsed.ok
     ? { repoId: String(parsed.dispatch.repo.id), ownerType: parsed.dispatch.owner.type, engineVersion: parsed.dispatch.engineVersion }
@@ -84,8 +82,12 @@ async function webhook(req: Request, env: Env): Promise<Response> {
   return new Response(outcome, { status: 201 });
 }
 
+/** Every route Cloudflare serves to the world: each meets the per-address cap before anything else. */
+export const PUBLIC_ROUTES = ["POST /v1/public/session-key", "GET /v1/public/health"];
+
 async function route(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url);
+  if (PUBLIC_ROUTES.includes(`${req.method} ${url.pathname}`) && !(await withinIpLimit(env, req))) return ipLimited();
   if (req.method === "POST" && url.pathname === "/webhook") return webhook(req, env);
   if (req.method === "POST" && url.pathname === "/v1/public/session-key") return publicSessionKey(req, env);
   if (req.method === "GET" && url.pathname === "/v1/public/health") {

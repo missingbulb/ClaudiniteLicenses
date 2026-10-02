@@ -1,6 +1,7 @@
 // The web path: a web session's `claudinite-key` dispatch, forwarded by the router, answered with
 // one `Claudinite key` check run carrying the key, or `Claudinite key refused` naming why.
 import { createKeyCheckRun, GitHubError, parseKeyDispatch, refusalSummary } from "../../../packages/github-app/src/index.ts";
+import { BODY_MAX_WEBHOOK, readJsonCapped } from "../../../packages/http/src/index.ts";
 import { countPoint, githubClient, issuingKey, type Env } from "./env.ts";
 import { licenceFields, mintKey } from "./key.ts";
 import { queueIncident } from "./incidents.ts";
@@ -15,12 +16,9 @@ function refuse(status: number, reason: string, delivery: string | null): Respon
 
 export async function webhook(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const delivery = req.headers.get("X-GitHub-Delivery");
-  let payload: unknown;
-  try {
-    payload = await req.json();
-  } catch {
-    return refuse(400, "malformed-payload", delivery);
-  }
+  const read = await readJsonCapped(req, BODY_MAX_WEBHOOK);
+  if (!read.ok) return read.reason === "body-too-large" ? refuse(413, "payload-too-large", delivery) : refuse(400, "malformed-payload", delivery);
+  const payload = read.value;
   const parsed = parseKeyDispatch(payload);
   if (!parsed.ok) {
     if (parsed.reason === "sender-not-user") countPoint(env, { ...parsed.seen, plan: "none", outcome: "refused-sender", path: "web" });

@@ -30,6 +30,8 @@ interface Stub {
   newRoutes: Stub["routes"];
   /** The version keys the probe sent, in order. */
   keys: string[];
+  /** Routes whose answer carries no version header, as if no Worker had given it. */
+  unversioned: Set<string>;
   close: () => Promise<void>;
 }
 
@@ -41,6 +43,9 @@ const WORKER_OF: Record<string, string> = {
   "GET /v1/sync/health": "sync",
   "GET /v1/sync/alerts": "sync",
   "POST /github-webhook": "router",
+  "POST /v1/login/refresh": "key",
+  "POST /v1/key/webhook": "key",
+  "POST /v1/sync/polar-webhook": "sync",
 };
 
 // One key in ten reaches the new version, as a 10% split hashes them: canary-7, canary-17, ...
@@ -54,6 +59,11 @@ const HEALTHY: Stub["routes"] = {
   "POST /github-webhook": () => ({ status: 401, body: "bad signature" }),
   "POST /v1/session-key": () => ({ status: 401, body: { refused: "token-invalid" } }),
   "POST /v1/actions-key": () => ({ status: 403, body: { refused: "workflow-not-pinned" } }),
+  "POST /v1/login/refresh": () => ({ status: 400, body: { refused: "no-refresh-token" } }),
+  "POST /v1/sync/polar-webhook": () => ({ status: 401, body: "signature-missing" }),
+  // No Worker route reaches /webhook; the key Worker's prefix reaches /v1/key/webhook and answers 404.
+  "POST /webhook": () => ({ status: 404, body: "no Worker" }),
+  "POST /v1/key/webhook": () => ({ status: 404, body: "not found" }),
 };
 
 async function startStub(): Promise<Stub> {
@@ -65,6 +75,7 @@ async function startStub(): Promise<Stub> {
     versions: { "public-key": { old: "pk-old" }, key: { old: "key-old" }, sync: { old: "sync-old" }, router: { old: "router-old" } },
     newRoutes: {},
     keys: [] as string[],
+    unversioned: new Set<string>(),
   } as unknown as Stub;
   const read = async (req: IncomingMessage) => {
     let raw = "";
@@ -79,7 +90,7 @@ async function startStub(): Promise<Stub> {
     if (key !== undefined) stub.keys.push(key);
     const worker = WORKER_OF[route];
     const v = worker ? stub.versions[worker]! : null;
-    const version = v ? (v.new && reachesNew(key) ? v.new : v.old) : null;
+    const version = v && !stub.unversioned.has(route) ? (v.new && reachesNew(key) ? v.new : v.old) : null;
     const send = (status: number, body: unknown) => {
       res.writeHead(status, { "Content-Type": typeof body === "string" ? "text/plain" : "application/json", ...(version ? { "X-Claudinite-Version": version } : {}) });
       res.end(typeof body === "string" ? body : JSON.stringify(body));
@@ -184,10 +195,13 @@ describe("tools/probe.mjs", () => {
       ["sync-alerts", true],
       ["router-signature", true],
       ["session-key-upstream", true],
+      ["login-refresh-unauthenticated", true],
+      ["polar-webhook-unsigned", true],
+      ["private-paths-unrouted", true],
       ["actions-key-oidc", true],
     ]);
     for (const c of summary.checks) expect(typeof c.latency_ms).toBe("number");
-    expect(res.stdout.split("\n").filter((l) => /^(ok|FAIL) /.test(l))).toHaveLength(7);
+    expect(res.stdout.split("\n").filter((l) => /^(ok|FAIL) /.test(l))).toHaveLength(10);
   });
 
   it("skips the Actions check without an OIDC token and still passes", async () => {
@@ -227,6 +241,60 @@ describe("tools/probe.mjs", () => {
     const res = await probe([]);
     expect(res.status).toBe(1);
     expect(res.stdout).toMatch(/^FAIL public-health/m);
+  });
+
+  const row = (json: string, name: string) => (JSON.parse(readFileSync(json, "utf8")) as { checks: { name: string; ok: boolean; status: number | null; version: string | null; detail?: string; headers?: Record<string, string> }[] }).checks.find((c) => c.name === name)!;
+
+  it("fails polar-webhook-unsigned on a 200 and on secret-unset, which would mean the live Worker lost its secret", async () => {
+    const json = join(dir, "probe.json");
+    for (const answer of [{ status: 200, body: "ok" }, { status: 401, body: "secret-unset" }]) {
+      stub.routes["POST /v1/sync/polar-webhook"] = () => answer;
+      expect((await probe(["--json", json])).status, answer.body).toBe(1);
+      expect(row(json, "polar-webhook-unsigned"), answer.body).toMatchObject({ ok: false, status: answer.status });
+    }
+    expect(stub.seen.filter((s) => s.startsWith("POST /v1/sync/polar-webhook"))).toHaveLength(2);
+  });
+
+  it("fails login-refresh-unauthenticated unless the route refuses no-refresh-token before any GitHub call", async () => {
+    stub.routes["POST /v1/login/refresh"] = () => ({ status: 503, body: { refused: "refresh-not-configured" } });
+    const json = join(dir, "probe.json");
+    expect((await probe(["--json", json])).status).toBe(1);
+    expect(row(json, "login-refresh-unauthenticated")).toMatchObject({ ok: false, status: 503 });
+  });
+
+  it("fails private-paths-unrouted when a Worker answers /webhook from outside, or the key Worker's prefix answers anything but 404", async () => {
+    const json = join(dir, "probe.json");
+    stub.routes["POST /webhook"] = () => ({ status: 200, body: "served" });
+    expect((await probe(["--json", json])).status).toBe(1);
+    expect(row(json, "private-paths-unrouted")).toMatchObject({ ok: false });
+    stub.routes["POST /webhook"] = HEALTHY["POST /webhook"]!;
+    stub.routes["POST /v1/key/webhook"] = () => ({ status: 201, body: "issued" });
+    expect((await probe(["--json", json])).status).toBe(1);
+    expect(row(json, "private-paths-unrouted").detail).toMatch(/\/v1\/key\/webhook/);
+  });
+
+  it("fails private-paths-unrouted when the answer on /webhook names a version, since then a Worker gave it", async () => {
+    WORKER_OF["POST /webhook"] = "key";
+    try {
+      const json = join(dir, "probe.json");
+      expect((await probe(["--json", json])).status).toBe(1);
+      expect(row(json, "private-paths-unrouted").detail).toMatch(/version key-old/);
+    } finally {
+      delete WORKER_OF["POST /webhook"];
+    }
+  });
+
+  it("fails a Worker check whose answer carries no version header, keeping the raw headers in the row", async () => {
+    stub.unversioned.add("POST /github-webhook");
+    const json = join(dir, "probe.json");
+    const res = await probe(["--json", json]);
+    expect(res.status).toBe(1);
+    const r = row(json, "router-signature");
+    expect(r).toMatchObject({ ok: false, status: 401, version: null });
+    expect(r.detail).toMatch(/^version header missing/);
+    expect(r.headers).toMatchObject({ "content-type": "text/plain" });
+    expect(res.stdout).toMatch(/^ {2}headers .*content-type/m);
+    expect(row(json, "key-health").headers).toBeUndefined();
   });
 
   it("with --issue keeps one standing issue: opens it once, comments on the next failure, closes it on the next pass", async () => {
@@ -290,6 +358,9 @@ describe("tools/probe.mjs --expect-version", () => {
       ["sync-alerts", "sync-old"],
       ["router-signature", "router-old"],
       ["session-key-upstream", "key-old"],
+      ["login-refresh-unauthenticated", "key-old"],
+      ["polar-webhook-unsigned", "sync-old"],
+      ["private-paths-unrouted", null],
     ]);
     expect(stub.keys).toEqual([]);
   });
@@ -308,10 +379,13 @@ describe("tools/probe.mjs --expect-version", () => {
       ["sync-alerts", true, "sync-old"],
       ["router-signature", true, "router-new"],
       ["session-key-upstream", true, "key-new"],
+      ["login-refresh-unauthenticated", true, "key-new"],
+      ["polar-webhook-unsigned", true, "sync-old"],
+      ["private-paths-unrouted", true, null],
       ["actions-key-oidc", true, "key-new"],
     ]);
-    // Five pinned checks, each walking canary-1 to canary-7; the unpinned sync checks send no key.
-    expect(stub.keys).toEqual(Array.from({ length: 5 }, () => Array.from({ length: 7 }, (_, i) => `canary-${i + 1}`)).flat());
+    // Six pinned checks, each walking canary-1 to canary-7; the unpinned sync checks and the private paths send no key.
+    expect(stub.keys).toEqual(Array.from({ length: 6 }, () => Array.from({ length: 7 }, (_, i) => `canary-${i + 1}`)).flat());
   });
 
   it("fails a check the new version answers wrongly, naming the version, while the old version is healthy", async () => {
@@ -334,7 +408,7 @@ describe("tools/probe.mjs --expect-version", () => {
     expect(health).toMatchObject({ ok: false, version: "key-old" });
     expect(health.detail).toMatch(/^version key-new not reached in 60 keys/);
     expect(rows(json).find((c) => c.name === "public-health")).toMatchObject({ ok: true, version: "pk-old" });
-    expect(stub.keys.filter((k) => k === "canary-60")).toHaveLength(2);
+    expect(stub.keys.filter((k) => k === "canary-60")).toHaveLength(3);
     expect(stub.keys).not.toContain("canary-61");
   });
 

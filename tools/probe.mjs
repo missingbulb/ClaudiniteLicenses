@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 // The outside probe: checks the license server from outside Cloudflare the way a customer meets it,
-// one named check each — the three health routes, the alerts endpoint, the router's signature check,
-// the desktop path reaching GitHub, and, with an OIDC token, the Actions path's verifier and pin.
+// ten named checks: the three health routes, the alerts endpoint, the router's signature check, the
+// desktop path reaching GitHub, the token refresh refusing a body with no token, Polar's webhook
+// refusing an unsigned delivery, the service-binding-only paths answered by no Worker, and, with an
+// OIDC token, the Actions path's verifier and pin. Each sends one request (the private paths two),
+// so the probe never spends a live per-address cap; the deploy's read-back proves the cap.
 // It prints one line per check, writes a JSON summary with --json, and exits 1 when any check
 // fails. With --issue it keeps one standing issue, titled and labelled below: a failing run opens
 // it or comments on the open one, a passing run closes it. The schedule and the deploy both run it.
@@ -13,6 +16,13 @@
 // hashes against the deployment's percentages so one key always lands on one version
 // (developers.cloudflare.com/workers/versions-and-deployments/gradual-deployments/version-affinity/,
 // read 2026-10-01); the probe walks keys canary-1, canary-2, ... until the answer names the id.
+//
+// A check answered by a Worker fails when the answer names no version: every version deployed since
+// ClaudiniteLicenses#16 sets the header on every answer, so a versionless one did not come from the
+// Worker the deploy judged. Such a row keeps the answer's raw headers. The two versionless rows of
+// run 36927209537 (router-signature, actions-key-oidc) came 10 to 26 seconds into the promotion,
+// on the first attempt, with answers only the versions before #16 give, which set no header: those
+// versions were still serving some requests while the promotion spread (ClaudiniteLicenses#18).
 //
 //   node tools/probe.mjs --base <url> [--oidc-token-env NAME] [--issue --repo owner/name --token-env GITHUB_TOKEN] [--json <path>] [--attempts N]
 //                        [--expect-version <worker>=<id>[,<worker>=<id>...]]
@@ -31,8 +41,8 @@ export const VERSION_KEYS = 60;
 export const WORKERS = ["public-key", "key", "sync", "router"];
 
 /**
- * @typedef {{ status: number | null, body: any, text: string, version: string | null, error?: string, latency_ms: number }} Answer
- * @typedef {{ name: string, ok: boolean, status: number | null, version: string | null, latency_ms: number, alerts?: { id: string, since?: number | null, detail?: string | null }[], detail?: string }} Check
+ * @typedef {{ status: number | null, body: any, text: string, version: string | null, headers: Record<string, string>, error?: string, latency_ms: number }} Answer
+ * @typedef {{ name: string, ok: boolean, status: number | null, version: string | null, latency_ms: number, alerts?: { id: string, since?: number | null, detail?: string | null }[], detail?: string, headers?: Record<string, string> }} Check
  * @typedef {(extra?: Record<string, string>) => Promise<Answer>} Request
  */
 
@@ -48,16 +58,17 @@ async function ask(url, init = {}, extra = {}) {
     } catch {
       // A plain-text answer, such as the router's refusal.
     }
-    return { status: res.status, body, text, version: res.headers.get(VERSION_HEADER), latency_ms: Math.round(performance.now() - started) };
+    return { status: res.status, body, text, version: res.headers.get(VERSION_HEADER), headers: Object.fromEntries(res.headers), latency_ms: Math.round(performance.now() - started) };
   } catch (err) {
-    return { status: null, body: null, text: "", version: null, error: String(err instanceof Error && err.cause ? err.cause : err), latency_ms: Math.round(performance.now() - started) };
+    return { status: null, body: null, text: "", version: null, headers: {}, error: String(err instanceof Error && err.cause ? err.cause : err), latency_ms: Math.round(performance.now() - started) };
   }
 }
 
 /**
  * The checks in order, each a request and what its answer must be.
  * @param {string} base @param {string | null} oidc
- * @returns {{ name: string, worker: string, request: Request, judge: (a: Answer) => string | null }[]}
+ * `worker` is the Worker that answers, or null for a check no Worker may answer.
+ * @returns {{ name: string, worker: string | null, request: Request, judge: (a: Answer) => string | null }[]}
  */
 function checks(base, oidc) {
   const status = (/** @type {number} */ want) => (/** @type {Answer} */ a) => (a.status === want ? null : `want ${want}`);
@@ -100,6 +111,39 @@ function checks(base, oidc) {
         ),
       judge: (/** @type {Answer} */ a) => (a.status === 401 && a.body?.refused === "token-invalid" ? null : "want 401 token-invalid"),
     },
+    {
+      // A body with no refresh token is refused before the Worker calls GitHub.
+      name: "login-refresh-unauthenticated",
+      worker: "key",
+      request: (extra) => ask(`${base}/v1/login/refresh`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }, extra),
+      judge: (/** @type {Answer} */ a) => (a.status === 400 && a.body?.refused === "no-refresh-token" ? null : "want 400 no-refresh-token"),
+    },
+    {
+      // secret-unset would mean the live Worker lost POLAR_WEBHOOK_SECRET.
+      name: "polar-webhook-unsigned",
+      worker: "sync",
+      request: (extra) => ask(`${base}/v1/sync/polar-webhook`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }, extra),
+      judge: (/** @type {Answer} */ a) => (a.status === 401 && a.text.trim() === "signature-missing" ? null : "want 401 signature-missing"),
+    },
+    {
+      // /webhook is reached only over a service binding, so no Worker answers it from outside; the
+      // key Worker's route prefix reaches /v1/key/webhook, where its router must answer 404.
+      name: "private-paths-unrouted",
+      worker: null,
+      request: async (extra) => {
+        const bare = await ask(`${base}/webhook`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }, extra);
+        const prefixed = await ask(`${base}/v1/key/webhook`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }, extra);
+        const wrong = [
+          bare.error ? `/webhook: ${bare.error}` : null,
+          bare.version ? `/webhook answered by version ${bare.version}` : null,
+          bare.status !== null && bare.status < 400 ? `/webhook answered ${bare.status}` : null,
+          prefixed.error ? `/v1/key/webhook: ${prefixed.error}` : null,
+          prefixed.status !== null && prefixed.status !== 404 ? `/v1/key/webhook answered ${prefixed.status}, want 404` : null,
+        ].filter(Boolean);
+        return { ...bare, body: { wrong }, text: `/webhook ${bare.status ?? "-"}, /v1/key/webhook ${prefixed.status ?? "-"}`, latency_ms: bare.latency_ms + prefixed.latency_ms };
+      },
+      judge: (/** @type {Answer} */ a) => (a.body.wrong.length ? a.body.wrong.join("; ") : null),
+    },
   ];
   if (oidc) {
     list.push({
@@ -138,7 +182,7 @@ export function parseExpectVersion(spec) {
  */
 async function reachVersion(request, id) {
   /** @type {Answer} */
-  let answer = { status: null, body: null, text: "", version: null, latency_ms: 0 };
+  let answer = { status: null, body: null, text: "", version: null, headers: {}, latency_ms: 0 };
   for (let k = 1; k <= VERSION_KEYS; k++) {
     answer = await request({ [AFFINITY_HEADER]: `canary-${k}` });
     if (answer.version === id) return { answer, wrong: null };
@@ -156,18 +200,20 @@ export async function runProbe({ base, oidc = null, attempts = 1, retryDelayMs =
   /** @type {Check[]} */
   const results = [];
   for (const c of checks(base.replace(/\/$/, ""), oidc)) {
-    const pin = expect[c.worker] ?? null;
+    const pin = c.worker ? (expect[c.worker] ?? null) : null;
+    /** @param {Answer} a */
+    const judged = (a) => (a.error ? a.error : (c.judge(a) ?? (c.worker && !a.version ? "version header missing" : null)));
     let a;
     let wrong;
     for (let i = 1; ; i++) {
       if (pin) {
         const reached = await reachVersion(c.request, pin);
         a = reached.answer;
-        wrong = reached.wrong ?? (a.error ? a.error : c.judge(a));
+        wrong = reached.wrong ?? judged(a);
         if (wrong && !reached.wrong) wrong = `version ${pin}: ${wrong}`;
       } else {
         a = await c.request();
-        wrong = a.error ? a.error : c.judge(a);
+        wrong = judged(a);
       }
       if (!wrong || i >= attempts) break;
       await new Promise((ok) => setTimeout(ok, retryDelayMs));
@@ -175,6 +221,7 @@ export async function runProbe({ base, oidc = null, attempts = 1, retryDelayMs =
     /** @type {Check} */
     const check = { name: c.name, ok: !wrong, status: a.status, version: a.version, latency_ms: a.latency_ms };
     if (Array.isArray(a.body?.alerts) && a.body.alerts.length > 0) check.alerts = a.body.alerts;
+    if (c.worker && !a.version && a.status !== null) check.headers = a.headers;
     if (wrong) check.detail = `${wrong}; got ${a.status ?? "no answer"} ${a.text.slice(0, 200)}`.trim();
     results.push(check);
   }
@@ -184,7 +231,7 @@ export async function runProbe({ base, oidc = null, attempts = 1, retryDelayMs =
 /** @param {Check} c */
 function lines(c) {
   const head = `${c.ok ? "ok" : "FAIL"} ${c.name} ${c.status ?? "-"} ${c.latency_ms} ms${c.version ? ` ${c.version}` : ""}${c.detail ? `: ${c.detail}` : ""}`;
-  return [head, ...(c.alerts ?? []).map((a) => `  alert ${typeof a === "string" ? a : `${a.id}${a.detail ? `: ${a.detail}` : ""}`}`)];
+  return [head, ...(c.alerts ?? []).map((a) => `  alert ${typeof a === "string" ? a : `${a.id}${a.detail ? `: ${a.detail}` : ""}`}`), ...(c.headers ? [`  headers ${JSON.stringify(c.headers)}`] : [])];
 }
 
 /** @param {{ ok: boolean, checks: Check[] }} summary @param {string} run */

@@ -58,7 +58,10 @@ answers `{ ok, repos, corrections }`, or 502 when GitHub fails.
 `POST /v1/sync/polar-webhook` is public: Polar calls it. Each delivery is checked as Standard
 Webhooks with `POLAR_WEBHOOK_SECRET` (`packages/polar`'s `verifyWebhook`); a failure answers 401
 with the reason (`signature-missing`, `timestamp-skew`, `signature-mismatch`, `payload-malformed`,
-or `secret-unset`), writes nothing but a `polar-webhook-refused` incident naming the reason (at
+or `secret-unset`). A refused delivery first spends one request of the caller's `IP_LIMIT`, and
+over it answers 429 `rate-limited` and writes nothing; a verified delivery never meets the cap. A
+body past 1 MiB is refused 413 `payload-too-large` before the signature is checked. Otherwise a
+refusal writes nothing but a `polar-webhook-refused` incident naming the reason (at
 most a hundred an hour, since anyone can post here), stamps nothing and logs
 `{ "marker": "polar-webhook-refused" }`, so a secret that stops matching shows as a stale
 `last_polar_webhook_at` and, repeated, as an alert. A verified delivery
@@ -156,6 +159,12 @@ acknowledgement, so a status-only monitor can poll the route and a stale alert n
 batch rather than read as the queue's live depth, which only Cloudflare's dashboard shows.
 
 ## Health
+
+`/v1/sync/health`, `/v1/sync/alerts`, `/v1/sync/reconcile` and `/v1/sync/polar-reconcile` first
+spend one request of `IP_LIMIT`, 300 per 60 seconds per `CF-Connecting-IP`, answering 429
+`rate-limited` over it and letting the request through when the binding cannot answer
+(`packages/http`). The service-binding `POST /webhook` answers a body past 1 MiB 413
+`payload-too-large`.
 
 `GET /v1/sync/health` answers `{ ok, repos, subscriptions, seats, last_webhook_at,
 last_reconcile_at, last_reconcile_corrections, last_polar_webhook_at, last_polar_reconcile_at,

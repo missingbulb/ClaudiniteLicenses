@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Stages a Worker's versions for the deploy, non-interactively: uploads a version without serving
 // it, reads the active deployment, splits traffic between the live version and a new one, promotes
-// one version to all of it, rolls back to a named one, and applies the config's routes and crons.
+// one version to all of it, rolls back to a named one, applies the config's routes and crons, and
+// reads the tag a version was uploaded with.
 // Each command runs wrangler with `-y` wherever it would prompt, prints wrangler's own output on
 // stderr, and prints one JSON object as its last stdout line (also written to --json); it exits 1
 // with wrangler's output when wrangler fails, and 2 on a usage error before calling wrangler.
@@ -12,6 +13,7 @@
 //   node tools/stage.mjs promote  --config <wrangler.jsonc> --id <id>
 //   node tools/stage.mjs rollback --config <wrangler.jsonc> --id <id>
 //   node tools/stage.mjs triggers --config <wrangler.jsonc>
+//   node tools/stage.mjs tag      --config <wrangler.jsonc> --id <id>
 //   (every command takes [--json <path>])
 //
 // A rollback deploys the named version at 100% rather than running `wrangler rollback`, whose
@@ -137,6 +139,20 @@ export function triggers({ config }) {
   return { ok: true };
 }
 
+/** The `--tag` a version was uploaded with, or null when it carries none. @param {{ config: string, id: string }} o @returns {{ tag: string | null }} */
+export function tag({ config, id }) {
+  const res = must(["versions", "view", id, "--json", "-c", config]);
+  const text = stripAnsi(res.stdout);
+  let parsed;
+  try {
+    parsed = JSON.parse(text.slice(text.indexOf("{")));
+  } catch {
+    throw new StageError(`wrangler versions view printed no JSON version:\n${res.stdout}`);
+  }
+  const t = parsed?.annotations?.["workers/tag"];
+  return { tag: typeof t === "string" && t.length > 0 ? t : null };
+}
+
 /** @param {string[]} argv */
 function run(argv) {
   const [command, ...rest] = argv;
@@ -181,8 +197,11 @@ function run(argv) {
     case "triggers":
       out = triggers({ config });
       break;
+    case "tag":
+      out = tag({ config, id: need("id") });
+      break;
     default:
-      throw new StageError(`unknown command ${JSON.stringify(command)} (want upload, status, split, promote, rollback or triggers)`, 2);
+      throw new StageError(`unknown command ${JSON.stringify(command)} (want upload, status, split, promote, rollback, triggers or tag)`, 2);
   }
   console.log(JSON.stringify(out));
   if (values.json) writeFileSync(values.json, JSON.stringify(out) + "\n");

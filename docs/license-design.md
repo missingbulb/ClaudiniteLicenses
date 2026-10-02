@@ -272,6 +272,8 @@ Every binary ever released can verify every key the server will ever issue, beca
 | A team rotates people to stay under the count | The 30-day window counts everyone who held a seat in it; seats cannot be released early |
 | Someone blocks the license server on a desktop | The desktop runs on its last key for 7 days, then applies the degraded state |
 | Someone patches the binary | Accepted, as for any offline-verified tool; the server still sees every key it issues |
+| A flood of unauthenticated requests spends D1, GitHub or Polar | Every unauthenticated route meets a per-address cap before it touches any of them; the key Worker's per-owner limit stands behind it for authenticated callers |
+| Unsigned deliveries to the Polar webhook route | Refused before any write past the per-address cap; the refusals it does record are capped per hour so the table cannot grow without bound |
 
 Two side effects of the web path are handled in the member repo. A key request is a `repository_dispatch`, which also starts any member workflow listening to every dispatch type, so a world check requires such workflows to list their `types`. The server keeps its per-owner rate limit and its alert on keys requested for repos without the App.
 

@@ -39,6 +39,8 @@ export interface World {
   /** What WRITES.sendBatch does; resolves at once unless a test says otherwise. */
   send: () => Promise<void>;
   limited: Record<string, number>;
+  /** Each IP_LIMIT bucket's count. */
+  ipLimited: Record<string, number>;
   user: () => Response;
   repo: () => Response;
   oauth: () => Response;
@@ -69,6 +71,7 @@ export function resetWorld(): World {
     waited: [],
     send: async () => {},
     limited: {},
+    ipLimited: {},
     user: () => Response.json({ id: 3003, login: "acme-dev", type: "User" }),
     repo: () => Response.json(githubRepo()),
     oauth: () => Response.json({ access_token: "ghu_new", expires_in: 28800, refresh_token: "ghr_new", refresh_token_expires_in: 15811200 }),
@@ -124,8 +127,18 @@ export function countingDb(inner: D1Database, opts: { broken?: boolean } = {}): 
   });
 }
 
-export function env(over: Partial<Env> & { brokenDb?: boolean; limit?: number } = {}): Env {
-  const { brokenDb, limit = 600, ...rest } = over;
+/** The pool's real IP_LIMIT would count every test's requests on one bucket; this one counts per key and allows `ipLimit` a key. */
+export function ipLimiter(ipLimit: number): RateLimit {
+  return {
+    limit: async ({ key }: { key: string }) => {
+      world.ipLimited[key] = (world.ipLimited[key] ?? 0) + 1;
+      return { success: world.ipLimited[key]! <= ipLimit };
+    },
+  } as RateLimit;
+}
+
+export function env(over: Partial<Env> & { brokenDb?: boolean; limit?: number; ipLimit?: number } = {}): Env {
+  const { brokenDb, limit = 600, ipLimit = Number.POSITIVE_INFINITY, ...rest } = over;
   return {
     ...base,
     DB: countingDb(base.DB, { broken: brokenDb }),
@@ -136,6 +149,7 @@ export function env(over: Partial<Env> & { brokenDb?: boolean; limit?: number } 
         return { success: world.limited[key]! <= limit };
       },
     } as RateLimit,
+    IP_LIMIT: ipLimiter(ipLimit),
     WRITES: {
       send: async () => {
         throw new Error("the key Worker sends batches only");
