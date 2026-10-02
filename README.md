@@ -116,9 +116,10 @@ out a 429 `rate-limited` and asks again rather than failing.
 `tools/key-counts.mjs`. It first looks for the one point the read-back's own `actions-key` refusal
 wrote (engine version `deploy-read-back`, this repository's id), asking for about 95 seconds, then
 prints the last 7 days' counts by plan, outcome and path to the summary's `## Key counts` section.
-A token without `Account Analytics: Read` prints `unavailable` there and warns, naming #30; a point
-not yet queryable also only warns. Neither fails the deploy. A thrown tool fails the step and rolls
-back like any other read-back. Anyone holding a token with that permission can read the same counts:
+A token without `Account Analytics: Read` prints `unavailable` there and warns, naming #30; a
+dataset no point has created yet, a point not yet queryable, and the tool itself failing each only
+warn too. The step runs after promotion and reads, never judges, so it never fails the deploy.
+Anyone holding a token with that permission can read the same counts:
 
 ```
 CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... node tools/key-counts.mjs --since 7d --group plan,outcome,path

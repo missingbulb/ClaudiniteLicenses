@@ -554,50 +554,54 @@ jobs:
           STARTED: ${{ steps.read-back.outputs.started }}
           POINT_AT: ${{ steps.read-back.outputs.point_at }}
         run: |
-          # Reading the counts needs Account Analytics: Read on the token, which the deploy owns no
-          # proof of (#30), and how soon a point is queryable is not documented: both answers are
-          # warnings, never a rollback of a release the read-back judged healthy. A tool that throws
-          # fails the step like any other read-back.
-          probe=$(node tools/key-counts.mjs --probe)
+          # Observability only: it runs after promotion, where any failure rolls back a healthy
+          # release, so every answer, a missing permission (#30), a missing dataset, a point not yet
+          # queryable or the tool failing, is a warning and the step ends 0.
+          err="$RUNNER_TEMP/key-counts.err"
+          summary() { { echo "## Key counts"; echo; printf '%s\n' "$@"; } >> "$GITHUB_STEP_SUMMARY"; }
+          failed() { msg="tools/key-counts.mjs $1 failed: $(tr '\n' ' ' < "$err" | cut -c1-300)"; echo "::warning::$msg"; }
+          if ! probe=$(node tools/key-counts.mjs --probe 2> "$err"); then
+            failed --probe
+            summary "the counts could not be read: $msg"
+            exit 0
+          fi
           echo "$probe"
           case "$probe" in
             "key counts: unavailable"*)
               echo "::warning::$probe"
-              {
-                echo "## Key counts"
-                echo
-                echo "unavailable: the CLOUDFLARE_API_TOKEN lacks Account Analytics: Read; #30 is the owner's step."
-              } >> "$GITHUB_STEP_SUMMARY"
+              summary "unavailable: the CLOUDFLARE_API_TOKEN lacks Account Analytics: Read; #30 is the owner's step."
+              exit 0 ;;
+            "key counts: available, dataset claudinite_key_counts absent")
+              echo "::warning::$probe"
+              summary "the dataset does not exist yet: no point has been written."
               exit 0 ;;
           esac
           # The read-back's actions-key refusal wrote one point: engine version deploy-read-back,
-          # indexed by this repository's id, path actions.
-          found=""
+          # indexed by this repository's id, path actions, a little before point_at.
+          since=$(( ${POINT_AT:-$STARTED} - 5 ))
+          line=""
           for wait in 0 5 10 20 30 30; do
             [ "$wait" = 0 ] || sleep "$wait"
-            point=$(node tools/key-counts.mjs --since "$STARTED" --repo-id "$GITHUB_REPOSITORY_ID" --engine-version deploy-read-back --group outcome,path --json)
+            if ! point=$(node tools/key-counts.mjs --since "$since" --repo-id "$GITHUB_REPOSITORY_ID" --engine-version deploy-read-back --group outcome,path --json 2> "$err"); then
+              failed --since
+              line="this run's point could not be read: $msg"
+              break
+            fi
             if P="$point" node -e 'const p=JSON.parse(process.env.P);process.exit(p.available&&p.rows.some((r)=>r.requests>=1)?0:1)'; then
-              found="this run's point read back after $(( $(date +%s) - ${POINT_AT:-$STARTED} )) s"
+              line="this run's point read back after $(( $(date +%s) - ${POINT_AT:-$STARTED} )) s"
+              echo "key counts: $line"
               break
             fi
           done
-          if [ -n "$found" ]; then
-            line="key counts: $found"
-            echo "$line"
-          else
-            line="key counts: this run's point was not queryable within 95 s"
-            echo "::warning::$line"
+          if [ -z "$line" ]; then
+            line="this run's point was not queryable within 95 s"
+            echo "::warning::key counts: $line"
           fi
-          week=$(node tools/key-counts.mjs --since 7d --group plan,outcome,path --markdown)
-          {
-            echo "## Key counts"
-            echo
-            echo "${line#key counts: }."
-            echo
-            echo "### The last 7 days, by plan, outcome and path"
-            echo
-            echo "$week"
-          } >> "$GITHUB_STEP_SUMMARY"
+          if ! week=$(node tools/key-counts.mjs --since 7d --group plan,outcome,path --markdown 2> "$err"); then
+            failed "--since 7d"
+            week="The week's counts could not be read: $msg"
+          fi
+          summary "$line." "" "### The last 7 days, by plan, outcome and path" "" "$week"
       - if: steps.gate.outputs.skip == 'false'
         name: Read back the alerts
         run: |
