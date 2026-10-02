@@ -19,6 +19,7 @@ async function consume(bodies: unknown[], queue = WRITES_QUEUE, e = env) {
   return getQueueResult(batch, ctx);
 }
 
+const ID = (env as unknown as { CF_VERSION_METADATA: { id: string } }).CF_VERSION_METADATA.id;
 const all = async (sql: string) => (await env.DB.prepare(sql).all()).results;
 const stampOf = async (name: string) => env.DB.prepare("SELECT at, detail FROM sync_state WHERE name = ?").bind(name).first<{ at: number; detail: string | null }>();
 
@@ -107,6 +108,32 @@ describe("the writes queue consumer", () => {
     const lag = await stampOf("queue_lag_s");
     expect(Number(lag!.detail)).toBeGreaterThanOrEqual(40);
     expect(Number(lag!.detail)).toBeLessThan(45);
+  });
+
+  it("stamps last_queue_version with the running version beside last_queue_at, on a writes batch and on a dead-letter batch", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    await consume([usage()]);
+    const at = await stampOf("last_queue_at");
+    expect(await stampOf("last_queue_version")).toEqual({ at: at!.at, detail: ID });
+    expect(at!.at).toBeGreaterThanOrEqual(now);
+    await freshDatabase();
+    await consume([usage()], DEAD_LETTER_QUEUE);
+    const dead = await stampOf("last_dead_letter_at");
+    expect(await stampOf("last_queue_version")).toEqual({ at: dead!.at, detail: ID });
+  });
+
+  it("stamps neither last_queue_at nor last_queue_version when the batch is retried", async () => {
+    const broken = { ...env, DB: new Proxy(env.DB, { get: (t, p) => (p === "batch" ? async () => Promise.reject(new Error("D1_ERROR: acme outage")) : Reflect.get(t, p)) }) as D1Database };
+    await consume([usage()], WRITES_QUEUE, broken);
+    expect(await stampOf("last_queue_version")).toBeNull();
+  });
+
+  it("writes the deploy's deploy-read-back message as an incidents row and acks it", async () => {
+    const detail = "https://github.com/missingbulb/ClaudiniteLicenses/actions/runs/1";
+    const res = await consume([{ v: 1, kind: "incident", at: T, marker: "deploy-read-back", detail }]);
+    expect(res).toMatchObject({ outcome: "ok", ackAll: true, retryBatch: { retry: false } });
+    expect(await all("SELECT marker, at, detail FROM incidents")).toEqual([{ marker: "deploy-read-back", at: T, detail }]);
+    expect((await stampOf("last_queue_version"))!.detail).toBe(ID);
   });
 
   it("acks and logs a message it does not know rather than retrying it forever", async () => {

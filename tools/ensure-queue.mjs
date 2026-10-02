@@ -6,14 +6,16 @@
 //   node tools/ensure-queue.mjs --name claudinite-licenses-writes [--dlq]
 import { parseArgs } from "node:util";
 
+const API = "https://api.cloudflare.com/client/v4";
+
 /**
- * @param {{ base?: string, token: string, accountId: string, names: string[] }} opts
- * @returns {Promise<{ name: string, created: boolean, id: string }[]>}
+ * One call to Cloudflare's API, throwing on a refusal; a 401 or 403 names the permission the token lacks.
+ * @param {{ base?: string, token: string }} opts
+ * @returns {(method: string, path: string, body?: unknown) => Promise<any>}
  */
-export async function ensureQueues({ base = "https://api.cloudflare.com/client/v4", token, accountId, names }) {
+export function queuesCall({ base = API, token }) {
   const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
-  /** @param {string} method @param {string} path @param {unknown} [body] */
-  const call = async (method, path, body) => {
+  return async (method, path, body) => {
     const res = await fetch(`${base}${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
     const json = await res.json().catch(() => ({}));
     if (!res.ok || json.success === false) {
@@ -22,6 +24,15 @@ export async function ensureQueues({ base = "https://api.cloudflare.com/client/v
     }
     return json;
   };
+}
+
+/**
+ * Every queue the account holds, read page by page: the name→id lookup.
+ * @param {{ base?: string, token: string, accountId: string }} opts
+ * @returns {Promise<{ queue_id: string, queue_name: string }[]>}
+ */
+export async function listQueues({ base = API, token, accountId }) {
+  const call = queuesCall({ base, token });
   const path = `/accounts/${accountId}/queues`;
   /** @type {{ queue_id: string, queue_name: string }[]} */
   const held = [];
@@ -31,6 +42,17 @@ export async function ensureQueues({ base = "https://api.cloudflare.com/client/v
     const pages = json.result_info?.total_pages ?? 1;
     if (page >= pages || (json.result ?? []).length === 0) break;
   }
+  return held;
+}
+
+/**
+ * @param {{ base?: string, token: string, accountId: string, names: string[] }} opts
+ * @returns {Promise<{ name: string, created: boolean, id: string }[]>}
+ */
+export async function ensureQueues({ base = API, token, accountId, names }) {
+  const call = queuesCall({ base, token });
+  const path = `/accounts/${accountId}/queues`;
+  const held = await listQueues({ base, token, accountId });
   const out = [];
   for (const name of names) {
     const found = held.find((q) => q.queue_name === name);

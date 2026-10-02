@@ -12,7 +12,7 @@ import { pruneIncidents } from "./incidents.ts";
 import { polarReconcileDue, reconcilePolar } from "./polar-reconcile.ts";
 import { polarWebhook } from "./polar-webhook.ts";
 import { githubClient, reconcileInstallations } from "./reconcile.ts";
-import { applyWebhook } from "./repos.ts";
+import { applyWebhook, stamp } from "./repos.ts";
 import { consumeWrites } from "./writes.ts";
 import { BODY_MAX_WEBHOOK, ipLimited, ipLimitState, readJsonCapped, withinIpLimit, type IpLimitEnv, type IpLimitState } from "../../../packages/http/src/index.ts";
 import { versionOf, withVersion, type VersionEnv } from "../../../packages/version/src/index.ts";
@@ -67,8 +67,12 @@ async function health(env: Env, ipLimit: IpLimitState | null): Promise<Response>
     last_polar_reconcile_corrections: count("last_polar_reconcile_corrections"),
     last_polar_reconcile_error: row("last_polar_reconcile_error")?.detail ?? null,
     last_queue_at: at("last_queue_at"),
+    last_queue_version: row("last_queue_version")?.detail ?? null,
     queue_lag_s: count("queue_lag_s"),
     last_dead_letter_at: at("last_dead_letter_at"),
+    last_cron_at: at("last_cron_at"),
+    last_cron: row("last_cron_at")?.detail ?? null,
+    last_cron_version: row("last_cron_version")?.detail ?? null,
     paying_uncovered: count("paying_uncovered"),
     polar_webhook_secret: Boolean(env.POLAR_WEBHOOK_SECRET),
     ip_limit: ipLimit,
@@ -160,9 +164,13 @@ export default {
   async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     const at = Math.floor(controller.scheduledTime / 1000);
     const cron = controller.cron;
-    // Which version a split hands a cron is not documented; this line is how a real run learns it.
+    // Which version a split hands a cron is not documented; last_cron_version answers it from health.
     console.log(JSON.stringify({ invocation: "scheduled", cron, version: versionOf(env) }));
     const run = async () => {
+      // Every cron, the hourly one included, stamps before its work, so a stale cron is a stale stamp.
+      await env.DB.batch([stamp(env.DB, "last_cron_at", at, cron), stamp(env.DB, "last_cron_version", at, versionOf(env))]).catch((err) =>
+        console.error(JSON.stringify({ cron: "stamp-failed", error: String(err) })),
+      );
       if (cron === HOURLY_CRON) {
         if (await polarReconcileDue(env.DB, at)) await logged(POLAR_LOG, cron, reconcilePolar(env, at));
         return;

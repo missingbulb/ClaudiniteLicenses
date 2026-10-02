@@ -83,6 +83,10 @@ describe("evaluateAlerts, one case each side of every threshold", () => {
     });
   }
 
+  it("ignores deploy-read-back rows, which every deploy writes on purpose", () => {
+    expect(ids(healthy(), { "deploy-read-back": { count: 50, first: NOW - 60 } })).toEqual([]);
+  });
+
   it("ignores write-dead-lettered rows, which the dead-letter stamp already alerts on", () => {
     expect(ids(healthy(), { "write-dead-lettered": { count: 9, first: NOW - 60 } })).toEqual([]);
   });
@@ -123,6 +127,13 @@ describe("GET /v1/sync/alerts", () => {
     expect(body.ok).toBe(false);
     expect(body.alerts.map((a) => a.id).sort()).toEqual(["paying-uncovered", "polar-unreachable"]);
     expect(body.alerts.find((a) => a.id === "polar-unreachable")).toMatchObject({ detail: "3 in the last hour" });
+  });
+
+  it("answers 200 over fifty deploy-read-back rows in the last hour", async () => {
+    await env.DB.batch(Array.from({ length: 50 }, (_, i) => env.DB.prepare("INSERT INTO incidents (marker, at) VALUES ('deploy-read-back', ?)").bind(now() - i)));
+    const { status, body } = await alerts();
+    expect(status).toBe(200);
+    expect(body.alerts).toEqual([]);
   });
 
   it("answers 503 sync-d1-unreadable when D1 cannot be read", async () => {

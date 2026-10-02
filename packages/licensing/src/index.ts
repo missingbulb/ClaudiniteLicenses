@@ -131,8 +131,11 @@ export function dayOf(at: number): string {
   return new Date(at * 1000).toISOString().slice(0, 10);
 }
 
-/** The markers the alerts count in a window, each occurrence an `incidents` row. */
-export const INCIDENT_MARKERS = ["d1-unreadable", "polar-unreachable", "app-not-installed", "polar-webhook-refused", "write-dead-lettered", "secondary-rate-limit"] as const;
+/**
+ * The markers an `incidents` row carries, one row per occurrence. The alerts count all but
+ * `deploy-read-back`, the message every deploy pushes onto the writes queue to prove the consumer.
+ */
+export const INCIDENT_MARKERS = ["d1-unreadable", "polar-unreachable", "app-not-installed", "polar-webhook-refused", "write-dead-lettered", "secondary-rate-limit", "deploy-read-back"] as const;
 export type IncidentMarker = (typeof INCIDENT_MARKERS)[number];
 /** The longest `detail` an incident carries. */
 export const INCIDENT_DETAIL_MAX = 200;

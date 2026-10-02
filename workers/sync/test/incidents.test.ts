@@ -27,6 +27,13 @@ describe("pruneIncidents", () => {
     expect(await incidents()).toEqual([{ marker: "d1-unreadable", at: T - 6 * DAY, detail: null }]);
   });
 
+  it("removes an 8-day-old deploy-read-back with the rest", async () => {
+    await seedIncident("deploy-read-back", T - 8 * DAY);
+    await seedIncident("deploy-read-back", T - 6 * DAY);
+    expect(await pruneIncidents(env.DB, T)).toBe(1);
+    expect(await incidents()).toEqual([{ marker: "deploy-read-back", at: T - 6 * DAY, detail: null }]);
+  });
+
   it("runs at the end of the nightly cron, and not on the hourly one", async () => {
     fakeGitHub();
     fakePolar();
@@ -42,6 +49,38 @@ describe("pruneIncidents", () => {
     expect(await incidents()).toHaveLength(1);
     await run("17 3 * * *");
     expect(await incidents()).toEqual([]);
+  });
+});
+
+describe("the cron stamps", () => {
+  const ID = (env as unknown as { CF_VERSION_METADATA: { id: string } }).CF_VERSION_METADATA.id;
+  const stampOf = async (name: string) => env.DB.prepare("SELECT at, detail FROM sync_state WHERE name = ?").bind(name).first<{ at: number; detail: string | null }>();
+  const run = async (cron: string, at: number) => {
+    const ctx = createExecutionContext();
+    await worker.scheduled(createScheduledController({ scheduledTime: new Date(at * 1000), cron }), env, ctx);
+    await waitOnExecutionContext(ctx);
+  };
+
+  it("both crons stamp last_cron_at with their own expression and last_cron_version with the running version", async () => {
+    fakeGitHub();
+    fakePolar();
+    const now = Math.floor(Date.now() / 1000);
+    await run("47 * * * *", now - 60);
+    expect(await stampOf("last_cron_at")).toEqual({ at: now - 60, detail: "47 * * * *" });
+    expect(await stampOf("last_cron_version")).toEqual({ at: now - 60, detail: ID });
+    await run("17 3 * * *", now);
+    expect(await stampOf("last_cron_at")).toEqual({ at: now, detail: "17 3 * * *" });
+    expect(await stampOf("last_cron_version")).toEqual({ at: now, detail: ID });
+  });
+
+  it("stamps on the hourly cron even when the Polar reconcile is not due, and before the work fails", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    await env.DB.prepare("INSERT INTO sync_state (name, at) VALUES ('last_polar_reconcile_at', ?)").bind(now).run();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => Promise.reject(new Error("acme outage")));
+    await run("47 * * * *", now);
+    await run("17 3 * * *", now + 1);
+    expect(await stampOf("last_cron_at")).toEqual({ at: now + 1, detail: "17 3 * * *" });
+    expect((await stampOf("last_cron_version"))!.detail).toBe(ID);
   });
 });
 
