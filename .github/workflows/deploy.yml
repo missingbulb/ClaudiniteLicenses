@@ -429,22 +429,32 @@ jobs:
       - if: steps.gate.outputs.skip == 'false'
         name: Prove the per-address cap is live
         run: |
-          # From this runner's one address, more than 300 health reads in a minute must meet a 429 that
-          # names its version. The limiter counts per location and catches up in the background, so up
-          # to 400 are sent before the cap counts as absent.
-          for i in $(seq 1 400); do
-            code=$(curl -sS -o /dev/null -D "$RUNNER_TEMP/cap.headers" -w '%{http_code}' --max-time 20 https://license.claudinite.com/v1/key/health || true)
-            [ "$code" = 429 ] && break
+          # From this runner's one address, more than 300 health reads inside the cap's 60-second period
+          # must meet a 429 that names its version. Sent one at a time, 400 reads can outlast the period
+          # and never meet the cap, so they go 25 at a time; the limiter counts per location and catches
+          # up in the background, so 400 are sent before the cap counts as absent.
+          dir="$RUNNER_TEMP/cap"
+          rm -rf "$dir" && mkdir -p "$dir"
+          started=$(date +%s)
+          seq 1 400 | xargs -P 25 -I{} sh -c 'curl -sS -o /dev/null -D "$1/$2.headers" -w "%{http_code}" --max-time 20 https://license.claudinite.com/v1/key/health > "$1/$2.code" 2>/dev/null || true' _ "$dir" {}
+          elapsed=$(( $(date +%s) - started ))
+          sent=$(find "$dir" -name '*.code' | wc -l)
+          refused=$(grep -lx 429 "$dir"/*.code 2>/dev/null | wc -l)
+          echo "sent $sent health reads in ${elapsed}s, $refused answered 429"
+          if [ "$refused" -eq 0 ]; then
+            echo "::error::$sent health reads from one address in ${elapsed}s met no 429; the per-address cap on claudinite-key is not live"
+            exit 1
+          fi
+          version=""
+          for code in $(grep -lx 429 "$dir"/*.code); do
+            version=$(grep -i '^x-claudinite-version: ' "${code%.code}.headers" | cut -d' ' -f2 | tr -d '\r')
+            [ -n "$version" ] && break
           done
-          if [ "$code" != 429 ]; then
-            echo "::error::400 health reads from one address in a minute met no 429; the per-address cap on claudinite-key is not live"
+          if [ -z "$version" ]; then
+            echo "::error::none of the $refused 429s carried a version header, so no Worker gave them"
             exit 1
           fi
-          if ! grep -qi '^x-claudinite-version: ' "$RUNNER_TEMP/cap.headers"; then
-            echo "::error::the 429 after $i health reads carried no version header, so no Worker gave it"
-            exit 1
-          fi
-          echo "ok 429 after $i health reads, version $(grep -i '^x-claudinite-version: ' "$RUNNER_TEMP/cap.headers" | cut -d' ' -f2 | tr -d '\r')"
+          echo "ok 429 from version $version, $refused of $sent health reads refused in ${elapsed}s"
       - if: steps.gate.outputs.skip == 'false'
         name: Wait out the cap's period before the final probe
         # The cap's period is 60 seconds; the final probe then starts with a fresh budget.

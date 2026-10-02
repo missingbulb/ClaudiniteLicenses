@@ -82,9 +82,11 @@ gh variable delete KEY_FAIL_OPEN
 gh workflow run deploy.yml
 ```
 
-The read-back also proves the per-address cap from outside: it reads `/v1/key/health` until a
-429 arrives, failing the run if none has within 400 reads, then waits a minute for the window to
-clear before the final probe.
+The read-back also proves the per-address cap from outside: it sends 400 reads of
+`/v1/key/health`, 25 at a time so they land inside the cap's minute, and fails the run unless a 429
+carrying a version header comes back, then waits a minute for the window to clear before the final
+probe. The canary probe's pinned walks can meet the cap too once both versions carry it; it waits
+out a 429 `rate-limited` and asks again rather than failing.
 
 Three rules keep this safe:
 

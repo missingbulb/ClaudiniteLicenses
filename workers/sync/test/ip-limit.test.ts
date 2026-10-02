@@ -91,12 +91,13 @@ describe("the sync Worker's per-address cap", () => {
     expect(await incidents()).toBe(0);
   });
 
+  // Three hundred answers through the Worker, each with its own D1 read on some routes: far past the default 5 s on a loaded runner.
   it("answers the 300th health read from one address and refuses the 301st, while another address still answers", async () => {
     const e = env(300);
     for (let i = 1; i <= 300; i++) expect((await send(request("GET", "/v1/sync/health"), e)).status, String(i)).toBe(200);
     expect((await send(request("GET", "/v1/sync/health"), e)).status).toBe(429);
     expect((await send(request("GET", "/v1/sync/health", "192.0.2.2"), e)).status).toBe(200);
-  });
+  }, 30_000);
 
   it("lets requests through when the limiter throws, logging ip-limit-unavailable once", async () => {
     const e = env(0, { IP_LIMIT: { limit: async () => Promise.reject(new Error("acme limiter outage")) } });

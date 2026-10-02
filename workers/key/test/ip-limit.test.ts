@@ -52,6 +52,7 @@ describe("the key Worker's per-address cap", () => {
     });
   }
 
+  // Three hundred answers through the Worker, each with its own D1 read on some routes: far past the default 5 s on a loaded runner.
   it("answers the 300th health read from one address in a minute and refuses the 301st, while another address still answers", async () => {
     const e = env({ ipLimit: 300 });
     for (let i = 1; i <= 300; i++) expect((await call("/v1/key/health", costly("GET", "/v1/key/health"), e)).status, String(i)).toBe(200);
@@ -60,7 +61,7 @@ describe("the key Worker's per-address cap", () => {
     expect(world.dbCalls).toBe(db);
     expect((await call("/v1/key/health", costly("GET", "/v1/key/health", "192.0.2.2"), e)).status).toBe(200);
     expect(world.logs.filter((l) => l.includes('"ip-limited"'))).toHaveLength(1);
-  });
+  }, 30_000);
 
   it("lets requests through when the limiter throws, logging ip-limit-unavailable once", async () => {
     const e = env({ IP_LIMIT: { limit: async () => Promise.reject(new Error("acme limiter outage")) } as unknown as RateLimit });

@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { IP_LIMIT_PERIOD_S } from "../../packages/http/src/index.ts";
 import { perAddressCap, routeTable } from "../route-table.mjs";
 
 // The security review's route table against the code: every route a Worker answers is a row, every
@@ -65,6 +66,16 @@ describe("the security review's route table", () => {
       const file = /`([^`]+\.test\.ts)`/.exec(r.test)?.[1];
       expect(file, `${r.worker} ${r.method} ${r.path}: ${JSON.stringify(r.test)}`).toBeTruthy();
       expect(existsSync(join(ROOT, file!)), file).toBe(true);
+    }
+  });
+
+  it("binds IP_LIMIT on every Worker with a per-address row, each at the period the 429's Retry-After names", () => {
+    const capped = [...new Set(rows.filter(perAddressCap).map((r) => r.worker))].sort();
+    expect(capped).toEqual(["key", "public-key", "sync"]);
+    for (const w of capped) {
+      const config = JSON.parse(read(`workers/${w}/wrangler.jsonc`).replace(/^\s*\/\/.*$/gm, ""));
+      const binding = (config.ratelimits ?? []).find((b: { name: string }) => b.name === "IP_LIMIT");
+      expect(binding?.simple, w).toEqual({ limit: 300, period: IP_LIMIT_PERIOD_S });
     }
   });
 });

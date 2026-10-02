@@ -26,6 +26,8 @@ export interface IpLimitEnv {
 }
 
 const MINUTE_MS = 60_000;
+/** The binding's `simple.period` in every wrangler.jsonc, in seconds: what a refused caller waits. */
+export const IP_LIMIT_PERIOD_S = 60;
 
 // Per isolate: how many requests the cap refused since the last ip-limited line, and when each
 // marker last logged, so a flood writes one line a minute rather than one per request.
@@ -46,9 +48,29 @@ export function resetIpLimitLog(): void {
   for (const k of Object.keys(lastLine)) delete lastLine[k];
 }
 
+/**
+ * The bucket an address counts against: an IPv4 address whole, an IPv6 address by its /64, since one
+ * host commonly holds a whole /64 and would otherwise spend a fresh bucket per address. An
+ * IPv4-mapped IPv6 address counts as its IPv4 address; anything unparsable counts as itself.
+ */
+export function addressKey(ip: string): string {
+  if (!ip.includes(":")) return ip;
+  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(ip);
+  if (mapped) return mapped[1]!;
+  const halves = ip.split("::");
+  if (halves.length > 2) return ip;
+  const groups = (part: string | undefined) => (part ? part.split(":") : []);
+  const head = groups(halves[0]);
+  const tail = groups(halves[1]);
+  const fill = halves.length === 2 ? 8 - head.length - tail.length : 0;
+  const full = [...head, ...Array<string>(Math.max(fill, 0)).fill("0"), ...tail];
+  if (full.length !== 8 || !full.every((g) => /^[0-9a-f]{1,4}$/i.test(g))) return ip;
+  return `${full.slice(0, 4).map((g) => parseInt(g, 16).toString(16)).join(":")}::/64`;
+}
+
 /** Whether the caller's address is within its cap; true when the limiter cannot answer. */
 export async function withinIpLimit(env: IpLimitEnv, req: Request): Promise<boolean> {
-  const ip = req.headers.get("CF-Connecting-IP") ?? "unknown";
+  const ip = addressKey(req.headers.get("CF-Connecting-IP") ?? "unknown");
   let success: boolean;
   try {
     if (!env.IP_LIMIT) throw new Error("IP_LIMIT is not bound");
@@ -64,7 +86,7 @@ export async function withinIpLimit(env: IpLimitEnv, req: Request): Promise<bool
 }
 
 export function ipLimited(): Response {
-  return Response.json({ refused: IP_LIMITED }, { status: 429 });
+  return Response.json({ refused: IP_LIMITED }, { status: 429, headers: { "Retry-After": String(IP_LIMIT_PERIOD_S) } });
 }
 
 export function tooLarge(): Response {

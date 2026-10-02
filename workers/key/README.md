@@ -141,8 +141,8 @@ degraded grant. Refusals: 401 `{ "refused": "key-invalid", "reason" }` with `ver
 
 **Per-address cap and body caps.** Every public route (`/v1/session-key`, `/v1/actions-key`,
 `/v1/item-grant`, `/v1/login/config`, `/v1/login/refresh`, `/v1/key/health`) first spends one
-request of `IP_LIMIT`, 300 per 60 seconds per `CF-Connecting-IP`, before anything else is read;
-over it, 429 `rate-limited`. The count is Cloudflare's, per location and approximate; when the
+request of `IP_LIMIT`, 300 per 60 seconds per `CF-Connecting-IP` (an IPv6 caller by its /64), before anything else is read;
+over it, 429 `rate-limited` with `Retry-After: 60`. The count is Cloudflare's, per location and approximate; when the
 binding cannot answer the request passes and an `ip-limit-unavailable` line is logged once a
 minute. A JSON body past 16 KiB, or a `Content-Length` claiming more, is refused 413
 `body-too-large` before GitHub, the JWKS or D1 is asked anything; the service-binding `POST

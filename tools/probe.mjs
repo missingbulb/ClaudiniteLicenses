@@ -3,8 +3,11 @@
 // ten named checks: the three health routes, the alerts endpoint, the router's signature check, the
 // desktop path reaching GitHub, the token refresh refusing a body with no token, Polar's webhook
 // refusing an unsigned delivery, the service-binding-only paths answered by no Worker, and, with an
-// OIDC token, the Actions path's verifier and pin. Each sends one request (the private paths two),
-// so the probe never spends a live per-address cap; the deploy's read-back proves the cap.
+// OIDC token, the Actions path's verifier and pin. Unpinned, each sends one request (the private
+// paths two); the deploy's read-back proves the per-address cap. A pinned walk can send dozens from
+// one address, so an answer of 429 `rate-limited` is the cap, not the check's verdict: the probe
+// waits out the cap's period and asks again, up to CAP_WAITS times per request, and the row
+// reports `cap_waits`.
 // It prints one line per check, writes a JSON summary with --json, and exits 1 when any check
 // fails. With --issue it keeps one standing issue, titled and labelled below: a failing run opens
 // it or comments on the open one, a passing run closes it. The schedule and the deploy both run it.
@@ -25,7 +28,7 @@
 // versions were still serving some requests while the promotion spread (ClaudiniteLicenses#18).
 //
 //   node tools/probe.mjs --base <url> [--oidc-token-env NAME] [--issue --repo owner/name --token-env GITHUB_TOKEN] [--json <path>] [--attempts N]
-//                        [--expect-version <worker>=<id>[,<worker>=<id>...]]
+//                        [--expect-version <worker>=<id>[,<worker>=<id>...]] [--cap-wait-ms N]
 import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
@@ -39,10 +42,13 @@ export const AFFINITY_HEADER = "Cloudflare-Workers-Version-Key";
 /** One key in ten lands on a 10% version, so missing it in this many keys is a 0.2% event. */
 export const VERSION_KEYS = 60;
 export const WORKERS = ["public-key", "key", "sync", "router"];
+/** The per-address cap's period, 60 seconds, and a second of slack. */
+export const CAP_WAIT_MS = 61_000;
+export const CAP_WAITS = 2;
 
 /**
  * @typedef {{ status: number | null, body: any, text: string, version: string | null, headers: Record<string, string>, error?: string, latency_ms: number }} Answer
- * @typedef {{ name: string, ok: boolean, status: number | null, version: string | null, latency_ms: number, alerts?: { id: string, since?: number | null, detail?: string | null }[], detail?: string, headers?: Record<string, string> }} Check
+ * @typedef {{ name: string, ok: boolean, status: number | null, version: string | null, latency_ms: number, cap_waits?: number, alerts?: { id: string, since?: number | null, detail?: string | null }[], detail?: string, headers?: Record<string, string> }} Check
  * @typedef {(extra?: Record<string, string>) => Promise<Answer>} Request
  */
 
@@ -190,29 +196,50 @@ async function reachVersion(request, id) {
   return { answer, wrong: `version ${id} not reached in ${VERSION_KEYS} keys` };
 }
 
+/** @param {Answer} a */
+const capped = (a) => a.status === 429 && a.body?.refused === "rate-limited";
+
+/**
+ * `request`, waiting `waitMs` and asking again whenever the per-address cap answers, at most
+ * CAP_WAITS times per call; `waits.count` counts the waits.
+ * @param {Request} request @param {number} waitMs @param {{ count: number }} waits @returns {Request}
+ */
+function throughCap(request, waitMs, waits) {
+  return async (extra) => {
+    for (let w = 0; ; w++) {
+      const a = await request(extra);
+      if (!capped(a) || w >= CAP_WAITS) return a;
+      waits.count++;
+      await new Promise((ok) => setTimeout(ok, waitMs));
+    }
+  };
+}
+
 /**
  * Runs every check, retrying a failing one up to `attempts` times in all. A check whose Worker has
  * an id in `expect` is judged on that version's answer only.
- * @param {{ base: string, oidc?: string | null, attempts?: number, retryDelayMs?: number, expect?: Record<string, string> }} opts
+ * @param {{ base: string, oidc?: string | null, attempts?: number, retryDelayMs?: number, capWaitMs?: number, expect?: Record<string, string> }} opts
  * @returns {Promise<{ base: string, checked_at: string, ok: boolean, checks: Check[] }>}
  */
-export async function runProbe({ base, oidc = null, attempts = 1, retryDelayMs = RETRY_DELAY_MS, expect = {} }) {
+export async function runProbe({ base, oidc = null, attempts = 1, retryDelayMs = RETRY_DELAY_MS, capWaitMs = CAP_WAIT_MS, expect = {} }) {
   /** @type {Check[]} */
   const results = [];
   for (const c of checks(base.replace(/\/$/, ""), oidc)) {
     const pin = c.worker ? (expect[c.worker] ?? null) : null;
+    const waits = { count: 0 };
+    const request = throughCap(c.request, capWaitMs, waits);
     /** @param {Answer} a */
     const judged = (a) => (a.error ? a.error : (c.judge(a) ?? (c.worker && !a.version ? "version header missing" : null)));
     let a;
     let wrong;
     for (let i = 1; ; i++) {
       if (pin) {
-        const reached = await reachVersion(c.request, pin);
+        const reached = await reachVersion(request, pin);
         a = reached.answer;
         wrong = reached.wrong ?? judged(a);
         if (wrong && !reached.wrong) wrong = `version ${pin}: ${wrong}`;
       } else {
-        a = await c.request();
+        a = await request();
         wrong = judged(a);
       }
       if (!wrong || i >= attempts) break;
@@ -220,6 +247,7 @@ export async function runProbe({ base, oidc = null, attempts = 1, retryDelayMs =
     }
     /** @type {Check} */
     const check = { name: c.name, ok: !wrong, status: a.status, version: a.version, latency_ms: a.latency_ms };
+    if (waits.count > 0) check.cap_waits = waits.count;
     if (Array.isArray(a.body?.alerts) && a.body.alerts.length > 0) check.alerts = a.body.alerts;
     if (c.worker && !a.version && a.status !== null) check.headers = a.headers;
     if (wrong) check.detail = `${wrong}; got ${a.status ?? "no answer"} ${a.text.slice(0, 200)}`.trim();
@@ -230,7 +258,7 @@ export async function runProbe({ base, oidc = null, attempts = 1, retryDelayMs =
 
 /** @param {Check} c */
 function lines(c) {
-  const head = `${c.ok ? "ok" : "FAIL"} ${c.name} ${c.status ?? "-"} ${c.latency_ms} ms${c.version ? ` ${c.version}` : ""}${c.detail ? `: ${c.detail}` : ""}`;
+  const head = `${c.ok ? "ok" : "FAIL"} ${c.name} ${c.status ?? "-"} ${c.latency_ms} ms${c.version ? ` ${c.version}` : ""}${c.cap_waits ? ` (waited out the per-address cap ${c.cap_waits}x)` : ""}${c.detail ? `: ${c.detail}` : ""}`;
   return [head, ...(c.alerts ?? []).map((a) => `  alert ${typeof a === "string" ? a : `${a.id}${a.detail ? `: ${a.detail}` : ""}`}`), ...(c.headers ? [`  headers ${JSON.stringify(c.headers)}`] : [])];
 }
 
@@ -287,6 +315,7 @@ if (import.meta.filename === process.argv[1]) {
       json: { type: "string" },
       attempts: { type: "string" },
       "expect-version": { type: "string" },
+      "cap-wait-ms": { type: "string" },
     },
   });
   /** @type {Record<string, string>} */
@@ -310,7 +339,7 @@ if (import.meta.filename === process.argv[1]) {
     const oidcName = values["oidc-token-env"];
     const oidc = oidcName ? process.env[oidcName] || null : null;
     if (oidcName && !oidc) console.log(`probe: ${oidcName} is empty, so the Actions check is skipped`);
-    const summary = await runProbe({ base: values.base, oidc, attempts: Number(values.attempts ?? 1), expect });
+    const summary = await runProbe({ base: values.base, oidc, attempts: Number(values.attempts ?? 1), capWaitMs: values["cap-wait-ms"] === undefined ? CAP_WAIT_MS : Number(values["cap-wait-ms"]), expect });
     for (const c of summary.checks) for (const l of lines(c)) console.log(l);
     console.log(JSON.stringify(summary));
     if (values.json) writeFileSync(values.json, JSON.stringify(summary, null, 2) + "\n");

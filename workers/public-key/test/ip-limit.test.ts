@@ -71,12 +71,13 @@ describe("the public key Worker's per-address cap", () => {
     });
   }
 
+  // Three hundred answers through the Worker, each with its own D1 read on some routes: far past the default 5 s on a loaded runner.
   it("answers the 300th request from one address and refuses the 301st, while another address still answers", async () => {
     const e = env(300);
     for (let i = 1; i <= 300; i++) expect((await send("GET", "/v1/public/health", e)).status, String(i)).toBe(200);
     expect((await send("GET", "/v1/public/health", e)).status).toBe(429);
     expect((await send("GET", "/v1/public/health", e, { ip: "192.0.2.2" })).status).toBe(200);
-  });
+  }, 30_000);
 
   it("lets requests through when the limiter throws, logging ip-limit-unavailable once", async () => {
     const e = env(0, { IP_LIMIT: { limit: async () => Promise.reject(new Error("acme limiter outage")) } });

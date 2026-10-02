@@ -32,6 +32,8 @@ interface Stub {
   keys: string[];
   /** Routes whose answer carries no version header, as if no Worker had given it. */
   unversioned: Set<string>;
+  /** How many more requests the key Worker answers with its per-address cap's 429. */
+  keyCapped: number;
   close: () => Promise<void>;
 }
 
@@ -76,6 +78,7 @@ async function startStub(): Promise<Stub> {
     newRoutes: {},
     keys: [] as string[],
     unversioned: new Set<string>(),
+    keyCapped: 0,
   } as unknown as Stub;
   const read = async (req: IncomingMessage) => {
     let raw = "";
@@ -96,6 +99,10 @@ async function startStub(): Promise<Stub> {
       res.end(typeof body === "string" ? body : JSON.stringify(body));
     };
     let m: RegExpExecArray | null;
+    if (worker === "key" && stub.keyCapped > 0) {
+      stub.keyCapped--;
+      return send(429, { refused: "rate-limited" });
+    }
     if (stub.routes[route]) {
       if (route === "POST /v1/session-key") {
         const body = await read(req);
@@ -345,7 +352,7 @@ describe("tools/probe.mjs", () => {
 
 describe("tools/probe.mjs --expect-version", () => {
   const pinned = "public-key=pk-new,key=key-new,router=router-new";
-  type Row = { name: string; ok: boolean; version: string | null; detail?: string };
+  type Row = { name: string; ok: boolean; version: string | null; detail?: string; cap_waits?: number };
   const rows = (json: string) => (JSON.parse(readFileSync(json, "utf8")) as { checks: Row[] }).checks;
 
   it("reports the version that answered every check, with no pin", async () => {
@@ -410,6 +417,33 @@ describe("tools/probe.mjs --expect-version", () => {
     expect(rows(json).find((c) => c.name === "public-health")).toMatchObject({ ok: true, version: "pk-old" });
     expect(stub.keys.filter((k) => k === "canary-60")).toHaveLength(3);
     expect(stub.keys).not.toContain("canary-61");
+  });
+
+  it("waits out the per-address cap's 429 mid-walk and asks again rather than failing the canary", async () => {
+    stub.versions.key!.new = "key-new";
+    stub.keyCapped = 3;
+    const json = join(dir, "probe.json");
+    const res = await probe(["--expect-version", "key=key-new", "--cap-wait-ms", "20", "--json", json]);
+    expect(res.status, res.stdout + res.stderr).toBe(0);
+    const health = rows(json).find((c) => c.name === "key-health")!;
+    expect(health).toMatchObject({ ok: true, version: "key-new", cap_waits: 2 });
+    expect(rows(json).find((c) => c.name === "session-key-upstream")).toMatchObject({ ok: true, version: "key-new" });
+    expect(res.stdout).toMatch(/^ok key-health 200 .* key-new \(waited out the per-address cap 2x\)$/m);
+    // The capped key is asked again, not skipped: canary-1 three times (the third 429 is that key's
+    // answer, from the old version), then the walk goes on to canary-7.
+    expect(stub.keys.slice(0, 9)).toEqual(["canary-1", "canary-1", "canary-1", "canary-2", "canary-3", "canary-4", "canary-5", "canary-6", "canary-7"]);
+  });
+
+  it("fails a check the cap still refuses after its waits, naming rate-limited, and does not wait on an unpinned run's other answers", async () => {
+    stub.keyCapped = 1000;
+    const json = join(dir, "probe.json");
+    const res = await probe(["--cap-wait-ms", "5", "--json", json]);
+    expect(res.status).toBe(1);
+    const health = rows(json).find((c) => c.name === "key-health")!;
+    expect(health).toMatchObject({ ok: false, status: 429, cap_waits: 2 });
+    expect(health.detail).toMatch(/rate-limited/);
+    expect(rows(json).find((c) => c.name === "public-health")).toMatchObject({ ok: true });
+    expect(rows(json).find((c) => c.name === "public-health")!.cap_waits).toBeUndefined();
   });
 
   it("refuses a Worker name no check is answered by, and a malformed pin", async () => {

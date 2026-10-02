@@ -635,30 +635,48 @@ describe("deploy.yml", () => {
 
   const capStep = () => named("Prove the per-address cap is live");
 
-  // Runs the cap proof with a curl that answers 200 `allowed` times, then 429, with or without the version header.
+  // Runs the cap proof with a curl that answers 200 to the first `allowed` reads in arrival order, then
+  // 429, with or without the version header; each read holds 50 ms so the stand-in sees how many
+  // were in flight at once.
   function capRun(allowed: number, versioned = true) {
     const dir = mkdtempSync(join(tmpdir(), "acme-cap-"));
     writeFileSync(
       join(dir, "curl"),
-      `#!/usr/bin/env bash\nheaders=""\nwhile [ $# -gt 0 ]; do if [ "$1" = -D ]; then headers=$2; shift; fi; shift; done\nn=$(( $(cat "${dir}/n" 2>/dev/null || echo 0) + 1 )); echo $n > "${dir}/n"\nif [ $n -le ${allowed} ]; then code=200; else code=429; fi\nprintf 'HTTP/2 %s\\r\\n${versioned ? "x-claudinite-version: acme-version\\r\\n" : ""}\\r\\n' $code > "$headers"\nprintf %s $code\n`,
+      `#!/usr/bin/env bash
+headers=""
+while [ $# -gt 0 ]; do if [ "$1" = -D ]; then headers=$2; shift; fi; shift; done
+exec 9>"${dir}/lock"
+flock 9; n=$(( $(cat "${dir}/n" 2>/dev/null || echo 0) + 1 )); echo $n > "${dir}/n"
+f=$(( $(cat "${dir}/flight" 2>/dev/null || echo 0) + 1 )); echo $f > "${dir}/flight"
+[ $f -gt $(cat "${dir}/max" 2>/dev/null || echo 0) ] && echo $f > "${dir}/max"; flock -u 9
+sleep 0.05
+flock 9; echo $(( $(cat "${dir}/flight") - 1 )) > "${dir}/flight"; flock -u 9
+if [ $n -le ${allowed} ]; then code=200; else code=429; fi
+printf 'HTTP/2 %s\\r\\n${versioned ? "x-claudinite-version: acme-version\\r\\n" : ""}\\r\\n' $code > "$headers"
+printf %s $code
+`,
     );
     chmodSync(join(dir, "curl"), 0o755);
     const res = runStep(capStep(), {}, { PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir });
-    return { ...res, sent: Number(readFileSync(join(dir, "n"), "utf8")) };
+    const count = (f: string) => Number(readFileSync(join(dir, f), "utf8"));
+    return { ...res, sent: count("n"), maxInFlight: count("max") };
   }
 
-  it("proves the cap with a 429 carrying the version header within 400 health reads, and fails without one", () => {
+  it("proves the cap with 400 concurrent health reads, needing a 429 that carries the version header", () => {
     const ok = capRun(300);
     expect(ok.status, ok.stderr + ok.stdout).toBe(0);
-    expect(ok.sent).toBe(301);
-    expect(ok.stdout).toMatch(/429 after 301 health reads/);
+    expect(ok.sent).toBe(400);
+    expect(ok.maxInFlight).toBeGreaterThan(1);
+    expect(ok.maxInFlight).toBeLessThanOrEqual(25);
+    expect(ok.stdout).toMatch(/^sent 400 health reads in \d+s, 100 answered 429$/m);
+    expect(ok.stdout).toMatch(/^ok 429 from version acme-version, 100 of 400 health reads refused in \d+s$/m);
     const never = capRun(1000);
     expect(never.status).not.toBe(0);
     expect(never.sent).toBe(400);
-    expect(never.stdout).toMatch(/^::error::/m);
+    expect(never.stdout).toMatch(/^::error::400 health reads from one address in \d+s met no 429/m);
     const unversioned = capRun(300, false);
     expect(unversioned.status).not.toBe(0);
-    expect(unversioned.stdout).toMatch(/version header/);
+    expect(unversioned.stdout).toMatch(/^::error::none of the 100 429s carried a version header/m);
   });
 
   it("proves the cap after promotion and the read-back, then waits out its period before the final probe", () => {

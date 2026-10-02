@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BODY_MAX_JSON,
   BODY_MAX_WEBHOOK,
+  addressKey,
   capEngineVersion,
   ENGINE_VERSION_MAX,
   IP_LIMITED,
@@ -106,6 +107,24 @@ describe("withinIpLimit", () => {
     expect(Object.keys(seen)).toEqual(["ip:unknown"]);
   });
 
+  it("keys an IPv6 caller on its /64, so one host's whole prefix shares a bucket and the next prefix does not", async () => {
+    const { binding, seen } = limiter(1);
+    expect(await withinIpLimit({ IP_LIMIT: binding }, from("2001:db8:aa:bb::1"))).toBe(true);
+    expect(await withinIpLimit({ IP_LIMIT: binding }, from("2001:0db8:00aa:00bb:ffff:eeee:dddd:cccc"))).toBe(false);
+    expect(await withinIpLimit({ IP_LIMIT: binding }, from("2001:db8:aa:bc::1"))).toBe(true);
+    expect(Object.keys(seen).sort()).toEqual(["ip:2001:db8:aa:bb::/64", "ip:2001:db8:aa:bc::/64"]);
+  });
+
+  it("names the /64 the same however the address is written, and leaves IPv4 and IPv4-mapped addresses whole", () => {
+    expect(addressKey("2001:DB8::1")).toBe("2001:db8:0:0::/64");
+    expect(addressKey("2001:db8:0:0:1::")).toBe("2001:db8:0:0::/64");
+    expect(addressKey("::1")).toBe("0:0:0:0::/64");
+    expect(addressKey("192.0.2.1")).toBe("192.0.2.1");
+    expect(addressKey("::ffff:192.0.2.1")).toBe("192.0.2.1");
+    expect(addressKey("unknown")).toBe("unknown");
+    expect(addressKey("not:an:address::zz")).toBe("not:an:address::zz");
+  });
+
   it("logs no line per refused request, one ip-limited line a minute with the count", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(Date.parse("2026-10-01T00:00:00Z"));
@@ -126,8 +145,9 @@ describe("withinIpLimit", () => {
 });
 
 describe("the refusals", () => {
-  it("answer 429 rate-limited and 413 body-too-large as JSON", async () => {
+  it("answer 429 rate-limited with Retry-After: 60, and 413 body-too-large, as JSON", async () => {
     expect([ipLimited().status, await ipLimited().json()]).toEqual([429, { refused: IP_LIMITED }]);
+    expect(ipLimited().headers.get("Retry-After")).toBe("60");
     expect([tooLarge().status, await tooLarge().json()]).toEqual([413, { refused: "body-too-large" }]);
   });
 });
