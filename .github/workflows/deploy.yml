@@ -221,38 +221,47 @@ jobs:
           fi
           node tools/ensure-polar-webhook.mjs --url https://license.claudinite.com/v1/sync/polar-webhook --secret-out "$RUNNER_TEMP/polar-webhook-secret" $rotate
       - if: steps.gate.outputs.skip == 'false'
-        name: Secrets for claudinite-sync
+        id: deploy-sync
+        name: Deploy claudinite-sync with its secrets
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           GITHUB_APP_ID: ${{ secrets.CLAUDINITE_GITHUB_APP_ID }}
           GITHUB_APP_PRIVATE_KEY: ${{ secrets.CLAUDINITE_GITHUB_APP_PRIVATE_KEY }}
           POLAR_ACCESS_TOKEN: ${{ secrets.POLAR_SANDBOX_TOKEN }}
+          LIVE: ${{ steps.live.outputs.sync }}
         run: |
-          # A fresh admin token every run, kept only until the read-back has used it once.
+          # The sync Worker deploys at once: which version a split hands its cron and queue consumer
+          # is not documented, and it never touches key issuance. `wrangler deploy` applies its crons
+          # and queue consumers, which a version upload does not. A failure here or in its judge rolls
+          # it back to LIVE.
+          mkdir -p "$RUNNER_TEMP/staged"
+          printf %s "$LIVE" > "$RUNNER_TEMP/staged/sync"
+          # The secrets travel with the version, so the version a rollback returns to holds the secrets
+          # it ran with; a secret left out of the file is kept from the previous version.
+          trap 'rm -f "$RUNNER_TEMP/sync.secrets.json" "$RUNNER_TEMP/polar-webhook-secret"' EXIT
           umask 077
+          # A fresh admin token every run, kept only until the read-back has used it once.
           SYNC_ADMIN_TOKEN=$(openssl rand -hex 32)
           echo "::add-mask::$SYNC_ADMIN_TOKEN"
           printf %s "$SYNC_ADMIN_TOKEN" > "$RUNNER_TEMP/sync-admin-token"
           # The webhook secret exists only when the step before made a new endpoint.
           SYNC_ADMIN_TOKEN=$SYNC_ADMIN_TOKEN node -e 'const e=process.env,fs=require("fs"),f=e.RUNNER_TEMP+"/polar-webhook-secret",hook=fs.existsSync(f)?{POLAR_WEBHOOK_SECRET:fs.readFileSync(f,"utf8")}:{};console.log(JSON.stringify({GITHUB_APP_ID:e.GITHUB_APP_ID,GITHUB_APP_PRIVATE_KEY:e.GITHUB_APP_PRIVATE_KEY,SYNC_ADMIN_TOKEN:e.SYNC_ADMIN_TOKEN,POLAR_ACCESS_TOKEN:e.POLAR_ACCESS_TOKEN,...hook}))' > "$RUNNER_TEMP/sync.secrets.json"
-          npx wrangler secret bulk "$RUNNER_TEMP/sync.secrets.json" -c workers/sync/wrangler.jsonc
-          rm -f "$RUNNER_TEMP/sync.secrets.json" "$RUNNER_TEMP/polar-webhook-secret"
+          npx wrangler deploy -c workers/sync/wrangler.jsonc --secrets-file "$RUNNER_TEMP/sync.secrets.json"
+          # The version the judge requires the queue consumer to have run on.
+          node tools/stage.mjs status --config workers/sync/wrangler.jsonc --json "$RUNNER_TEMP/sync.status.json" > /dev/null
+          deployed=$(node -e 'const v=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).versions;if(v.length!==1){console.error(v.map((x)=>x.id+"@"+x.percentage+"%").join(" "));process.exit(1)}process.stdout.write(v[0].id)' "$RUNNER_TEMP/sync.status.json") || {
+            echo "::error::claudinite-sync is not on one version after wrangler deploy"
+            exit 1
+          }
+          echo "claudinite-sync deployed: $deployed"
+          echo "version_id=$deployed" >> "$GITHUB_OUTPUT"
       - if: steps.gate.outputs.skip == 'false'
-        name: Deploy claudinite-sync
+        name: Judge claudinite-sync by its own health and alerts
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          LIVE: ${{ steps.live.outputs.sync }}
-        run: |
-          # The sync Worker deploys at once: which version a split hands its cron and queue consumer
-          # is not documented, and it never touches key issuance. A failure here or in its judge
-          # rolls it back to LIVE.
-          mkdir -p "$RUNNER_TEMP/staged"
-          printf %s "$LIVE" > "$RUNNER_TEMP/staged/sync"
-          npx wrangler deploy -c workers/sync/wrangler.jsonc
-      - if: steps.gate.outputs.skip == 'false'
-        name: Judge claudinite-sync by its own health and alerts
+          SYNC_VERSION: ${{ steps.deploy-sync.outputs.version_id }}
         run: |
           # ip_limit is what the per-address cap made of that read: `counted` proves the binding is live
           # and called. A limiter that threw once is asked again like a status that was not yet 200.
@@ -270,6 +279,29 @@ jobs:
             echo "::error::claudinite-sync's health reports ip_limit $ip_limit after its deploy; the per-address cap is not wired"
             exit 1
           fi
+          # The write path, proven from outside: one message pushed onto the writes queue must come
+          # back as the consumer's stamps on the deployed version. That covers the queue bound to the
+          # deployed version, the consumer running on it, one D1 write through it, and the stamps.
+          started=$(date +%s)
+          node tools/push-queue-message.mjs --queue claudinite-licenses-writes --marker deploy-read-back --detail "$RUN_URL" || {
+            echo "::error::could not push the deploy-read-back message onto claudinite-licenses-writes, so the queue consumer is unproven; the CLOUDFLARE_API_TOKEN needs the Queues Edit (or Workers Scripts Edit) permission and the queue must exist"
+            exit 1
+          }
+          # The consumer waits up to its max_batch_timeout, 5 seconds, before it runs.
+          stamps=""
+          for i in 1 2 3 4 5 6; do
+            sleep $((i * 3))
+            status=$(curl -sS -o "$RUNNER_TEMP/sync-health.json" -w '%{http_code}' --max-time 20 https://license.claudinite.com/v1/sync/health || true)
+            stamps=$(node -e 'let b={};try{b=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))}catch{}process.stdout.write(`last_queue_at ${b.last_queue_at} last_queue_version ${b.last_queue_version} queue_lag_s ${b.queue_lag_s}`);process.exitCode=(typeof b.last_queue_at==="number"&&b.last_queue_at>=Number(process.argv[2])&&b.last_queue_version===process.argv[3]&&typeof b.queue_lag_s==="number"&&b.queue_lag_s<=60)?0:1' "$RUNNER_TEMP/sync-health.json" "$started" "$SYNC_VERSION") && {
+              echo "ok the writes queue's consumer wrote the deploy's message: $stamps"
+              break
+            }
+            stamps="status $status, $stamps"
+            if [ "$i" = 6 ]; then
+              echo "::error::claudinite-sync's queue consumer did not stamp the deploy's message on $SYNC_VERSION since $started: $stamps"
+              exit 1
+            fi
+          done
           status=$(curl -sS -o "$RUNNER_TEMP/sync-alerts.json" -w '%{http_code}' --max-time 20 https://license.claudinite.com/v1/sync/alerts || true)
           B="$(cat "$RUNNER_TEMP/sync-alerts.json")" S="$status" node -e '
             let b = null;

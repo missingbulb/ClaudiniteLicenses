@@ -53,8 +53,10 @@ function runGate(secrets: Record<string, string>) {
 }
 
 // A stand-in `node` on PATH: `node tools/stage.mjs ...` records its argv, keeps any secrets file it
-// was handed, writes its --json answer and fails when STAGE_FAIL names `<command>:<worker>`; every
-// other node invocation runs the real node.
+// was handed, writes its --json answer and fails when STAGE_FAIL names `<command>:<worker>`;
+// `node tools/push-queue-message.mjs ...` appends `push <args>` to the order log and exits PUSH_EXIT;
+// every other node invocation runs the real node. The stand-in `npx` logs its arguments, keeps the
+// file a `wrangler deploy --secrets-file` was handed, and fails a `wrangler deploy` when NPX_FAIL is set.
 function standIns(): string {
   const dir = mkdtempSync(join(tmpdir(), "acme-stage-"));
   writeFileSync(
@@ -79,8 +81,14 @@ console.log(JSON.stringify(out));
 if (opt("--json")) fs.writeFileSync(opt("--json"), JSON.stringify(out));
 `,
   );
-  writeFileSync(join(dir, "node"), `#!/usr/bin/env bash\nif [ "$1" = tools/stage.mjs ]; then shift; exec "${process.execPath}" "${dir}/stage-stub.cjs" "$@"; fi\nexec "${process.execPath}" "$@"\n`);
-  writeFileSync(join(dir, "npx"), `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> "${dir}/npx.log"\nif [ "$2" = secret ] && [ "$3" = bulk ]; then cp "$4" "${dir}/bulk.json"; fi\n`);
+  writeFileSync(
+    join(dir, "node"),
+    `#!/usr/bin/env bash\nif [ "$1" = tools/stage.mjs ]; then shift; exec "${process.execPath}" "${dir}/stage-stub.cjs" "$@"; fi\nif [ "$1" = tools/push-queue-message.mjs ]; then shift; echo "push $*" >> "${dir}/order"; exit "\${PUSH_EXIT:-0}"; fi\nexec "${process.execPath}" "$@"\n`,
+  );
+  writeFileSync(
+    join(dir, "npx"),
+    `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> "${dir}/npx.log"\nprev=""; for a in "$@"; do [ "$prev" = --secrets-file ] && cp "$a" "${dir}/deploy-secrets.json"; prev=$a; done\nif [ "$1 $2" = "wrangler deploy" ] && [ -n "$NPX_FAIL" ]; then echo "npx stub failing wrangler deploy" >&2; exit 1; fi\n`,
+  );
   for (const f of ["node", "npx"]) chmodSync(join(dir, f), 0o755);
   return dir;
 }
@@ -98,12 +106,23 @@ function runWithStandIns(step: Step, secrets: Record<string, string> = {}, extra
 
 const uploadStep = (worker: string) => steps.find((s) => (s.run ?? "").split("\n").some((l) => l.trim().startsWith(`node tools/stage.mjs upload --config workers/${worker}/wrangler.jsonc`)));
 
-// The secrets a Worker is given: the file its upload carries, or the sync Worker's `secret bulk` file.
+const syncDeployStep = () => steps.find((s) => s.name === "Deploy claudinite-sync with its secrets")!;
+const NEW_SYNC = '{"versions":[{"id":"new-sync","percentage":100}]}';
+
+// Runs the sync Worker's deploy with the stand-ins, after the webhook step left its secret file when `webhookSecret` is given.
+function syncDeployRun(secrets: Record<string, string>, opts: { webhookSecret?: string; extra?: Record<string, string> } = {}) {
+  const dir = standIns();
+  if (opts.webhookSecret !== undefined) writeFileSync(join(dir, "polar-webhook-secret"), opts.webhookSecret);
+  const res = runStep(syncDeployStep(), secrets, { PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, GITHUB_OUTPUT: join(dir, "output"), RUN_URL: "https://github.test/acme/runs/1", LIVE: "live-sync", STATUS_SYNC: NEW_SYNC, ...opts.extra });
+  const read = (f: string) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), "utf8") : "");
+  return { ...res, dir, calls: stageCalls(dir), output: read("output"), npx: read("npx.log") };
+}
+
+// The secrets a Worker is given: the file its upload carries, or the file the sync Worker's `wrangler deploy` carries.
 function storedSecrets(worker: string, secrets: Record<string, string>): { bulk: Record<string, string>; dir: string } {
-  const step = worker === "sync" ? steps.find((s) => s.name === "Secrets for claudinite-sync")! : uploadStep(worker)!;
-  const res = runWithStandIns(step, secrets);
+  const res = worker === "sync" ? syncDeployRun(secrets) : runWithStandIns(uploadStep(worker)!, secrets);
   expect(res.status, res.stderr).toBe(0);
-  const file = worker === "sync" ? "bulk.json" : `secrets-${worker}.json`;
+  const file = worker === "sync" ? "deploy-secrets.json" : `secrets-${worker}.json`;
   return { bulk: JSON.parse(readFileSync(join(res.dir, file), "utf8")), dir: res.dir };
 }
 
@@ -271,7 +290,7 @@ describe("deploy.yml", () => {
   it("makes the Polar webhook endpoint exist before the sync Worker's secrets, on the sandbox API both Workers point at", () => {
     const at = steps.indexOf(webhookStep());
     expect(at).toBeGreaterThan(-1);
-    expect(at).toBeLessThan(stepAt((s) => s.name === "Secrets for claudinite-sync"));
+    expect(at).toBeLessThan(steps.indexOf(syncDeployStep()));
     expect(webhookStep().run).toContain("--url https://license.claudinite.com/v1/sync/polar-webhook");
     expect(webhookStep().env).toMatchObject({ POLAR_ACCESS_TOKEN: "${{ secrets.POLAR_SANDBOX_TOKEN }}" });
     const parseJsonc = (w: string) => JSON.parse(readFileSync(join(ROOT, `workers/${w}/wrangler.jsonc`), "utf8").replace(/^\s*\/\/.*$/gm, ""));
@@ -304,14 +323,10 @@ describe("deploy.yml", () => {
   it("stores POLAR_WEBHOOK_SECRET only when the webhook step wrote its file", () => {
     const values = Object.fromEntries(secrets.map((s) => [s, `value-of-${s}`]));
     expect(storedSecrets("sync", values).bulk).not.toHaveProperty("POLAR_WEBHOOK_SECRET");
-    const dir = mkdtempSync(join(tmpdir(), "acme-bulk-"));
-    writeFileSync(join(dir, "npx"), `#!/usr/bin/env bash\ncp "$4" "${dir}/bulk.json"\n`);
-    chmodSync(join(dir, "npx"), 0o755);
-    writeFileSync(join(dir, "polar-webhook-secret"), "whsec_acme");
-    const res = runStep(steps.find((s) => s.name === "Secrets for claudinite-sync")!, values, { PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir });
+    const res = syncDeployRun(values, { webhookSecret: "whsec_acme" });
     expect(res.status, res.stderr).toBe(0);
-    expect(JSON.parse(readFileSync(join(dir, "bulk.json"), "utf8")).POLAR_WEBHOOK_SECRET).toBe("whsec_acme");
-    expect(existsSync(join(dir, "polar-webhook-secret"))).toBe(false);
+    expect(JSON.parse(readFileSync(join(res.dir, "deploy-secrets.json"), "utf8")).POLAR_WEBHOOK_SECRET).toBe("whsec_acme");
+    expect(existsSync(join(res.dir, "polar-webhook-secret"))).toBe(false);
   });
 
   it("uploads the key Worker with TRUST_ROOTS from tools/keys.mjs trust-roots", () => {
@@ -383,9 +398,9 @@ describe("deploy.yml", () => {
   const named = (name: string) => steps.find((s) => s.name === name)!;
   const runLines = (step: Step) => (step.run ?? "").split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
 
-  it("stores no secret with secret bulk for the staged Workers: each upload carries its secrets file, tag and run URL", () => {
-    const bulkLines = steps.flatMap(runLines).filter((l) => /wrangler secret bulk/.test(l));
-    expect(bulkLines).toEqual(['npx wrangler secret bulk "$RUNNER_TEMP/sync.secrets.json" -c workers/sync/wrangler.jsonc']);
+  it("stores no secret with secret bulk for any Worker: each upload carries its secrets file, tag and run URL", () => {
+    const bulkLines = steps.flatMap(runLines).filter((l) => /secret bulk/.test(l));
+    expect(bulkLines).toEqual([]);
     for (const w of STAGED) {
       const res = runWithStandIns(uploadStep(w)!);
       expect(res.status, res.stderr).toBe(0);
@@ -411,13 +426,35 @@ describe("deploy.yml", () => {
     }
   });
 
-  it("still stores the sync Worker's secrets with secret bulk before wrangler deploy, and keeps its live version for a rollback", () => {
-    expect(stepAt((s) => s.name === "Secrets for claudinite-sync")).toBeLessThan(deployAt("sync"));
-    const res = runWithStandIns(steps[deployAt("sync")]!, {}, { LIVE: "live-sync" });
+  it("deploys the sync Worker with wrangler deploy carrying its secrets file, and keeps its live version for a rollback", () => {
+    expect(steps.indexOf(syncDeployStep())).toBe(deployAt("sync"));
+    const res = syncDeployRun({});
     expect(res.status, res.stderr).toBe(0);
     expect(readFileSync(join(res.dir, "staged/sync"), "utf8")).toBe("live-sync");
-    expect(res.npx.trim()).toBe("wrangler deploy -c workers/sync/wrangler.jsonc");
-    expect(steps[deployAt("sync")]!.env).toMatchObject({ LIVE: "${{ steps.live.outputs.sync }}" });
+    expect(res.npx.trim()).toBe(`wrangler deploy -c workers/sync/wrangler.jsonc --secrets-file ${join(res.dir, "sync.secrets.json")}`);
+    expect(syncDeployStep().env).toMatchObject({ LIVE: "${{ steps.live.outputs.sync }}" });
+    expect(syncDeployStep().id).toBe("deploy-sync");
+  });
+
+  it("reads the deployed sync version from stage.mjs status right after wrangler deploy and outputs it as version_id", () => {
+    const res = syncDeployRun({});
+    expect(res.status, res.stderr).toBe(0);
+    expect(res.calls.map((c) => c.slice(0, 3).join(" "))).toEqual(["status --config workers/sync/wrangler.jsonc"]);
+    expect(res.output.split("\n").filter((l) => l.startsWith("version_id="))).toEqual(["version_id=new-sync"]);
+    const split = syncDeployRun({}, { extra: { STATUS_SYNC: '{"versions":[{"id":"a","percentage":90},{"id":"b","percentage":10}]}' } });
+    expect(split.status).not.toBe(0);
+    expect(split.output).not.toContain("version_id=");
+  });
+
+  it("removes the sync secrets file and the webhook secret in the step that made them, also when wrangler deploy fails", () => {
+    for (const fail of ["", "1"]) {
+      const res = syncDeployRun({}, { webhookSecret: "whsec_acme", extra: { NPX_FAIL: fail } });
+      expect(res.status === 0, fail).toBe(fail === "");
+      expect(existsSync(join(res.dir, "deploy-secrets.json")), fail).toBe(true);
+      expect(existsSync(join(res.dir, "sync.secrets.json")), fail).toBe(false);
+      expect(existsSync(join(res.dir, "polar-webhook-secret")), fail).toBe(false);
+      expect(readFileSync(join(res.dir, "staged/sync"), "utf8"), fail).toBe("live-sync");
+    }
   });
 
   it("judges the sync Worker by its health and alerts right after its deploy, before the router uploads", () => {
@@ -522,20 +559,26 @@ describe("deploy.yml", () => {
 
   const judgeStep = () => named("Judge claudinite-sync by its own health and alerts");
 
-  // Runs the judge with a curl answering `health` on /v1/sync/health and 200 alerts, the marker the deploy wrote in place.
-  // `body` may list several health bodies separated by `|`, answered in turn, the last one repeating.
-  function judgeRun(health: number, body = '{"ok":true,"ip_limit":"counted"}') {
-    const dir = mkdtempSync(join(tmpdir(), "acme-judge-"));
+  const STAMPED = '"last_queue_at":9999999999,"last_queue_version":"new-sync","queue_lag_s":2';
+  const HEALTHY = `{"ok":true,"ip_limit":"counted",${STAMPED}}`;
+
+  // Runs the judge with the stand-ins and a curl answering `health` on /v1/sync/health and 200 alerts,
+  // the marker the deploy wrote in place, the deployed version new-sync. `body` may list several
+  // health bodies separated by `|`, answered in turn, the last one repeating. Each health read, alerts
+  // read and push is appended to the order log.
+  function judgeRun(health: number, body = HEALTHY, extra: Record<string, string> = {}) {
+    const dir = standIns();
     mkdirSync(join(dir, "staged"));
     writeFileSync(join(dir, "staged/sync"), "live-sync");
     writeFileSync(
       join(dir, "curl"),
-      `#!/usr/bin/env bash\nout=""; url=""\nwhile [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift;; https://*) url=$1;; esac; shift; done\nif [ "\${url##*/}" = health ]; then n=$(( $(cat "${dir}/reads" 2>/dev/null || echo 0) + 1 )); echo $n > "${dir}/reads"; IFS='|' read -ra bodies <<< '${body}'; i=$(( n <= \${#bodies[@]} ? n - 1 : \${#bodies[@]} - 1 )); printf '%s' "\${bodies[$i]}" > "$out"; printf '${health}'; else printf '{"ok":true,"alerts":[]}' > "$out"; printf 200; fi\n`,
+      `#!/usr/bin/env bash\nout=""; url=""\nwhile [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift;; https://*) url=$1;; esac; shift; done\nif [ "\${url##*/}" = health ]; then echo health >> "${dir}/order"; n=$(( $(cat "${dir}/reads" 2>/dev/null || echo 0) + 1 )); echo $n > "${dir}/reads"; IFS='|' read -ra bodies <<< '${body}'; i=$(( n <= \${#bodies[@]} ? n - 1 : \${#bodies[@]} - 1 )); printf '%s' "\${bodies[$i]}" > "$out"; printf '${health}'; else echo alerts >> "${dir}/order"; printf '{"ok":true,"alerts":[]}' > "$out"; printf 200; fi\n`,
     );
-    writeFileSync(join(dir, "sleep"), "#!/usr/bin/env bash\n");
+    writeFileSync(join(dir, "sleep"), `#!/usr/bin/env bash\necho "$@" >> "${dir}/sleeps"\n`);
     for (const f of ["curl", "sleep"]) chmodSync(join(dir, f), 0o755);
-    const res = runStep(judgeStep(), {}, { PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir });
-    return { ...res, dir };
+    const res = runStep(judgeStep(), { CLOUDFLARE_API_TOKEN: "cf-token", CLOUDFLARE_ACCOUNT_ID: "acct" }, { PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, RUN_URL: "https://github.test/acme/runs/1", SYNC_VERSION: "new-sync", ...extra });
+    const read = (f: string) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), "utf8").trim().split("\n") : []);
+    return { ...res, dir, order: read("order"), sleeps: read("sleeps") };
   }
 
   it("closes the sync Worker's rollback window once its own judge passes, and keeps it open when the judge fails", () => {
@@ -550,20 +593,72 @@ describe("deploy.yml", () => {
 
   it("fails the sync Worker's judge unless its health says the per-address cap counted the read", () => {
     for (const state of ["unbound", "unavailable"]) {
-      const res = judgeRun(200, `{"ok":true,"ip_limit":"${state}"}`);
+      const res = judgeRun(200, `{"ok":true,"ip_limit":"${state}",${STAMPED}}`);
       expect(res.status, state).not.toBe(0);
       expect(res.stdout, state).toContain(`::error::claudinite-sync's health reports ip_limit ${state}`);
       expect(existsSync(join(res.dir, "staged/sync")), state).toBe(true);
     }
-    const missing = judgeRun(200, '{"ok":true}');
+    const missing = judgeRun(200, `{"ok":true,${STAMPED}}`);
     expect(missing.status).not.toBe(0);
   });
 
   it("asks the sync Worker's health again when the limiter was unavailable once, and passes on the next counted read", () => {
-    const res = judgeRun(200, '{"ok":true,"ip_limit":"unavailable"}|{"ok":true,"ip_limit":"counted"}');
+    const res = judgeRun(200, `{"ok":true,"ip_limit":"unavailable",${STAMPED}}|${HEALTHY}`);
     expect(res.status, res.stderr + res.stdout).toBe(0);
-    expect(readFileSync(join(res.dir, "reads"), "utf8").trim()).toBe("2");
+    expect(res.order.slice(0, 3)).toEqual(["health", "health", expect.stringMatching(/^push /)]);
     expect(existsSync(join(res.dir, "staged/sync"))).toBe(false);
+  });
+
+  it("pushes a deploy-read-back message after the counted read and before the alerts read, with the run URL as its detail", () => {
+    const step = judgeStep();
+    expect(step.env).toMatchObject({ CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}", CLOUDFLARE_ACCOUNT_ID: "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}", SYNC_VERSION: "${{ steps.deploy-sync.outputs.version_id }}" });
+    const res = judgeRun(200);
+    expect(res.status, res.stderr + res.stdout).toBe(0);
+    expect(res.order).toEqual(["health", "push --queue claudinite-licenses-writes --marker deploy-read-back --detail https://github.test/acme/runs/1", "health", "alerts"]);
+    expect(res.stdout).toMatch(/last_queue_version new-sync/);
+  });
+
+  it("asks the health again with growing sleeps until the consumer's stamps name the deployed version", () => {
+    const stale = '{"ok":true,"ip_limit":"counted","last_queue_at":1,"last_queue_version":"live-sync","queue_lag_s":0}';
+    const res = judgeRun(200, `${HEALTHY}|${stale}|${stale}|${HEALTHY}`);
+    expect(res.status, res.stderr + res.stdout).toBe(0);
+    expect(res.order.filter((o) => o === "health")).toHaveLength(4);
+    const waits = res.sleeps.map(Number);
+    expect(waits.length).toBeGreaterThanOrEqual(2);
+    expect(waits).toEqual([...waits].sort((a, b) => a - b));
+    expect(existsSync(join(res.dir, "sync-judged"))).toBe(true);
+  });
+
+  const rollbackIn = (dir: string) => {
+    const res = runStep(named("Roll back to the versions that were live"), {}, { PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir });
+    return { ...res, rolled: stageCalls(dir).filter((c) => c[0] === "rollback").map((c) => /workers\/([^/]+)\//.exec(c[2]!)![1]) };
+  };
+
+  for (const [why, body, extra] of [
+    ["names the previous version", `{"ok":true,"ip_limit":"counted","last_queue_at":9999999999,"last_queue_version":"live-sync","queue_lag_s":2}`, {}],
+    ["was stamped before the judge started", `{"ok":true,"ip_limit":"counted","last_queue_at":1,"last_queue_version":"new-sync","queue_lag_s":2}`, {}],
+    ["reports a lag over a minute", `{"ok":true,"ip_limit":"counted","last_queue_at":9999999999,"last_queue_version":"new-sync","queue_lag_s":61}`, {}],
+    ["follows a push that exited 1", HEALTHY, { PUSH_EXIT: "1" }],
+  ] as const) {
+    it(`fails the judge, and the rollback rolls back sync and only sync, when the consumer's stamp ${why}`, () => {
+      const res = judgeRun(200, body, extra);
+      expect(res.status).not.toBe(0);
+      expect(res.stdout).toMatch(/^::error::/m);
+      expect(existsSync(join(res.dir, "sync-judged"))).toBe(false);
+      expect(existsSync(join(res.dir, "staged/sync"))).toBe(true);
+      expect(res.order).not.toContain("alerts");
+      const back = rollbackIn(res.dir);
+      expect(back.status, back.stderr).toBe(0);
+      expect(back.rolled).toEqual(["sync"]);
+    });
+  }
+
+  it("names the three stamps on a stale stamp, and the permission on a failed push", () => {
+    const stale = judgeRun(200, '{"ok":true,"ip_limit":"counted","last_queue_at":1,"last_queue_version":"live-sync","queue_lag_s":0}');
+    expect(stale.stdout).toMatch(/::error::.*last_queue_at 1.*last_queue_version live-sync.*queue_lag_s 0/);
+    expect(stale.sleeps.length).toBeGreaterThanOrEqual(5);
+    const refused = judgeRun(200, HEALTHY, { PUSH_EXIT: "1" });
+    expect(refused.stdout).toMatch(/::error::.*Queues Edit/);
   });
 
   // The rollback step after a failure, with markers as the steps before it left them.
