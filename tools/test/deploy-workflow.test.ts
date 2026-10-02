@@ -12,6 +12,9 @@ const workflow = parse(readFileSync(join(ROOT, ".github/workflows/deploy.yml"), 
 type Step = { id?: string; name?: string; run?: string; env?: Record<string, string>; if?: string };
 const job: { env?: Record<string, string>; steps: Step[] } = workflow.jobs.deploy;
 const steps = job.steps;
+// The sync judge's lag bound is the queue-lagging alert's; read from its source, since the tools
+// project carries no Workers types to import it with.
+const QUEUE_LAG_MAX_S = Number(/^export const QUEUE_LAG_MAX_S = (\d+);$/m.exec(readFileSync(join(ROOT, "workers/sync/src/alerts.ts"), "utf8"))![1]);
 const gate = steps.find((s) => s.id === "gate")!;
 
 interface ReadmeSecret {
@@ -629,6 +632,31 @@ describe("deploy.yml", () => {
     expect(existsSync(join(res.dir, "sync-judged"))).toBe(true);
   });
 
+  it("passes the judge while a backlog drains, up to the queue-lagging alert's bound, and says a batch landed on the deployed version", () => {
+    const res = judgeRun(200, `{"ok":true,"ip_limit":"counted","last_queue_at":9999999999,"last_queue_version":"new-sync","queue_lag_s":${QUEUE_LAG_MAX_S}}`);
+    expect(res.status, res.stderr + res.stdout).toBe(0);
+    expect(res.stdout).toMatch(new RegExp(`^ok a writes-queue batch landed on the deployed version after the push: .*queue_lag_s ${QUEUE_LAG_MAX_S}$`, "m"));
+    expect(existsSync(join(res.dir, "sync-judged"))).toBe(true);
+  });
+
+  it("pushes again when the previous version's consumer took the message, and passes once a batch lands on the deployed version", () => {
+    const byOld = '{"ok":true,"ip_limit":"counted","last_queue_at":9999999999,"last_queue_version":null,"queue_lag_s":0}';
+    const res = judgeRun(200, `${HEALTHY}|${byOld}|${HEALTHY}`);
+    expect(res.status, res.stderr + res.stdout).toBe(0);
+    expect(res.order.filter((o) => o.startsWith("push "))).toHaveLength(2);
+    expect(res.order.at(-1)).toBe("alerts");
+    expect(existsSync(join(res.dir, "sync-judged"))).toBe(true);
+  });
+
+  it("pushes at most four times while only another version consumes, then fails naming that version", () => {
+    const byOld = '{"ok":true,"ip_limit":"counted","last_queue_at":9999999999,"last_queue_version":"live-sync","queue_lag_s":0}';
+    const res = judgeRun(200, `${HEALTHY}|${byOld}`);
+    expect(res.status).not.toBe(0);
+    expect(res.order.filter((o) => o.startsWith("push "))).toHaveLength(4);
+    expect(res.stdout).toMatch(/::error::.*last_queue_version live-sync.*not new-sync/);
+    expect(existsSync(join(res.dir, "staged/sync"))).toBe(true);
+  });
+
   const rollbackIn = (dir: string) => {
     const res = runStep(named("Roll back to the versions that were live"), {}, { PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir });
     return { ...res, rolled: stageCalls(dir).filter((c) => c[0] === "rollback").map((c) => /workers\/([^/]+)\//.exec(c[2]!)![1]) };
@@ -637,7 +665,7 @@ describe("deploy.yml", () => {
   for (const [why, body, extra] of [
     ["names the previous version", `{"ok":true,"ip_limit":"counted","last_queue_at":9999999999,"last_queue_version":"live-sync","queue_lag_s":2}`, {}],
     ["was stamped before the judge started", `{"ok":true,"ip_limit":"counted","last_queue_at":1,"last_queue_version":"new-sync","queue_lag_s":2}`, {}],
-    ["reports a lag over a minute", `{"ok":true,"ip_limit":"counted","last_queue_at":9999999999,"last_queue_version":"new-sync","queue_lag_s":61}`, {}],
+    ["reports a lag over the queue-lagging alert's bound", `{"ok":true,"ip_limit":"counted","last_queue_at":9999999999,"last_queue_version":"new-sync","queue_lag_s":${QUEUE_LAG_MAX_S + 1}}`, {}],
     ["follows a push that exited 1", HEALTHY, { PUSH_EXIT: "1" }],
   ] as const) {
     it(`fails the judge, and the rollback rolls back sync and only sync, when the consumer's stamp ${why}`, () => {

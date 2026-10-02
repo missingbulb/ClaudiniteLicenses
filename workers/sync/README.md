@@ -11,9 +11,12 @@ request-path Workers take: which version a split hands a cron or a queue consume
 documented, and its deploy never touches key issuance. Its secrets travel with the version that
 deploy makes, so the version a rollback returns to holds the secrets it ran with. Its judge right
 after reads its health, pushes one `deploy-read-back` message onto the writes queue through the
-Queues REST API (`tools/push-queue-message.mjs`) and requires the consumer's stamps to show it
-wrote that message on the version just deployed (`last_queue_at` at or after the push,
-`last_queue_version` the deployed id, `queue_lag_s` at most 60), then reads its alerts; any failure
+Queues REST API (`tools/push-queue-message.mjs`) and requires the consumer's stamps to show a
+batch landed on the version just deployed after the push (`last_queue_at` at or after the push,
+`last_queue_version` the deployed id, `queue_lag_s` at most 900, the `queue-lagging` alert's bound,
+so a backlog still draining is not a rollback). For a while after `wrangler deploy` the previous
+version can still be the one consuming, so a batch that lands after the push on another version is
+answered with another push, up to four in all. It then reads its alerts; any failure
 rolls it back to the version that was live. That proves the queue bound to the deployed version,
 the consumer running on it and one D1 write through it.
 
