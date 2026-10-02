@@ -54,6 +54,7 @@ key, only the rows count and nobody is seated.
 `plan`, `day`), `grace-start` and `grace-reset` (`owner_id`), and `incident` (`marker`, and an
 optional `detail` of at most 200 characters, no `owner_id`). An incident's `marker` is one of
 `INCIDENT_MARKERS`: `d1-unreadable`, `polar-unreachable`, `app-not-installed`,
-`polar-webhook-refused`, `write-dead-lettered` and `secondary-rate-limit`, the markers the alerts
-count. `isWriteMessage` checks a queued body and refuses an unknown marker. `dayOf(at)` is the UTC
+`polar-webhook-refused`, `write-dead-lettered`, `secondary-rate-limit` and `deploy-read-back`; the
+alerts count all but `deploy-read-back`, the message every deploy pushes to prove the queue's
+consumer. `isWriteMessage` checks a queued body and refuses an unknown marker. `dayOf(at)` is the UTC
 day `usage` rows are keyed by.

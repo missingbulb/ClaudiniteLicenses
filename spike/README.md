@@ -38,7 +38,10 @@ Make sure `.claudinite/temp/` is git-ignored there.
    node spike/web-key-roundtrip.mjs --repo missingbulb/<test-repo> --tries 50
    ```
 
-   Record `medianMs`, `p90Ms`, `maxMs`, and `overCut` (tries slower than the 10-second cut).
+   Record `medianMs`, `p90Ms`, `maxMs`, and `overCut` (tries slower than the 10-second cut). For the
+   paid key Worker add `--event claudinite-key --verify`: each key is verified against
+   `node tools/keys.mjs trust-roots` (or `--roots <json>`), and the summary adds `verified`,
+   `refusals` and `seen`, the (plan, state, notice) set.
 5. **Suspend and resume.** After note 1's session has been idle long enough for the VM to suspend,
    resume it and read the log again. Pass: a second run of lines with `source` `resume`, the same
    `session_id`, and the file from before the suspend still there.

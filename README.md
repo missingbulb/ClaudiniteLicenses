@@ -42,7 +42,9 @@ dev` serves the same set on port 8787 until interrupted.
 
 `deploy.yml` runs on every push to `main`. It records D1's restore point before the migrations,
 uploads a new version of the public key, key and router Workers with their secrets without serving
-it, deploys the sync Worker at once and judges it by its health and alerts, then serves each new
+it, deploys the sync Worker at once with its secrets file and judges it by its health, a message it
+pushes onto the writes queue that the consumer must write on the deployed version, and its alerts,
+then serves each new
 version to one tenth of requests. The canary probe (`tools/probe.mjs --expect-version`) reaches each
 new version through Cloudflare's version-affinity header and must pass on it; the versions are then
 promoted to all requests and every Worker's routes and crons applied. A failed canary, promotion or
@@ -52,9 +54,16 @@ red.
 
 The account gets a real percentage split: the first staged deploy (run 36927209537) served each new
 version at 10% beside the live one at 90%, never `stage.mjs split`'s 100% fallback, and the canary
-reached all three new versions before promotion. The sync Worker deploys at 100%; its cron and
-queue `version` lines are in its Cloudflare logs, not the job log, and whether it can join the
-split is still open (`workers/sync/README.md`).
+reached all three new versions before promotion. The sync Worker deploys at 100% with
+`wrangler deploy --secrets-file`, so its secrets travel with its version as the other three's do and
+no step runs `wrangler secret bulk`. Its cron and queue versions are stamped into `/v1/sync/health`
+(`last_cron_version`, `last_queue_version`); whether it can join the split is still open
+(`workers/sync/README.md`).
+
+The paid key Worker's web path is measured by `spike/web-key-roundtrip.mjs --event claudinite-key
+--tries 50 --verify` once a deploy carrying it has promoted; each key is verified against the trust
+roots and its plan, state and notice recorded. The numbers are the paid row of
+[docs/spikes/web-key-roundtrip.md](docs/spikes/web-key-roundtrip.md).
 
 The run summary carries the restore point as the exact dispatch that returns D1 to it, inside the
 Time Travel window of 7 days on Workers Free or 30 on Workers Paid:
