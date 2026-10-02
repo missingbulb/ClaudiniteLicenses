@@ -105,6 +105,19 @@ describe("tools/push-queue-message.mjs", () => {
     expect(refused.out).toBe("");
   });
 
+  it("builds the reconcile requests the deploy pushes, each a message the consumer accepts", async () => {
+    for (const marker of ["reconcile-now", "polar-reconcile-now"]) {
+      const cf = await startCloudflare(HELD);
+      const { code, out } = await cli(cf.base, ["--queue", WRITES, "--marker", marker, "--detail", "https://github.com/acme/runs/1"]);
+      expect(code, marker).toBe(0);
+      const sent = JSON.parse(out);
+      expect(sent, marker).toMatchObject({ v: 1, kind: "incident", marker });
+      expect(isWriteMessage(sent), marker).toBe(true);
+      await new Promise<void>((done) => server!.close(() => done()));
+      server = undefined;
+    }
+  });
+
   it("refuses a message the consumer would not accept, before calling anything", async () => {
     const cf = await startCloudflare(HELD);
     const { code, err } = await cli(cf.base, ["--queue", WRITES, "--marker", "acme-marker", "--detail", "d"]);

@@ -52,7 +52,7 @@ afterEach(() => vi.restoreAllMocks());
 
 describe("the sync Worker's per-address cap", () => {
   it("reads its routes from the security review's table", () => {
-    expect(rows.filter(perAddressCap).length).toBe(5);
+    expect(rows.filter(perAddressCap).length).toBe(3);
   });
 
   for (const r of rows.filter(perAddressCap)) {

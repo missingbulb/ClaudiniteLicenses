@@ -14,8 +14,8 @@ convergence window that chunk states has passed.
 Each deploy records D1 Time Travel's bookmark before its migrations and prints, in its summary, the
 dispatch that returns the database there. A restore is in place and destructive: queries in flight
 are cancelled, and every row written after the bookmark is gone, usage, seats and subscriptions
-included. The nightly reconcile, `POST /v1/sync/reconcile` and `POST /v1/sync/polar-reconcile`
-re-derive repos and subscriptions, and seats accumulate again from the next keys. Running one is a
+included. The nightly reconciles, or a `reconcile-now` and a `polar-reconcile-now` pushed onto the writes
+queue with `tools/push-queue-message.mjs`, re-derive repos and subscriptions, and seats accumulate again from the next keys. Running one is a
 person's call, never automatic:
 
 ```

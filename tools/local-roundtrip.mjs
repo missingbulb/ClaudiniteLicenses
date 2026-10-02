@@ -2,7 +2,8 @@
 // Every key path, locally: the GitHub and Polar stubs, the four Workers and the dev route front
 // under one `wrangler dev` over a local D1 the migrations built, then, in order: a signed
 // installation webhook the sync Worker writes, both web dispatches answered with check runs, both
-// desktop requests, an Actions request with a token the stub's OIDC issuer signed, and a reconcile;
+// desktop requests, an Actions request with a token the stub's OIDC issuer signed, and a reconcile
+// requested on the writes queue, as the deploy requests it;
 // then the paid path on a private repo: a grace key with its checkout link, a signed Polar
 // subscription delivery, seats taken through the writes queue up to the headroom and past it, the
 // Actions key, an item grant and the Polar reconcile; then the alerts: none on the fresh set, an
@@ -26,6 +27,7 @@ import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { ensureWebhookEndpoint, polarClient, POLAR_VERSION, WEBHOOK_EVENTS } from "../packages/polar/src/index.ts";
 import { verifyKey } from "../packages/signing/src/index.ts";
+import { IP_LIMIT_PERIOD_S } from "../packages/http/src/index.ts";
 import { VERSION_HEADER } from "../packages/version/src/index.ts";
 import { DEFAULT_WORLD, startStub } from "./github-stub.mjs";
 import { devChain, formatDevVars, parseDevVars } from "./keys.mjs";
@@ -171,6 +173,22 @@ async function healthUntil(label, ok) {
   }
 }
 
+/**
+ * Requests a reconcile as the deploy does, by a marker on the writes queue, in a second after the
+ * last one stamped, and waits for its stamp to reach the request.
+ * @param {"reconcile-now" | "polar-reconcile-now"} marker @returns {Promise<{ before: any, after: any }>}
+ */
+async function requestReconcile(marker) {
+  const field = marker === "reconcile-now" ? "last_reconcile_at" : "last_polar_reconcile_at";
+  const before = (await call("/v1/sync/health")).json;
+  while (Math.floor(Date.now() / 1000) <= (before?.[field] ?? -1)) await sleep(100);
+  const at = Math.floor(Date.now() / 1000);
+  const pushed = await call("/__dev/writes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ v: 1, kind: "incident", at, marker, detail: "local-roundtrip" }) });
+  if (pushed.status !== 202) await fail(`pushing ${marker} answered ${pushed.status}: ${pushed.text}`);
+  const after = await healthUntil(`${marker} at ${at}`, (h) => typeof h[field] === "number" && h[field] >= at);
+  return { before, after };
+}
+
 /** @param {string} label @param {string} token @param {number} repoId @param {Record<string, unknown>} want */
 async function desktopKey(label, token, repoId, want) {
   const target = world.installations.flatMap((i) => i.repos).find((r) => r.id === repoId);
@@ -313,10 +331,8 @@ for (const [path, use] of /** @type {const} */ ([["/v1/session-key", "license"],
   await verified("actions /v1/actions-key", res.json.key, "license", started);
 }
 
-// The reconcile, with the admin token the dev chain made.
-const reconciled = await call("/v1/sync/reconcile", { method: "POST", headers: { Authorization: `Bearer ${vars.sync.SYNC_ADMIN_TOKEN}` } });
-if (reconciled.status !== 200) await fail(`the reconcile answered ${reconciled.status}: ${reconciled.text}`);
-const afterReconcile = (await call("/v1/sync/health")).json;
+// The reconcile, requested on the writes queue as the deploy requests it.
+const { after: afterReconcile } = await requestReconcile("reconcile-now");
 if (afterWebhook.last_reconcile_at !== null || typeof afterReconcile?.last_reconcile_at !== "number" || afterReconcile.repos !== inst.repos.length) {
   await fail(`sync health around the reconcile: before ${JSON.stringify(afterWebhook)}, after ${JSON.stringify(afterReconcile)}`);
 }
@@ -372,11 +388,8 @@ const granted = await call("/v1/item-grant", { method: "POST", headers: { "Conte
 if (granted.status !== 200 || typeof granted.json?.grant !== "string") await fail(`/v1/item-grant answered ${granted.status}: ${granted.text}`);
 await verified("item grant", granted.json.grant, "license", grantStarted, { typ: "grant", issue: 42, plan: "personal", state: "degraded", notice: "seat-refused" });
 
-// The Polar reconcile, with the admin token.
-const beforePolar = (await call("/v1/sync/health")).json;
-const polarReconciled = await call("/v1/sync/polar-reconcile", { method: "POST", headers: { Authorization: `Bearer ${vars.sync.SYNC_ADMIN_TOKEN}` } });
-if (polarReconciled.status !== 200) await fail(`the Polar reconcile answered ${polarReconciled.status}: ${polarReconciled.text}`);
-const afterPolar = (await call("/v1/sync/health")).json;
+// The Polar reconcile, requested on the writes queue.
+const { before: beforePolar, after: afterPolar } = await requestReconcile("polar-reconcile-now");
 if (beforePolar?.last_polar_reconcile_at !== null || typeof afterPolar?.last_polar_reconcile_at !== "number" || afterPolar.subscriptions !== 1) {
   await fail(`sync health around the Polar reconcile: before ${JSON.stringify(beforePolar)}, after ${JSON.stringify(afterPolar)}`);
 }
@@ -434,8 +447,8 @@ console.log("alerts: 200, none on the fresh set");
 // and its one polar-unreachable incident reaches D1 through the queue, below the threshold.
 const OTHER = { id: 1003, name: "acme-other-private", full_name: "acme-other/acme-other-private", private: true, default_branch: "main" };
 world.installations.push({ id: 6006, account: { id: 2004, login: "acme-other", type: "User" }, repos: [OTHER] });
-const withOther = await call("/v1/sync/reconcile", { method: "POST", headers: { Authorization: `Bearer ${vars.sync.SYNC_ADMIN_TOKEN}` } });
-if (withOther.status !== 200 || withOther.json?.repos !== 3) await fail(`the reconcile with a second installation answered ${withOther.status}: ${withOther.text}`);
+const { after: withOther } = await requestReconcile("reconcile-now");
+if (withOther.repos !== 3) await fail(`the reconcile with a second installation left: ${JSON.stringify(withOther)}`);
 polar.slow(10_000);
 const slowKey = () => desktopKey("private repo of a second account, Polar too slow", tokenA, OTHER.id, { plan: "private-repo", state: "grace", checkout_url: null, portal_url: null });
 await slowKey();
@@ -467,19 +480,17 @@ console.log("alerts: 200 again once the polar-unreachable incidents are an hour 
 // The App leaves the account's repos: Personal needs it on at least one, so the account is uncovered.
 const keptRepos = inst.repos;
 inst.repos = [];
-const dropped = await call("/v1/sync/reconcile", { method: "POST", headers: { Authorization: `Bearer ${vars.sync.SYNC_ADMIN_TOKEN}` } });
-if (dropped.status !== 200) await fail(`the reconcile without the repos answered ${dropped.status}: ${dropped.text}`);
-const uncovered = (await call("/v1/sync/health")).json;
-if (uncovered?.paying_uncovered !== 1) await fail(`paying_uncovered after the App left: ${JSON.stringify(uncovered)}`);
+await requestReconcile("reconcile-now");
+// The coverage audit runs after the reconcile's stamp.
+await healthUntil("paying_uncovered after the App left", (h) => h.paying_uncovered === 1);
 const firing = await alerts();
 if (firing.status !== 503 || JSON.stringify(firing.ids) !== JSON.stringify(["paying-uncovered"])) await fail(`the alerts with an uncovered account: ${firing.status} ${JSON.stringify(firing.ids)}`);
 console.log("coverage: the App left the account's repos, paying_uncovered 1, alerts 503 paying-uncovered");
 
 // The repos return: the next reconcile covers the account and the endpoint clears.
 inst.repos = keptRepos;
-const restored = await call("/v1/sync/reconcile", { method: "POST", headers: { Authorization: `Bearer ${vars.sync.SYNC_ADMIN_TOKEN}` } });
-if (restored.status !== 200) await fail(`the reconcile with the repos back answered ${restored.status}: ${restored.text}`);
-const covered = (await call("/v1/sync/health")).json;
+await requestReconcile("reconcile-now");
+const covered = await healthUntil("paying_uncovered after the repos returned", (h) => h.paying_uncovered === 0);
 const cleared = await alerts();
 if (covered?.paying_uncovered !== 0 || cleared.status !== 200 || cleared.ids.length !== 0) await fail(`after the repos returned: health ${JSON.stringify(covered)}, alerts ${cleared.status} ${JSON.stringify(cleared.ids)}`);
 console.log("coverage: the repos returned, paying_uncovered 0, alerts 200");
@@ -532,7 +543,11 @@ if (JSON.stringify(unversioned) !== JSON.stringify(["private-paths-unrouted"])) 
 console.log(`probe: exit 0, ${probeChecks.length} checks passed, each a Worker answered naming its version (${[...new Set(probeChecks.map((c) => c.version).filter(Boolean))].length} versions), private-paths-unrouted answered by none`);
 
 // The per-address cap, last: the 300th health read in a minute answers, the 301st is 429 with the
-// version header. Reads already spent this minute count, so the walk stops at the first 429.
+// version header. Reads already spent this minute count, so the walk stops at the first 429. The
+// local limiter's windows are aligned to the wall clock, so a walk that crosses into the next one
+// starts counting again: it begins only with ten seconds or more of its window left.
+const windowLeftMs = IP_LIMIT_PERIOD_S * 1000 - (Date.now() % (IP_LIMIT_PERIOD_S * 1000));
+if (windowLeftMs < 10_000) await sleep(windowLeftMs + 100);
 let capped = 0;
 for (let i = 1; i <= 400; i++) {
   const res = await call("/v1/key/health");

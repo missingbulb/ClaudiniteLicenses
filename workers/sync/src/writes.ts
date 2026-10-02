@@ -3,8 +3,9 @@
 // so a redelivered message changes nothing there; a redelivered incident is one more row, which only
 // errs toward an alert. A batch from the dead-letter queue is logged, stamped and counted as
 // incidents, never written, so a lost seat record is seen rather than silent. Every batch stamps the
-// version that consumed it beside its time, so health names the consumer's version.
-import { GRACE_SPENT_S, isWriteMessage, licenseeOf, SEAT_WINDOW_S, type WriteMessage } from "../../../packages/licensing/src/index.ts";
+// version that consumed it beside its time, so health names the consumer's version. A committed
+// batch also answers which reconciles it requested, each by its latest request.
+import { GRACE_SPENT_S, isWriteMessage, licenseeOf, RECONCILE_MARKERS, SEAT_WINDOW_S, type ReconcileMarker, type WriteMessage } from "../../../packages/licensing/src/index.ts";
 import { insertIncident } from "./incidents.ts";
 import { stamp } from "./repos.ts";
 import { versionOf, type VersionEnv } from "../../../packages/version/src/index.ts";
@@ -48,7 +49,10 @@ function statementsFor(db: D1Database, m: WriteMessage): D1PreparedStatement[] {
   return [db.prepare("UPDATE overuse SET grace_started_at = NULL WHERE licensee_id = ? AND grace_started_at <= ?").bind(m.owner_id, m.at)];
 }
 
-export async function consumeWrites(batch: MessageBatch, env: WritesEnv, nowS: number): Promise<void> {
+/** Each reconcile a batch requested, by the time of its latest request. */
+export type ReconcileRequests = Partial<Record<ReconcileMarker, number>>;
+
+export async function consumeWrites(batch: MessageBatch, env: WritesEnv, nowS: number): Promise<ReconcileRequests> {
   const db = env.DB;
   if (batch.queue === DEAD_LETTER_QUEUE) {
     const writes: D1PreparedStatement[] = [];
@@ -59,10 +63,11 @@ export async function consumeWrites(batch: MessageBatch, env: WritesEnv, nowS: n
     }
     await db.batch([...writes, stamp(db, "last_dead_letter_at", nowS), stamp(db, "last_queue_version", nowS, versionOf(env))]);
     batch.ackAll();
-    return;
+    return {};
   }
 
   const writes: D1PreparedStatement[] = [];
+  const requested: ReconcileRequests = {};
   let oldest = nowS;
   for (const msg of batch.messages) {
     if (!isWriteMessage(msg.body)) {
@@ -72,6 +77,11 @@ export async function consumeWrites(batch: MessageBatch, env: WritesEnv, nowS: n
     }
     writes.push(...statementsFor(db, msg.body));
     oldest = Math.min(oldest, msg.body.at);
+    const m = msg.body;
+    if (m.kind === "incident" && (RECONCILE_MARKERS as readonly string[]).includes(m.marker)) {
+      const marker = m.marker as ReconcileMarker;
+      requested[marker] = Math.max(requested[marker] ?? m.at, m.at);
+    }
   }
   writes.push(stamp(db, "last_queue_at", nowS), stamp(db, "last_queue_version", nowS, versionOf(env)), stamp(db, "queue_lag_s", nowS, String(Math.max(0, nowS - oldest))));
   try {
@@ -79,7 +89,8 @@ export async function consumeWrites(batch: MessageBatch, env: WritesEnv, nowS: n
   } catch (err) {
     console.error(JSON.stringify({ marker: "write-retried", messages: batch.messages.length, error: String(err) }));
     batch.retryAll();
-    return;
+    return {};
   }
   batch.ackAll();
+  return requested;
 }

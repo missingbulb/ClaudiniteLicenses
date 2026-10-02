@@ -25,5 +25,4 @@ OIDC_ISSUER='http://127.0.0.1:<stub port>'
 # workers/sync/.dev.vars
 GITHUB_APP_ID='1'
 GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----\n"
-SYNC_ADMIN_TOKEN='<random hex>'
 GITHUB_API_BASE='http://127.0.0.1:<stub port>'

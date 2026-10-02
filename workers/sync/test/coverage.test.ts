@@ -1,7 +1,8 @@
-import { createExecutionContext, createScheduledController, waitOnExecutionContext } from "cloudflare:test";
+import { createExecutionContext, createMessageBatch, createScheduledController, waitOnExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { auditCoverage } from "../src/coverage.ts";
 import worker from "../src/index.ts";
+import { WRITES_QUEUE } from "../src/writes.ts";
 import { env, fakeGitHub, freshDatabase, repo, type FakeGitHub } from "./github.ts";
 import { fakePolar, type FakePolar } from "./polar.ts";
 
@@ -69,7 +70,11 @@ describe("where the audit runs", () => {
   let gh: FakeGitHub;
   let polar: FakePolar;
   const health = async () => (await (await worker.fetch(new Request("https://license.claudinite.com/v1/sync/health"), env, createExecutionContext())).json()) as Record<string, unknown>;
-  const admin = { method: "POST", headers: { Authorization: "Bearer acme-admin-token" } };
+  // A reconcile the deploy requests on the writes queue; the stamps go first, so each request runs.
+  const requestReconcile = async (marker: "reconcile-now" | "polar-reconcile-now") => {
+    await env.DB.prepare("DELETE FROM sync_state WHERE name IN ('last_reconcile_at', 'last_polar_reconcile_at')").run();
+    await worker.queue(createMessageBatch(WRITES_QUEUE, [{ id: "m0", timestamp: new Date(), attempts: 1, body: { v: 1, kind: "incident", at: Math.floor(Date.now() / 1000), marker } }]), env, createExecutionContext());
+  };
 
   beforeEach(() => {
     gh = fakeGitHub();
@@ -80,20 +85,23 @@ describe("where the audit runs", () => {
     expect((await health()).paying_uncovered).toBeNull();
   });
 
-  it("re-judges at the end of POST /v1/sync/reconcile, so a repo leaving the App shows at once and its return clears it", async () => {
+  it("re-judges at the end of a requested GitHub reconcile, so a repo leaving the App shows at once and its return clears it", async () => {
     await seedSubscription("sub_repo", { plan: "private-repo", repo_ids: "[1]" });
     gh.installations = [{ id: 5005, account: { id: 2002, login: "acme-user", type: "User" }, repos: [repo(1)] }];
-    expect((await worker.fetch(new Request("https://license.claudinite.com/v1/sync/reconcile", admin), env, createExecutionContext())).status).toBe(200);
+    await requestReconcile("reconcile-now");
     expect((await health()).paying_uncovered).toBe(0);
     gh.installations[0]!.repos = [];
-    await worker.fetch(new Request("https://license.claudinite.com/v1/sync/reconcile", admin), env, createExecutionContext());
+    await requestReconcile("reconcile-now");
     expect((await health()).paying_uncovered).toBe(1);
+    gh.installations[0]!.repos = [repo(1)];
+    await requestReconcile("reconcile-now");
+    expect((await health()).paying_uncovered).toBe(0);
   });
 
-  it("re-judges at the end of POST /v1/sync/polar-reconcile", async () => {
+  it("re-judges at the end of a requested Polar reconcile", async () => {
     polar.subscriptions = [];
     await seedSubscription("sub_owner", { owner_id: 7007, plan: "personal" });
-    expect((await worker.fetch(new Request("https://license.claudinite.com/v1/sync/polar-reconcile", admin), env, createExecutionContext())).status).toBe(200);
+    await requestReconcile("polar-reconcile-now");
     expect((await health()).paying_uncovered).toBe(1);
   });
 

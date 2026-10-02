@@ -83,8 +83,8 @@ describe("evaluateAlerts, one case each side of every threshold", () => {
     });
   }
 
-  it("ignores deploy-read-back rows, which every deploy writes on purpose", () => {
-    expect(ids(healthy(), { "deploy-read-back": { count: 50, first: NOW - 60 } })).toEqual([]);
+  it("ignores deploy-read-back and reconcile-request rows, which every deploy writes on purpose", () => {
+    for (const marker of ["deploy-read-back", "reconcile-now", "polar-reconcile-now"] as const) expect(ids(healthy(), { [marker]: { count: 50, first: NOW - 60 } }), marker).toEqual([]);
   });
 
   it("ignores write-dead-lettered rows, which the dead-letter stamp already alerts on", () => {

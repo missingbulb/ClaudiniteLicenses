@@ -57,8 +57,7 @@ describe("tools/keys.mjs", () => {
     expect(keyVars.GITHUB_APP_PRIVATE_KEY).toBe(vars.GITHUB_APP_PRIVATE_KEY);
     expect(JSON.parse(keyVars.TRUST_ROOTS!)).toEqual(roots);
     const sync = parseDevVars(readFileSync(join(dir, "sync.dev.vars"), "utf8"));
-    expect(sync).toMatchObject({ GITHUB_APP_ID: vars.GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY: vars.GITHUB_APP_PRIVATE_KEY });
-    expect(sync.SYNC_ADMIN_TOKEN!.length).toBeGreaterThanOrEqual(32);
+    expect(sync).toEqual({ GITHUB_APP_ID: vars.GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY: vars.GITHUB_APP_PRIVATE_KEY });
   });
 
   it("trust-roots prints the committed roots directory's keys, or the dev root while it does not exist, as the key Worker's committed TRUST_ROOTS holds", () => {

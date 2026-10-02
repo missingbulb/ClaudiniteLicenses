@@ -132,10 +132,18 @@ export function dayOf(at: number): string {
 }
 
 /**
- * The markers an `incidents` row carries, one row per occurrence. The alerts count all but
- * `deploy-read-back`, the message every deploy pushes onto the writes queue to prove the consumer.
+ * The markers the deploy pushes onto the writes queue to have the consumer run a reconcile at once,
+ * `reconcile-now` the GitHub one and `polar-reconcile-now` the Polar one.
  */
-export const INCIDENT_MARKERS = ["d1-unreadable", "polar-unreachable", "app-not-installed", "polar-webhook-refused", "write-dead-lettered", "secondary-rate-limit", "deploy-read-back"] as const;
+export const RECONCILE_MARKERS = ["reconcile-now", "polar-reconcile-now"] as const;
+export type ReconcileMarker = (typeof RECONCILE_MARKERS)[number];
+
+/**
+ * The markers an `incidents` row carries, one row per occurrence. The alerts count none of
+ * `deploy-read-back`, the message every deploy pushes onto the writes queue to prove the consumer,
+ * or the reconcile requests.
+ */
+export const INCIDENT_MARKERS = ["d1-unreadable", "polar-unreachable", "app-not-installed", "polar-webhook-refused", "write-dead-lettered", "secondary-rate-limit", "deploy-read-back", ...RECONCILE_MARKERS] as const;
 export type IncidentMarker = (typeof INCIDENT_MARKERS)[number];
 /** The longest `detail` an incident carries. */
 export const INCIDENT_DETAIL_MAX = 200;

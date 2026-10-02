@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Pushes one incident message onto a Cloudflare Queue by the queue's name, through the Queues REST
-// API, so the deploy can prove the writes queue's consumer from outside without a producer
-// binding. Reads CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID from the environment, and prints
+// API, so the deploy can prove the writes queue's consumer, and request a reconcile from it, from
+// outside without a producer binding. Reads CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID from the environment, and prints
 // the message it sent as its one JSON line.
 //
 //   node tools/push-queue-message.mjs --queue claudinite-licenses-writes --marker deploy-read-back --detail "<text>" [--at <unix s>]

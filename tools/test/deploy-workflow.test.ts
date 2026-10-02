@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -247,8 +247,7 @@ describe("deploy.yml", () => {
     for (const worker of WORKERS) {
       const want = Object.fromEntries(readmeSecrets(worker).map((s) => [s.worker, values[s.repo]]));
       const { bulk } = storedSecrets(worker, values);
-      const { SYNC_ADMIN_TOKEN: _generated, ...stored } = bulk;
-      expect(stored, worker).toEqual(want);
+      expect(bulk, worker).toEqual(want);
     }
   });
 
@@ -258,22 +257,18 @@ describe("deploy.yml", () => {
     expect(bulk).not.toHaveProperty("GITHUB_APP_CLIENT_SECRET");
   });
 
-  it("generates a fresh SYNC_ADMIN_TOKEN each run and leaves it only for the read-back", () => {
+  // ClaudiniteLicenses#25: a secret minted per run made every rollback a changed-secret refusal.
+  it("stores the same sync secrets on every run, so the version a rollback returns to holds none that changed", () => {
     const values = Object.fromEntries(secrets.map((s) => [s, `value-of-${s}`]));
-    const a = storedSecrets("sync", values);
-    const b = storedSecrets("sync", values);
-    expect(a.bulk.SYNC_ADMIN_TOKEN).toMatch(/^[0-9a-f]{64}$/);
-    expect(a.bulk.SYNC_ADMIN_TOKEN).not.toBe(b.bulk.SYNC_ADMIN_TOKEN);
-    expect(readFileSync(join(a.dir, "sync-admin-token"), "utf8")).toBe(a.bulk.SYNC_ADMIN_TOKEN);
-    expect(statSync(join(a.dir, "sync-admin-token")).mode & 0o777).toBe(0o600);
-    const readBack = steps.find((s) => s.name === "Read back the live Workers")!;
-    expect(readBack.run).toContain("sync-admin-token");
+    expect(storedSecrets("sync", values).bulk).toEqual(storedSecrets("sync", values).bulk);
+    for (const step of steps) expect(step.run ?? "", step.name).not.toMatch(/SYNC_ADMIN_TOKEN|sync-admin-token|openssl rand/);
   });
 
-  it("reads back the key and sync Workers, the reconcile, and a real OIDC token refused as an unpinned workflow", () => {
+  it("reads back the key and sync Workers and a real OIDC token refused as an unpinned workflow, and calls no reconcile route", () => {
     expect(workflow.jobs.deploy.permissions).toEqual({ contents: "read", "id-token": "write" });
     const run = steps.find((s) => s.name === "Read back the live Workers")!.run!;
-    for (const route of ["/v1/public/health", "/v1/key/health", "/v1/sync/health", "/v1/sync/reconcile", "/v1/actions-key", "/github-webhook"]) {
+    for (const step of steps) expect(step.run ?? "", step.name).not.toMatch(/\/v1\/sync\/(polar-)?reconcile\b/);
+    for (const route of ["/v1/public/health", "/v1/key/health", "/v1/sync/health", "/v1/actions-key", "/github-webhook"]) {
       expect(run, route).toContain(`https://license.claudinite.com${route}`);
     }
     expect(run).toContain("audience=claudinite");
@@ -341,14 +336,12 @@ describe("deploy.yml", () => {
     expect(JSON.parse(v.slice("TRUST_ROOTS:".length))).toEqual([readFileSync(join(ROOT, "keys/dev/roots/root.pub"), "utf8").trim()]);
   });
 
-  it("reads back the queue, Polar, the Polar reconcile and a live checkout whose checkout.created delivery reaches the sync Worker", () => {
+  it("reads back the queue, Polar and a live checkout whose checkout.created delivery reaches the sync Worker", () => {
     const step = steps.find((s) => s.name === "Read back the live Workers")!;
     const run = step.run!;
     expect(run).toContain('b.queue==="bound"');
     expect(run).toContain('b.polar==="configured"');
     expect(run).toContain("b.polar_webhook_secret===true");
-    expect(run).toContain("https://license.claudinite.com/v1/sync/polar-reconcile");
-    expect(run).toContain("b.last_polar_reconcile_at>=$started");
     expect(run).toMatch(/node tools\/polar-checkout\.mjs --plan private-repo --owner-id "\$GITHUB_REPOSITORY_OWNER_ID" --owner-login "\$GITHUB_REPOSITORY_OWNER" --owner-type "\$OWNER_TYPE" --repo-id "\$GITHUB_REPOSITORY_ID" --repo "\$GITHUB_REPOSITORY"/);
     expect(run).toContain("b.last_polar_webhook_at>=$started");
     expect(run.indexOf("polar-checkout.mjs")).toBeLessThan(run.indexOf("b.last_polar_webhook_at>=$started"));
@@ -687,6 +680,90 @@ describe("deploy.yml", () => {
     expect(stale.sleeps.length).toBeGreaterThanOrEqual(5);
     const refused = judgeRun(200, HEALTHY, { PUSH_EXIT: "1" });
     expect(refused.stdout).toMatch(/::error::.*Queues Edit/);
+  });
+
+  const requestStep = () => named("Request both reconciles through the writes queue");
+  const RECONCILED = '"repos":3,"last_reconcile_at":9999999999,"last_polar_reconcile_at":9999999999,"last_polar_reconcile_error":null,"last_queue_at":9999999999,"last_queue_version":"new-sync"';
+
+  // Runs the reconcile requests with the stand-ins and a curl answering the health bodies in turn,
+  // separated by `|`, the last one repeating; each health read and push is appended to the order log.
+  function requestRun(body: string, extra: Record<string, string> = {}) {
+    const dir = standIns();
+    writeFileSync(
+      join(dir, "curl"),
+      `#!/usr/bin/env bash\nout=""\nwhile [ $# -gt 0 ]; do case "$1" in -o) out=$2; shift;; esac; shift; done\necho health >> "${dir}/order"; n=$(( $(cat "${dir}/reads" 2>/dev/null || echo 0) + 1 )); echo $n > "${dir}/reads"; IFS='|' read -ra bodies <<< '${body}'; i=$(( n <= \${#bodies[@]} ? n - 1 : \${#bodies[@]} - 1 )); printf '%s' "\${bodies[$i]}" > "$out"\n`,
+    );
+    writeFileSync(join(dir, "sleep"), `#!/usr/bin/env bash\necho "$@" >> "${dir}/sleeps"\n`);
+    for (const f of ["curl", "sleep"]) chmodSync(join(dir, f), 0o755);
+    const res = runStep(requestStep(), { CLOUDFLARE_API_TOKEN: "cf-token", CLOUDFLARE_ACCOUNT_ID: "acct" }, { PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, RUN_URL: "https://github.test/acme/runs/1", SYNC_VERSION: "new-sync", ...extra });
+    const read = (f: string) => (existsSync(join(dir, f)) ? readFileSync(join(dir, f), "utf8").trim().split("\n") : []);
+    return { ...res, order: read("order"), pushes: read("order").filter((o) => o.startsWith("push ")) };
+  }
+
+  describe("the reconciles requested through the writes queue", () => {
+    it("runs after promotion and before the read-back, with the deploy's Cloudflare token and the deployed sync version", () => {
+      const at = steps.indexOf(requestStep());
+      expect(at).toBe(steps.indexOf(named("Read back the live Workers")) - 1);
+      expect(at).toBeGreaterThan(steps.indexOf(named("Promote the new versions to all requests")));
+      expect(requestStep().if).toBe("steps.gate.outputs.skip == 'false'");
+      expect(requestStep().env).toEqual({ CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}", CLOUDFLARE_ACCOUNT_ID: "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}", SYNC_VERSION: "${{ steps.deploy-sync.outputs.version_id }}" });
+    });
+
+    it("pushes reconcile-now, then polar-reconcile-now, each with the run URL, and passes once each stamp reaches its push", () => {
+      const res = requestRun(`{${RECONCILED}}`);
+      expect(res.status, res.stderr + res.stdout).toBe(0);
+      expect(res.order).toEqual([
+        "push --queue claudinite-licenses-writes --marker reconcile-now --detail https://github.test/acme/runs/1",
+        "health",
+        "push --queue claudinite-licenses-writes --marker polar-reconcile-now --detail https://github.test/acme/runs/1",
+        "health",
+      ]);
+      expect(res.stdout).toMatch(/^ok reconcile-now ran after the push: last_reconcile_at 9999999999 repos 3 /m);
+      expect(res.stdout).toMatch(/^ok polar-reconcile-now ran after the push: last_polar_reconcile_at 9999999999 last_polar_reconcile_error null /m);
+    });
+
+    it("asks the health again until the stamp reaches the push", () => {
+      const before = '{"repos":3,"last_reconcile_at":1,"last_queue_at":1,"last_queue_version":"new-sync"}';
+      const res = requestRun(`${before}|${before}|{${RECONCILED}}`);
+      expect(res.status, res.stderr + res.stdout).toBe(0);
+      expect(res.order.filter((o) => o === "health")).toHaveLength(4);
+      expect(res.pushes).toHaveLength(2);
+    });
+
+    it("fails when the GitHub reconcile found no repos, naming the count", () => {
+      const res = requestRun('{"repos":0,"last_reconcile_at":9999999999,"last_queue_at":9999999999,"last_queue_version":"new-sync"}');
+      expect(res.status).not.toBe(0);
+      expect(res.stdout).toMatch(/^::error::reconcile-now was pushed at \d+ and its reconcile never answered it: .*repos 0/m);
+      expect(res.pushes).toHaveLength(1);
+    });
+
+    it("fails naming the Polar error when the Polar reconcile's stamp never moves", () => {
+      const res = requestRun('{"repos":3,"last_reconcile_at":9999999999,"last_polar_reconcile_at":null,"last_polar_reconcile_error":"503","last_queue_at":9999999999,"last_queue_version":"new-sync"}');
+      expect(res.status).not.toBe(0);
+      expect(res.stdout).toMatch(/^::error::polar-reconcile-now was pushed at \d+ and its reconcile never answered it: last_polar_reconcile_at null last_polar_reconcile_error 503/m);
+    });
+
+    it("pushes again when another version consumed the request, and passes once the stamp reaches the push", () => {
+      const byOld = '{"repos":3,"last_reconcile_at":1,"last_queue_at":9999999999,"last_queue_version":"live-sync"}';
+      const res = requestRun(`${byOld}|{${RECONCILED}}`);
+      expect(res.status, res.stderr + res.stdout).toBe(0);
+      expect(res.pushes.filter((p) => p.includes("--marker reconcile-now "))).toHaveLength(2);
+      expect(res.stdout).toMatch(/a batch landed on another version after the push of reconcile-now/);
+    });
+
+    it("pushes at most four times while only another version consumes, then fails naming the deployed version", () => {
+      const res = requestRun('{"repos":3,"last_reconcile_at":1,"last_queue_at":9999999999,"last_queue_version":"live-sync"}');
+      expect(res.status).not.toBe(0);
+      expect(res.pushes).toHaveLength(4);
+      expect(res.stdout).toMatch(/::error::reconcile-now was pushed 4 times and only another version consumed it, not new-sync/);
+    });
+
+    it("fails naming the permission when the push is refused, reading no health", () => {
+      const res = requestRun(`{${RECONCILED}}`, { PUSH_EXIT: "1" });
+      expect(res.status).not.toBe(0);
+      expect(res.stdout).toMatch(/::error::could not push reconcile-now .*Queues Edit/);
+      expect(res.order.filter((o) => o === "health")).toEqual([]);
+    });
   });
 
   // The rollback step after a failure, with markers as the steps before it left them.

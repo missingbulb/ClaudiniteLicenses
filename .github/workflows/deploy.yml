@@ -282,12 +282,8 @@ jobs:
           # it ran with; a secret left out of the file is kept from the previous version.
           trap 'rm -f "$RUNNER_TEMP/sync.secrets.json" "$RUNNER_TEMP/polar-webhook-secret"' EXIT
           umask 077
-          # A fresh admin token every run, kept only until the read-back has used it once.
-          SYNC_ADMIN_TOKEN=$(openssl rand -hex 32)
-          echo "::add-mask::$SYNC_ADMIN_TOKEN"
-          printf %s "$SYNC_ADMIN_TOKEN" > "$RUNNER_TEMP/sync-admin-token"
           # The webhook secret exists only when the step before made a new endpoint.
-          SYNC_ADMIN_TOKEN=$SYNC_ADMIN_TOKEN node -e 'const e=process.env,fs=require("fs"),f=e.RUNNER_TEMP+"/polar-webhook-secret",hook=fs.existsSync(f)?{POLAR_WEBHOOK_SECRET:fs.readFileSync(f,"utf8")}:{};console.log(JSON.stringify({GITHUB_APP_ID:e.GITHUB_APP_ID,GITHUB_APP_PRIVATE_KEY:e.GITHUB_APP_PRIVATE_KEY,SYNC_ADMIN_TOKEN:e.SYNC_ADMIN_TOKEN,POLAR_ACCESS_TOKEN:e.POLAR_ACCESS_TOKEN,...hook}))' > "$RUNNER_TEMP/sync.secrets.json"
+          node -e 'const e=process.env,fs=require("fs"),f=e.RUNNER_TEMP+"/polar-webhook-secret",hook=fs.existsSync(f)?{POLAR_WEBHOOK_SECRET:fs.readFileSync(f,"utf8")}:{};console.log(JSON.stringify({GITHUB_APP_ID:e.GITHUB_APP_ID,GITHUB_APP_PRIVATE_KEY:e.GITHUB_APP_PRIVATE_KEY,POLAR_ACCESS_TOKEN:e.POLAR_ACCESS_TOKEN,...hook}))' > "$RUNNER_TEMP/sync.secrets.json"
           npx wrangler deploy -c workers/sync/wrangler.jsonc --secrets-file "$RUNNER_TEMP/sync.secrets.json"
           # The version the judge requires the queue consumer to have run on.
           node tools/stage.mjs status --config workers/sync/wrangler.jsonc --json "$RUNNER_TEMP/sync.status.json" > /dev/null
@@ -456,6 +452,54 @@ jobs:
             node tools/stage.mjs triggers --config "workers/$w/wrangler.jsonc"
           done
       - if: steps.gate.outputs.skip == 'false'
+        name: Request both reconciles through the writes queue
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          SYNC_VERSION: ${{ steps.deploy-sync.outputs.version_id }}
+        run: |
+          # Each reconcile is requested as the judge proved the queue: a marker pushed onto the writes
+          # queue, which the consumer answers by running that reconcile, proven by its stamp reaching
+          # the push. The App is installed on all of missingbulb, so the GitHub one must find repos. A
+          # version that does not know the marker acks it unrun, so a batch that landed after the
+          # push on another version (exit 2) is answered with one more push.
+          request() {
+            marker=$1
+            field=$2
+            pushes=0
+            while :; do
+              pushed=$(date +%s)
+              node tools/push-queue-message.mjs --queue claudinite-licenses-writes --marker "$marker" --detail "$RUN_URL" > /dev/null || {
+                echo "::error::could not push $marker onto claudinite-licenses-writes, so the reconcile was never requested; the CLOUDFLARE_API_TOKEN needs the Queues Edit (or Workers Scripts Edit) permission"
+                return 1
+              }
+              pushes=$((pushes + 1))
+              code=1
+              for i in 1 2 3 4 5 6 7 8; do
+                sleep $((i * 3))
+                curl -sS -o "$RUNNER_TEMP/sync-health.json" --max-time 20 https://license.claudinite.com/v1/sync/health > /dev/null || true
+                if seen=$(node -e 'let b={};try{b=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))}catch{}const[,,field,pushed,want]=process.argv;const github=field==="last_reconcile_at";process.stdout.write(`${field} ${b[field]} ${github?`repos ${b.repos}`:`last_polar_reconcile_error ${b.last_polar_reconcile_error}`} last_queue_at ${b.last_queue_at} last_queue_version ${b.last_queue_version}`);const at=typeof b[field]==="number"?b[field]:-1,q=typeof b.last_queue_at==="number"?b.last_queue_at:-1;process.exitCode=(at>=Number(pushed)&&(!github||b.repos>0))?0:(q>=Number(pushed)&&b.last_queue_version!==want)?2:1' "$RUNNER_TEMP/sync-health.json" "$field" "$pushed" "$SYNC_VERSION"); then
+                  echo "ok $marker ran after the push: $seen"
+                  return 0
+                else
+                  code=$?
+                fi
+                [ "$code" = 2 ] && break
+              done
+              if [ "$code" != 2 ]; then
+                echo "::error::$marker was pushed at $pushed and its reconcile never answered it: $seen"
+                return 1
+              fi
+              if [ "$pushes" -ge 4 ]; then
+                echo "::error::$marker was pushed $pushes times and only another version consumed it, not $SYNC_VERSION: $seen"
+                return 1
+              fi
+              echo "a batch landed on another version after the push of $marker ($seen); pushing again"
+            done
+          }
+          request reconcile-now last_reconcile_at
+          request polar-reconcile-now last_polar_reconcile_at
+      - if: steps.gate.outputs.skip == 'false'
         id: read-back
         name: Read back the live Workers
         env:
@@ -484,8 +528,6 @@ jobs:
           }
           started=$(date +%s)
           echo "started=$started" >> "$GITHUB_OUTPUT"
-          token=$(cat "$RUNNER_TEMP/sync-admin-token")
-          rm "$RUNNER_TEMP/sync-admin-token"
           # ip_limit is what the per-address cap made of that very read: `counted` proves the live
           # version carries the binding and its health route calls it.
           probe 200 'b.ip_limit==="counted"' -- https://license.claudinite.com/v1/public/health
@@ -495,14 +537,8 @@ jobs:
           # The fail-open switch the upload passed, or the committed value.
           probe 200 "b.fail_open===$FAIL_OPEN_WANT" -- https://license.claudinite.com/v1/key/health
           probe 200 -- https://license.claudinite.com/v1/sync/health
-          probe 200 'b.ok===true' -- -X POST -H "Authorization: Bearer $token" https://license.claudinite.com/v1/sync/reconcile
-          # The App is installed on all of missingbulb, so the reconcile must have found repos.
-          probe 200 "b.repos>0&&b.last_reconcile_at>=$started" -- https://license.claudinite.com/v1/sync/health
           probe 401 -- -X POST -H 'content-type: application/json' -d '{}' https://license.claudinite.com/github-webhook
           probe 200 'b.polar_webhook_secret===true' -- https://license.claudinite.com/v1/sync/health
-          # A real listing of the sandbox's subscriptions, empty or not.
-          probe 200 'b.ok===true' -- -X POST -H "Authorization: Bearer $token" https://license.claudinite.com/v1/sync/polar-reconcile
-          probe 200 "b.last_polar_reconcile_at>=$started" -- https://license.claudinite.com/v1/sync/health
           # The live Polar path: a sandbox checkout made with the code the key Worker bundles, whose
           # checkout.created delivery, signed with the endpoint's secret, the sync Worker must verify.
           # Polar sends it when the checkout is created, so the hosted page is never fetched. Nothing
