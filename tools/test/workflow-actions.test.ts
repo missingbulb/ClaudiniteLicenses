@@ -11,7 +11,7 @@ const files = readdirSync(DIR).filter((f) => /\.ya?ml$/.test(f));
 const USES = /^\s*(?:-\s+)?uses:\s*(.*)$/;
 const PINNED = /^([\w.-]+\/[\w.-]+(?:\/[\w./-]+)?)@([0-9a-f]{40}) # v\d+\.\d+\.\d+$/;
 
-type Step = { uses?: string; with?: Record<string, unknown> };
+type Step = { uses?: string; run?: string; with?: Record<string, unknown> };
 
 describe(".github/workflows", () => {
   it("has workflows to check", () => {
@@ -38,13 +38,20 @@ describe(".github/workflows", () => {
     expect(failures).toEqual([]);
   });
 
-  it("declares cache on every actions/setup-node step", () => {
+  // `cache: npm` where the job installs, `package-manager-cache: false` where it does not, so a job
+  // that never fills ~/.npm saves nothing under the key the installing jobs share.
+  it("declares its caching either way on every actions/setup-node step", () => {
     const failures: string[] = [];
     for (const f of files) {
       const wf = parse(readFileSync(join(DIR, f), "utf8")) as { jobs: Record<string, { steps?: Step[] }> };
       for (const [name, job] of Object.entries(wf.jobs)) {
         for (const step of job.steps ?? []) {
-          if (step.uses?.startsWith("actions/setup-node@") && !step.with?.cache) failures.push(`${f} job ${name}: setup-node declares no cache`);
+          if (!step.uses?.startsWith("actions/setup-node@")) continue;
+          const cached = Boolean(step.with?.cache);
+          const off = step.with?.["package-manager-cache"] === false;
+          const installs = (job.steps ?? []).some((st) => /\bnpm (ci|install)\b/.test(st.run ?? ""));
+          if (cached === off) failures.push(`${f} job ${name}: setup-node declares ${cached ? "both cache and package-manager-cache: false" : "no caching"}`);
+          else if (cached !== installs) failures.push(`${f} job ${name}: ${installs ? "installs, so declares cache: npm" : "never installs, so declares package-manager-cache: false"}`);
         }
       }
     }
