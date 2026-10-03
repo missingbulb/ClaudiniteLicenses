@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Development key chains for the license Workers. Production roots and issuing-key certificates
-// come from ClaudiniteEngine's cn-keys ceremony (ClaudiniteEngine#5); the files written here use
-// the same formats, so a Worker cannot tell the two apart.
+// Development key chains for the license Workers, and the committed trust roots. Production roots
+// and issuing-key certificates come from ClaudiniteEngine's cn-keys ceremony (ClaudiniteEngine#5);
+// the files written here use the same formats, so a Worker cannot tell the two apart.
 //
 //   node tools/keys.mjs gen-root --out <dir> [--name root]
 //   node tools/keys.mjs gen-issuing --out <dir> [--name issuing]
@@ -102,15 +102,15 @@ export async function devChain(out) {
 
 /**
  * The roots an Actions key must chain to before the key Worker grants on it: the committed
- * `packages/signing/roots/*.pub` once that directory exists, the dev root until then.
+ * `packages/signing/roots/*.pub`, ClaudiniteEngine's key ceremony roots.
  * @param {string} [root] the repository root
  * @returns {string[]}
  */
 export function trustRoots(root = join(import.meta.dirname, "..")) {
   const dir = join(root, "packages/signing/roots");
   const pubs = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".pub")).sort() : [];
-  if (pubs.length > 0) return pubs.map((f) => readFileSync(join(dir, f), "utf8").trim());
-  return [readFileSync(join(root, "keys/dev/roots/root.pub"), "utf8").trim()];
+  if (pubs.length === 0) throw new Error(`${dir} holds no .pub root key`);
+  return pubs.map((f) => readFileSync(join(dir, f), "utf8").trim());
 }
 
 async function main(argv) {

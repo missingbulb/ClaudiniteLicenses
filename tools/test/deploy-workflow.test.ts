@@ -174,19 +174,18 @@ describe("deploy.yml", () => {
   const ISSUING = ["ISSUING_KEY_PRIVATE", "ISSUING_KEY_CERT", "KEY_ISSUING_KEY_PRIVATE", "KEY_ISSUING_KEY_CERT"];
   const allBut = (...names: string[]) => Object.fromEntries(secrets.filter((s) => !names.includes(s)).map((s) => [s, "set"]));
 
-  it("skips on each missing secret the Workers' READMEs list, other than the issuing keys and the optional ones", () => {
+  it("skips on each missing secret the Workers' READMEs list, the issuing keys included, other than the optional ones", () => {
     expect(readmeSecrets("public-key").length).toBeGreaterThanOrEqual(4);
     expect(readmeSecrets("key").length).toBeGreaterThanOrEqual(5);
     expect(readmeSecrets("sync").length).toBeGreaterThanOrEqual(2);
     expect(readmeSecrets("router").length).toBeGreaterThanOrEqual(1);
     expect(optional).toEqual(["CLAUDINITE_GITHUB_APP_CLIENT_SECRET"]);
-    for (const name of secrets.filter((s) => !ISSUING.includes(s) && !optional.includes(s))) {
-      for (const issuing of [[], ISSUING]) {
-        const res = runGate(allBut(name, ...issuing));
-        expect(res.status, name).toBe(0);
-        expect(res.stdout, name).toContain(`deploy skipped: missing ${name}`);
-        expect(res.output, name).toBe("skip=true\n");
-      }
+    for (const name of ISSUING) expect(secrets, name).toContain(name);
+    for (const name of secrets.filter((s) => !optional.includes(s))) {
+      const res = runGate(allBut(name));
+      expect(res.status, name).toBe(0);
+      expect(res.stdout, name).toContain(`deploy skipped: missing ${name}`);
+      expect(res.output, name).toBe("skip=true\n");
     }
   });
 
@@ -207,39 +206,8 @@ describe("deploy.yml", () => {
     expect(all.output).toBe("skip=false\n");
   });
 
-  const PAIRS: { worker: string; pair: string[]; dev: string }[] = [
-    { worker: "public-key", pair: ["ISSUING_KEY_PRIVATE", "ISSUING_KEY_CERT"], dev: "license-public" },
-    { worker: "key", pair: ["KEY_ISSUING_KEY_PRIVATE", "KEY_ISSUING_KEY_CERT"], dev: "license" },
-  ];
-
-  for (const { worker, pair, dev } of PAIRS) {
-    it(`proceeds on the committed dev ${dev} key for claudinite-${worker}, with a warning naming the Worker and ClaudiniteEngine#5, when both its issuing keys are unset`, () => {
-      const res = runGate(allBut(...pair));
-      expect(res.status).toBe(0);
-      expect(res.output).toBe("skip=false\n");
-      const warnings = res.stdout.split("\n").filter((l) => l.startsWith("::warning::"));
-      expect(warnings.some((w) => w.includes(`claudinite-${worker}`) && w.includes("ClaudiniteEngine#5")), res.stdout).toBe(true);
-      const { bulk } = storedSecrets(worker, { ...allBut(...pair), [pair[0]!]: "", [pair[1]!]: "" });
-      expect(bulk.ISSUING_KEY_PRIVATE).toBe(readFileSync(join(ROOT, `keys/dev/${dev}.key`), "utf8"));
-      expect(bulk.ISSUING_KEY_CERT).toBe(readFileSync(join(ROOT, `keys/dev/${dev}.cert.json`), "utf8"));
-    });
-  }
-
-  it("warns about both Workers when both pairs are unset", () => {
-    const res = runGate(allBut(...ISSUING));
-    expect(res.stdout).toMatch(/^::warning::.*claudinite-public-key.*ClaudiniteEngine#5/m);
-    expect(res.stdout).toMatch(/^::warning::.*claudinite-key\b.*ClaudiniteEngine#5/m);
-  });
-
-  it("fails when only one key of a pair is set, whatever else is missing", () => {
-    for (const name of ISSUING) {
-      for (const also of [[], ["CLOUDFLARE_API_TOKEN"]]) {
-        const res = runGate(allBut(name, ...also));
-        expect(res.status, name).not.toBe(0);
-        expect(res.stdout + res.stderr, name).toContain(name);
-        expect(res.output, name).toBe("");
-      }
-    }
+  it("stores no committed key: every issuing key and certificate comes from the repository secrets", () => {
+    for (const w of ["public-key", "key"]) expect(uploadStep(w)!.run!, w).not.toMatch(/keys\/|useDev/);
   });
 
   it("stores each repository secret as the Worker secret its README names", () => {
@@ -333,7 +301,7 @@ describe("deploy.yml", () => {
     const args = res.calls[0]!;
     const v = args[args.indexOf("--var") + 1]!;
     expect(v.split(":")[0]).toBe("TRUST_ROOTS");
-    expect(JSON.parse(v.slice("TRUST_ROOTS:".length))).toEqual([readFileSync(join(ROOT, "keys/dev/roots/root.pub"), "utf8").trim()]);
+    expect(JSON.parse(v.slice("TRUST_ROOTS:".length))).toEqual(["root.pub", "standby.pub"].map((f) => readFileSync(join(ROOT, "packages/signing/roots", f), "utf8").trim()));
   });
 
   it("reads back the queue, Polar and a live checkout whose checkout.created delivery reaches the sync Worker", () => {

@@ -63,16 +63,8 @@ jobs:
           KEY_ISSUING_KEY_CERT: ${{ secrets.KEY_ISSUING_KEY_CERT }}
           POLAR_SANDBOX_TOKEN: ${{ secrets.POLAR_SANDBOX_TOKEN }}
         run: |
-          for pair in "ISSUING_KEY_PRIVATE ISSUING_KEY_CERT" "KEY_ISSUING_KEY_PRIVATE KEY_ISSUING_KEY_CERT"; do
-            set -- $pair
-            a=$(printenv "$1" || true); b=$(printenv "$2" || true)
-            if [ -n "$a$b" ] && { [ -z "$a" ] || [ -z "$b" ]; }; then
-              echo "::error::only one of $1 and $2 is set: set both, or neither to deploy with the dev key in keys/dev"
-              exit 1
-            fi
-          done
           missing=""
-          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLAUDINITE_GITHUB_APP_ID CLAUDINITE_GITHUB_APP_PRIVATE_KEY CLAUDINITE_GITHUB_APP_WEBHOOK_SECRET POLAR_SANDBOX_TOKEN; do
+          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLAUDINITE_GITHUB_APP_ID CLAUDINITE_GITHUB_APP_PRIVATE_KEY CLAUDINITE_GITHUB_APP_WEBHOOK_SECRET ISSUING_KEY_PRIVATE ISSUING_KEY_CERT KEY_ISSUING_KEY_PRIVATE KEY_ISSUING_KEY_CERT POLAR_SANDBOX_TOKEN; do
             if [ -z "$(printenv "$name")" ]; then missing="$missing $name"; fi
           done
           if [ -n "$missing" ]; then
@@ -80,12 +72,6 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             # Expected until every secret is set: a skipped deploy is not a failure.
             exit 0
-          fi
-          if [ -z "$ISSUING_KEY_PRIVATE$ISSUING_KEY_CERT" ]; then
-            echo "::warning::ISSUING_KEY_PRIVATE and ISSUING_KEY_CERT are unset: claudinite-public-key signs with the dev license-public key in keys/dev, trusted by no released binary, until ClaudiniteEngine#5"
-          fi
-          if [ -z "$KEY_ISSUING_KEY_PRIVATE$KEY_ISSUING_KEY_CERT" ]; then
-            echo "::warning::KEY_ISSUING_KEY_PRIVATE and KEY_ISSUING_KEY_CERT are unset: claudinite-key signs with the dev license key in keys/dev, trusted by no released binary, until ClaudiniteEngine#5"
           fi
           echo "skip=false" >> "$GITHUB_OUTPUT"
       - if: steps.gate.outputs.skip == 'false'
@@ -209,7 +195,7 @@ jobs:
           # The secrets travel with the version, so none reaches the live code before its own does.
           trap 'rm -f "$RUNNER_TEMP/public-key.secrets.json"' EXIT
           umask 077
-          node -e 'const e=process.env,dev=(f)=>require("fs").readFileSync("keys/dev/"+f,"utf8"),useDev=!e.ISSUING_KEY_PRIVATE;console.log(JSON.stringify({GITHUB_APP_ID:e.GITHUB_APP_ID,GITHUB_APP_PRIVATE_KEY:e.GITHUB_APP_PRIVATE_KEY,ISSUING_KEY_PRIVATE:useDev?dev("license-public.key"):e.ISSUING_KEY_PRIVATE,ISSUING_KEY_CERT:useDev?dev("license-public.cert.json"):e.ISSUING_KEY_CERT}))' > "$RUNNER_TEMP/public-key.secrets.json"
+          node -e 'const e=process.env;console.log(JSON.stringify({GITHUB_APP_ID:e.GITHUB_APP_ID,GITHUB_APP_PRIVATE_KEY:e.GITHUB_APP_PRIVATE_KEY,ISSUING_KEY_PRIVATE:e.ISSUING_KEY_PRIVATE,ISSUING_KEY_CERT:e.ISSUING_KEY_CERT}))' > "$RUNNER_TEMP/public-key.secrets.json"
           node tools/stage.mjs upload --config workers/public-key/wrangler.jsonc --secrets-file "$RUNNER_TEMP/public-key.secrets.json" --tag "${GITHUB_SHA::7}" --message "$RUN_URL" --json "$RUNNER_TEMP/public-key.upload.json"
           echo "version_id=$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).version_id' "$RUNNER_TEMP/public-key.upload.json")" >> "$GITHUB_OUTPUT"
       - if: steps.gate.outputs.skip == 'false'
@@ -240,7 +226,7 @@ jobs:
           esac
           trap 'rm -f "$RUNNER_TEMP/key.secrets.json"' EXIT
           umask 077
-          node -e 'const e=process.env,dev=(f)=>require("fs").readFileSync("keys/dev/"+f,"utf8"),useDev=!e.ISSUING_KEY_PRIVATE;console.log(JSON.stringify({GITHUB_APP_ID:e.GITHUB_APP_ID,GITHUB_APP_PRIVATE_KEY:e.GITHUB_APP_PRIVATE_KEY,...(e.GITHUB_APP_CLIENT_SECRET?{GITHUB_APP_CLIENT_SECRET:e.GITHUB_APP_CLIENT_SECRET}:{}),ISSUING_KEY_PRIVATE:useDev?dev("license.key"):e.ISSUING_KEY_PRIVATE,ISSUING_KEY_CERT:useDev?dev("license.cert.json"):e.ISSUING_KEY_CERT,POLAR_ACCESS_TOKEN:e.POLAR_ACCESS_TOKEN}))' > "$RUNNER_TEMP/key.secrets.json"
+          node -e 'const e=process.env;console.log(JSON.stringify({GITHUB_APP_ID:e.GITHUB_APP_ID,GITHUB_APP_PRIVATE_KEY:e.GITHUB_APP_PRIVATE_KEY,...(e.GITHUB_APP_CLIENT_SECRET?{GITHUB_APP_CLIENT_SECRET:e.GITHUB_APP_CLIENT_SECRET}:{}),ISSUING_KEY_PRIVATE:e.ISSUING_KEY_PRIVATE,ISSUING_KEY_CERT:e.ISSUING_KEY_CERT,POLAR_ACCESS_TOKEN:e.POLAR_ACCESS_TOKEN}))' > "$RUNNER_TEMP/key.secrets.json"
           # The roots an Actions key must chain to for an item grant.
           roots=$(node tools/keys.mjs trust-roots)
           node tools/stage.mjs upload --config workers/key/wrangler.jsonc --var "TRUST_ROOTS:$roots" "${fail_open[@]}" --secrets-file "$RUNNER_TEMP/key.secrets.json" --tag "${GITHUB_SHA::7}" --message "$RUN_URL" --json "$RUNNER_TEMP/key.upload.json"

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { signKey, verifyCertificate, verifyKey, type KeyPayload } from "../../packages/signing/src/index.ts";
+import { b64urlDecode, keyId, signKey, verifyCertificate, verifyKey, type KeyPayload } from "../../packages/signing/src/index.ts";
 import { parseDevVars, trustRoots } from "../keys.mjs";
 
 const ROOT = resolve(import.meta.dirname, "../..");
@@ -60,17 +60,19 @@ describe("tools/keys.mjs", () => {
     expect(sync).toEqual({ GITHUB_APP_ID: vars.GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY: vars.GITHUB_APP_PRIVATE_KEY });
   });
 
-  it("trust-roots prints the committed roots directory's keys, or the dev root while it does not exist, as the key Worker's committed TRUST_ROOTS holds", () => {
-    const dev = [read(join(ROOT, "keys/dev/roots/root.pub"))];
-    expect(trustRoots(ROOT)).toEqual(dev);
+  it("trust-roots prints the committed roots, the key ceremony's root and standby, as the key Worker's committed TRUST_ROOTS holds", async () => {
+    const committed = ["root.pub", "standby.pub"].map((f) => read(join(ROOT, "packages/signing/roots", f)));
+    expect(await Promise.all(committed.map(async (k) => keyId(b64urlDecode(k))))).toEqual(["ea85f35421f375fc", "196c6acb9cc31774"]);
+    expect(trustRoots(ROOT)).toEqual(committed);
     const config = JSON.parse(readFileSync(join(ROOT, "workers/key/wrangler.jsonc"), "utf8").replace(/^\s*\/\/.*$/gm, ""));
-    expect(JSON.parse(config.vars.TRUST_ROOTS)).toEqual(dev);
-    expect(JSON.parse(run("trust-roots").trim())).toEqual(dev);
+    expect(JSON.parse(config.vars.TRUST_ROOTS)).toEqual(committed);
+    expect(JSON.parse(run("trust-roots").trim())).toEqual(committed);
     const fake = tmp();
     mkdirSync(join(fake, "packages/signing/roots"), { recursive: true });
     writeFileSync(join(fake, "packages/signing/roots/b-standby.pub"), "bbb\n");
     writeFileSync(join(fake, "packages/signing/roots/a-root.pub"), "aaa\n");
     writeFileSync(join(fake, "packages/signing/roots/README.md"), "not a key\n");
     expect(trustRoots(fake)).toEqual(["aaa", "bbb"]);
+    expect(() => trustRoots(tmp())).toThrow(/holds no \.pub root key/);
   });
 });
