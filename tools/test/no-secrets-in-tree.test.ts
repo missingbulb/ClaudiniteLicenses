@@ -38,7 +38,7 @@ describe("the tracked tree", () => {
 
   it("would refuse each shape, and passes the placeholders the examples carry", () => {
     const pem = `-----BEGIN RSA PRIVATE KEY-----\n${"M".repeat(64)}\n-----END RSA PRIVATE KEY-----`;
-    const samples = [pem, JSON.stringify(pem), `whsec_${"A".repeat(32)}`, `polar_oat_${"a".repeat(40)}`, `ghs_${"a".repeat(36)}`, `github_pat_${"a".repeat(60)}`, "zdxeybhtkgywOc--Gs27iVbunZwwkpU3Xwc69KeDJs0", `{"seed": "${"a".repeat(43)}"}`];
+    const samples = [pem, JSON.stringify(pem), `whsec_${"A".repeat(32)}`, `polar_oat_${"a".repeat(40)}`, `ghs_${"a".repeat(36)}`, `github_pat_${"a".repeat(60)}`, `${"A1_-".repeat(10)}acm`, `{"seed": "${"a".repeat(43)}"}`];
     for (const s of samples) expect(scan(s), s.slice(0, 40)).toHaveLength(1);
     for (const s of ['GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\\n...\\n-----END RSA PRIVATE KEY-----\\n"', "polar_oat_acme", "ghs_acme", "whsec_acme"]) expect(scan(s), s).toEqual([]);
     expect(ALLOWED.some((a) => a.test("packages/signing/vectors/keys.json"))).toBe(true);
