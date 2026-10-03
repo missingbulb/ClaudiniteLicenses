@@ -23,6 +23,7 @@ const post = (path: string, body: unknown, headers: Record<string, string> = {})
 const SCENARIOS: Record<string, (() => Promise<Response>)[]> = {
   "POST /v1/public/session-key": [post("/v1/public/session-key", { repo: "acme-user/acme-repo", nonce: NONCE, engine_version: "1.1.0" }, { Authorization: "Bearer ghu_acme" }), post("/v1/public/session-key", "not json", { Authorization: "Bearer ghu_acme" })],
   "GET /v1/public/health": [() => worker.fetch(new Request("https://license.claudinite.com/v1/public/health"), e(), createExecutionContext())],
+  "HEAD /v1/public/health": [() => worker.fetch(new Request("https://license.claudinite.com/v1/public/health", { method: "HEAD" }), e(), createExecutionContext())],
   "POST /webhook": [
     post(
       "/webhook",

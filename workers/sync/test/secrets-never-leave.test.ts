@@ -34,7 +34,9 @@ const repo = { id: 1001, name: "acme-repo", full_name: "acme-user/acme-repo", pr
 
 const SCENARIOS: Record<string, (() => Promise<Response>)[]> = {
   "GET /v1/sync/health": [() => send(req("GET", "/v1/sync/health"))],
+  "HEAD /v1/sync/health": [() => send(req("HEAD", "/v1/sync/health"))],
   "GET /v1/sync/alerts": [() => send(req("GET", "/v1/sync/alerts"))],
+  "HEAD /v1/sync/alerts": [() => send(req("HEAD", "/v1/sync/alerts"))],
   "POST /v1/sync/polar-webhook": [async () => send(await polarDelivery("subscription.created", polarSub(), { secret: SECRETS.POLAR_WEBHOOK_SECRET })), () => send(req("POST", "/v1/sync/polar-webhook", { body: "{}" }))],
   "POST /webhook": [
     () =>

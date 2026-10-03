@@ -26,7 +26,7 @@ const send = (method: string, path: string, e: Env, init: { ip?: string; body?: 
     new Request(`https://license.claudinite.com${path}`, {
       method,
       headers: { "CF-Connecting-IP": init.ip ?? "192.0.2.1", "Content-Type": "application/json", Authorization: "Bearer ghu_acme", ...init.headers },
-      body: method === "GET" ? undefined : (init.body ?? JSON.stringify({ repo: "acme-user/acme-repo", nonce: NONCE, engine_version: "1.1.0" })),
+      body: method === "GET" || method === "HEAD" ? undefined : (init.body ?? JSON.stringify({ repo: "acme-user/acme-repo", nonce: NONCE, engine_version: "1.1.0" })),
     }),
     e,
     createExecutionContext(),
@@ -51,7 +51,7 @@ afterEach(() => vi.restoreAllMocks());
 
 describe("the public key Worker's per-address cap", () => {
   it("reads its routes from the security review's table", () => {
-    expect(rows.filter(perAddressCap).map((r) => `${r.method} ${r.path}`)).toEqual(["POST /v1/public/session-key", "GET /v1/public/health"]);
+    expect(rows.filter(perAddressCap).map((r) => `${r.method} ${r.path}`)).toEqual(["POST /v1/public/session-key", "GET /v1/public/health", "HEAD /v1/public/health"]);
   });
 
   for (const r of rows.filter(perAddressCap)) {
@@ -109,5 +109,20 @@ describe("the public key Worker's body cap and usage points", () => {
     expect([res.status, await res.json()]).toEqual([401, { refused: "token-invalid" }]);
     expect(calls).toEqual(["https://github-api.test/user"]);
     expect(points).toEqual([]);
+  });
+});
+
+describe("the public key Worker's answer to HEAD", () => {
+  it("answers HEAD on its health with GET's status and no body", async () => {
+    const get = await send("GET", "/v1/public/health", env(300));
+    const head = await send("HEAD", "/v1/public/health", env(300));
+    expect([head.status, await head.text()]).toEqual([get.status, ""]);
+    expect(head.status).toBe(200);
+    expect(head.headers.get(VERSION_HEADER)).toBeTruthy();
+  });
+
+  it("leaves HEAD on a route that is not a health check unanswered", async () => {
+    const res = await send("HEAD", "/v1/public/session-key", env(300));
+    expect(res.status).toBe(404);
   });
 });

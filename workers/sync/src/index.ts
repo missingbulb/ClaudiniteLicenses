@@ -12,7 +12,7 @@ import { polarWebhook } from "./polar-webhook.ts";
 import { githubClient, reconcileInstallations } from "./reconcile.ts";
 import { applyWebhook, stamp } from "./repos.ts";
 import { consumeWrites, type ReconcileRequests } from "./writes.ts";
-import { BODY_MAX_WEBHOOK, ipLimited, ipLimitState, readJsonCapped, withinIpLimit, type IpLimitEnv, type IpLimitState } from "../../../packages/http/src/index.ts";
+import { BODY_MAX_WEBHOOK, ipLimited, ipLimitState, readJsonCapped, withinIpLimit, withoutBody, type IpLimitEnv, type IpLimitState } from "../../../packages/http/src/index.ts";
 import { versionOf, withVersion, type VersionEnv } from "../../../packages/version/src/index.ts";
 
 export interface Env extends VersionEnv, IpLimitEnv {
@@ -123,7 +123,7 @@ async function requestedReconciles(env: Env, requested: ReconcileRequests): Prom
  * Every route Cloudflare serves to the world that meets the per-address cap before anything else.
  * Polar's webhook is public too, and meets the cap only once its signature has failed.
  */
-export const CAPPED_ROUTES = ["GET /v1/sync/health", "GET /v1/sync/alerts"];
+export const CAPPED_ROUTES = ["GET /v1/sync/health", "HEAD /v1/sync/health", "GET /v1/sync/alerts", "HEAD /v1/sync/alerts"];
 
 async function route(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url);
@@ -136,7 +136,9 @@ async function route(req: Request, env: Env): Promise<Response> {
     return applyWebhook(env, githubClient(env), req.headers.get("X-GitHub-Event") ?? "", payload as never, nowS(), req.headers.get("X-GitHub-Delivery"));
   }
   if (req.method === "GET" && url.pathname === "/v1/sync/health") return health(env, ipLimit);
+  if (req.method === "HEAD" && url.pathname === "/v1/sync/health") return withoutBody(await health(env, ipLimit));
   if (req.method === "GET" && url.pathname === "/v1/sync/alerts") return alertsRoute(env.DB, nowS());
+  if (req.method === "HEAD" && url.pathname === "/v1/sync/alerts") return withoutBody(await alertsRoute(env.DB, nowS()));
   if (req.method === "POST" && url.pathname === "/v1/sync/polar-webhook") return polarWebhook(req, env, nowS(), () => withinIpLimit(env, req));
   return new Response("not found", { status: 404 });
 }

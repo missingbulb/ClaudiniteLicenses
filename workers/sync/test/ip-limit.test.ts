@@ -29,7 +29,7 @@ const env = (limit: number, over: Partial<Env> = {}): Env => ({ ...base, DB: rec
 
 function request(method: string, path: string, ip = "192.0.2.1"): Request {
   const headers: Record<string, string> = { "CF-Connecting-IP": ip, "Content-Type": "application/json", Authorization: "Bearer acme-admin-token" };
-  return new Request(`https://license.claudinite.com${path}`, { method, headers, body: method === "GET" ? undefined : "{}" });
+  return new Request(`https://license.claudinite.com${path}`, { method, headers, body: method === "GET" || method === "HEAD" ? undefined : "{}" });
 }
 const send = (req: Request, e: Env) => worker.fetch(req, e, createExecutionContext());
 const incidents = async () => (await base.DB.prepare("SELECT COUNT(*) AS n FROM incidents").first<{ n: number }>())!.n;
@@ -52,7 +52,7 @@ afterEach(() => vi.restoreAllMocks());
 
 describe("the sync Worker's per-address cap", () => {
   it("reads its routes from the security review's table", () => {
-    expect(rows.filter(perAddressCap).length).toBe(3);
+    expect(rows.filter(perAddressCap).length).toBe(5);
   });
 
   for (const r of rows.filter(perAddressCap)) {
@@ -128,5 +128,22 @@ describe("the sync Worker's webhook body caps", () => {
       expect(res.status, path).toBe(413);
     }
     expect({ sql, incidents: await incidents() }).toEqual({ sql: [], incidents: 0 });
+  });
+});
+
+describe("the sync Worker's answer to HEAD", () => {
+  for (const path of ["/v1/sync/health", "/v1/sync/alerts"]) {
+    it(`answers HEAD on ${path} with GET's status and no body`, async () => {
+      const get = await send(request("GET", path), env(300));
+      const head = await send(request("HEAD", path), env(300));
+      expect([head.status, await head.text()]).toEqual([get.status, ""]);
+      expect(head.status).toBe(200);
+      expect(head.headers.get(VERSION_HEADER)).toBeTruthy();
+    });
+  }
+
+  it("leaves HEAD on a route that is not a health check unanswered", async () => {
+    const res = await send(request("HEAD", "/v1/sync/polar-webhook"), env(300));
+    expect(res.status).toBe(404);
   });
 });
