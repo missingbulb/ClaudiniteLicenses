@@ -141,7 +141,7 @@ principal's key for the same run, and a token outlives its job by minutes.
 **Item grants.** `POST /v1/item-grant`, `Authorization: Bearer <Actions key>` (its JSON wire
 form), body `{ "issue": <positive integer> }`. The Actions key must verify against the var
 `TRUST_ROOTS`, a JSON array of root public keys (`deploy.yml` passes `tools/keys.mjs trust-roots`:
-`packages/signing/roots/*.pub` once that directory exists, the dev root until then), and be an
+`packages/signing/roots/*.pub`, ClaudiniteEngine's key ceremony roots), and be an
 unexpired `actions` key. `TRUST_ROOTS` is parsed once per isolate; a value that is not a non-empty
 JSON array of non-empty strings refuses every grant with 503 `trust-roots-invalid`. The answer is `{ "grant" }`, a `grant` key carrying the Actions key's
 repo, owner, plan, state, grace end, features, seats and links, the body's `issue`, no user or
@@ -228,5 +228,5 @@ Each repository secret `deploy.yml` reads, and the Worker secret it is stored as
 The vars `POLAR_API_BASE` (`https://sandbox-api.polar.sh`) and `TRUST_ROOTS` are in
 `wrangler.jsonc`; the deploy passes the real `TRUST_ROOTS` with `--var`.
 
-While both `KEY_ISSUING_KEY_*` secrets are unset, `deploy.yml` stores the dev `license` key in
-[`keys/dev`](../../keys/dev/README.md) instead and warns; with only one of them set it fails.
+The `KEY_ISSUING_KEY_*` secrets hold the `license` issuing key ClaudiniteEngine's key ceremony
+certified; `deploy.yml` skips while either is unset, as for every other secret here.

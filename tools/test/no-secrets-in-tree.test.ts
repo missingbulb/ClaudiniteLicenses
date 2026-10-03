@@ -4,10 +4,11 @@ import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 // No credential is committed: every tracked file is read for the shapes a real secret takes. The
-// dev issuing keys and the signing vectors are the deliberate exceptions, keys no released binary
-// trusts, published so the tests and the engine can verify against them.
+// signing vectors are the deliberate exception, keys no released binary trusts, published so the
+// tests and the engine can verify against them; the committed roots are public keys, which a seed's
+// shape cannot tell apart.
 const ROOT = resolve(import.meta.dirname, "../..");
-const ALLOWED = [/^keys\/dev\//, /^packages\/signing\/vectors\/keys\.json$/];
+const ALLOWED = [/^packages\/signing\/vectors\/keys\.json$/, /^packages\/signing\/roots\/[^/]+\.pub$/];
 
 const SHAPES: { name: string; re: RegExp }[] = [
   // A header followed by key material, on the next line or after an escaped newline.
@@ -28,7 +29,7 @@ describe("the tracked tree", () => {
     expect(tracked).toContain("workers/key/wrangler.jsonc");
   });
 
-  it("holds no credential-shaped value outside the dev keys and the signing vectors", () => {
+  it("holds no credential-shaped value outside the signing vectors and the committed root public keys", () => {
     const found = tracked
       .filter((f) => !ALLOWED.some((a) => a.test(f)) && !/\.(png|jpg|ico|woff2?)$/.test(f))
       .flatMap((f) => scan(readFileSync(join(ROOT, f), "utf8")).map((name) => `${f}: ${name}`));
@@ -40,6 +41,6 @@ describe("the tracked tree", () => {
     const samples = [pem, JSON.stringify(pem), `whsec_${"A".repeat(32)}`, `polar_oat_${"a".repeat(40)}`, `ghs_${"a".repeat(36)}`, `github_pat_${"a".repeat(60)}`, "zdxeybhtkgywOc--Gs27iVbunZwwkpU3Xwc69KeDJs0", `{"seed": "${"a".repeat(43)}"}`];
     for (const s of samples) expect(scan(s), s.slice(0, 40)).toHaveLength(1);
     for (const s of ['GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\\n...\\n-----END RSA PRIVATE KEY-----\\n"', "polar_oat_acme", "ghs_acme", "whsec_acme"]) expect(scan(s), s).toEqual([]);
-    expect(ALLOWED.some((a) => a.test("keys/dev/license.key"))).toBe(true);
+    expect(ALLOWED.some((a) => a.test("packages/signing/vectors/keys.json"))).toBe(true);
   });
 });

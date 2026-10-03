@@ -47,5 +47,5 @@ Each repository secret `deploy.yml` reads, and the Worker secret it is stored as
 - `ISSUING_KEY_PRIVATE` (the issuing key's seed file, ClaudiniteEngine's key format)
 - `ISSUING_KEY_CERT` (its `license-public` certificate JSON)
 
-While both `ISSUING_KEY_*` secrets are unset, `deploy.yml` stores the dev issuing key in
-[`keys/dev`](../../keys/dev/README.md) instead and warns; with only one of them set it fails.
+The `ISSUING_KEY_*` secrets hold the `license-public` issuing key ClaudiniteEngine's key ceremony
+certified; `deploy.yml` skips while either is unset, as for every other secret here.

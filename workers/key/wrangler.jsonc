@@ -35,8 +35,8 @@
     "GITHUB_APP_CLIENT_ID": "Iv23lixTgnYXROPw9nb8",
     "FAIL_OPEN": "true",
     "POLAR_API_BASE": "https://sandbox-api.polar.sh",
-    // The roots an Actions key must chain to for a grant. deploy.yml passes the real value with --var;
-    // the committed value is keys/dev/roots/root.pub.
-    "TRUST_ROOTS": "[\"nd22X_uFndtTBSMpDUfXAhKsfjfUX2mhnR9JblgYo2I\"]"
+    // The roots an Actions key must chain to for a grant: packages/signing/roots/, which deploy.yml
+    // also passes with --var.
+    "TRUST_ROOTS": "[\"zbIx-NsR2QOtuDxN_NRWdaic7korqWlbavM2SGImfwo\",\"AhHHTZ9fOPKENvhdnp4ScvxYooGpxPcwLePrHaRLyKs\"]"
   }
 }
