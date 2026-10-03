@@ -104,6 +104,11 @@ export function ipLimited(): Response {
   return Response.json({ refused: IP_LIMITED }, { status: 429, headers: { "Retry-After": String(IP_LIMIT_PERIOD_S) } });
 }
 
+/** A HEAD's answer: its GET's status and headers, without the body. */
+export function withoutBody(res: Response): Response {
+  return new Response(null, { status: res.status, statusText: res.statusText, headers: res.headers });
+}
+
 export function tooLarge(): Response {
   return Response.json({ refused: "body-too-large" }, { status: 413 });
 }

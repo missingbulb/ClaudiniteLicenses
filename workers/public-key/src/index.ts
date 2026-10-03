@@ -4,7 +4,7 @@
 // request is its whole record.
 import { b64urlDecode, certStanding, type Certificate } from "../../../packages/signing/src/index.ts";
 import { createKeyCheckRun, GitHubError, parseKeyDispatch, refusalSummary } from "../../../packages/github-app/src/index.ts";
-import { BODY_MAX_WEBHOOK, ipLimited, ipLimitState, readJsonCapped, type IpLimitEnv } from "../../../packages/http/src/index.ts";
+import { BODY_MAX_WEBHOOK, ipLimited, ipLimitState, readJsonCapped, withoutBody, type IpLimitEnv, type IpLimitState } from "../../../packages/http/src/index.ts";
 import { versionOf, withVersion, type VersionEnv } from "../../../packages/version/src/index.ts";
 import { keyCountBlobs } from "../../../packages/licensing/src/index.ts";
 import { publicSessionKey } from "./desktop.ts";
@@ -84,7 +84,7 @@ async function webhook(req: Request, env: Env): Promise<Response> {
 }
 
 /** Every route Cloudflare serves to the world: each meets the per-address cap before anything else. */
-export const PUBLIC_ROUTES = ["POST /v1/public/session-key", "GET /v1/public/health"];
+export const PUBLIC_ROUTES = ["POST /v1/public/session-key", "GET /v1/public/health", "HEAD /v1/public/health"];
 
 async function route(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url);
@@ -92,17 +92,20 @@ async function route(req: Request, env: Env): Promise<Response> {
   if (ipLimit === "refused") return ipLimited();
   if (req.method === "POST" && url.pathname === "/webhook") return webhook(req, env);
   if (req.method === "POST" && url.pathname === "/v1/public/session-key") return publicSessionKey(req, env);
-  if (req.method === "GET" && url.pathname === "/v1/public/health") {
-    // Judges its own certificate, so a status-only monitor pages on it without reading the body.
-    const body = certBody(env);
-    const cert = certStanding(body.notAfter, new Date());
-    const alerts = cert.alert ? [cert.alert] : [];
-    return Response.json(
-      { ok: alerts.length === 0, kid: body.keyId, cert_exp: body.notAfter, cert_days_left: cert.daysLeft, ip_limit: ipLimit, version: versionOf(env), alerts },
-      { status: alerts.length === 0 ? 200 : 503 },
-    );
-  }
+  if (req.method === "GET" && url.pathname === "/v1/public/health") return health(env, ipLimit);
+  if (req.method === "HEAD" && url.pathname === "/v1/public/health") return withoutBody(health(env, ipLimit));
   return new Response("not found", { status: 404 });
+}
+
+/** Judges its own certificate, so a status-only monitor pages on it without reading the body. */
+function health(env: Env, ipLimit: IpLimitState | null): Response {
+  const body = certBody(env);
+  const cert = certStanding(body.notAfter, new Date());
+  const alerts = cert.alert ? [cert.alert] : [];
+  return Response.json(
+    { ok: alerts.length === 0, kid: body.keyId, cert_exp: body.notAfter, cert_days_left: cert.daysLeft, ip_limit: ipLimit, version: versionOf(env), alerts },
+    { status: alerts.length === 0 ? 200 : 503 },
+  );
 }
 
 export default {

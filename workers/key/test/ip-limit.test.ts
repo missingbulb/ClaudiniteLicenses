@@ -17,7 +17,7 @@ function costly(method: string, path: string, ip = "192.0.2.1"): RequestInit {
     "/v1/item-grant": { issue: 7 },
     "/v1/login/refresh": { refresh_token: "ghr_acme" },
   };
-  return method === "GET" ? { headers } : { method, headers, body: JSON.stringify(bodies[path] ?? {}) };
+  return method === "GET" || method === "HEAD" ? { method, headers } : { method, headers, body: JSON.stringify(bodies[path] ?? {}) };
 }
 
 beforeEach(async () => {
@@ -76,5 +76,21 @@ describe("the key Worker's per-address cap", () => {
     const e = env({ IP_LIMIT: { limit: async () => Promise.reject(new Error("acme limiter outage")) } as unknown as RateLimit });
     for (let i = 0; i < 3; i++) expect((await call("/v1/key/health", costly("GET", "/v1/key/health"), e)).status).toBe(200);
     expect(world.logs.filter((l) => l.includes("ip-limit-unavailable"))).toHaveLength(1);
+  });
+});
+
+describe("the key Worker's answer to HEAD", () => {
+  it("answers HEAD on its health with GET's status and no body", async () => {
+    const e = env();
+    const get = await call("/v1/key/health", costly("GET", "/v1/key/health"), e);
+    const head = await call("/v1/key/health", costly("HEAD", "/v1/key/health"), e);
+    expect([head.status, await head.text()]).toEqual([get.status, ""]);
+    expect(head.status).toBe(200);
+    expect(head.headers.get(VERSION_HEADER)).toBe(version);
+  });
+
+  it("leaves HEAD on a route that is not a health check unanswered", async () => {
+    const res = await call("/v1/login/config", costly("HEAD", "/v1/login/config"), env());
+    expect(res.status).toBe(404);
   });
 });

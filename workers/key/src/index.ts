@@ -3,7 +3,7 @@
 // token, deciding from D1 reads alone, and exchanges an Actions key for an item grant. It writes
 // nothing to D1: each key's records go onto the writes queue the sync Worker consumes.
 import { certStanding } from "../../../packages/signing/src/index.ts";
-import { BODY_MAX_JSON, ipLimited, ipLimitState, readJsonCapped, type IpLimitState } from "../../../packages/http/src/index.ts";
+import { BODY_MAX_JSON, ipLimited, ipLimitState, readJsonCapped, withoutBody, type IpLimitState } from "../../../packages/http/src/index.ts";
 import { certBody, failOpenEnabled, refusal, trustRoots, type Env } from "./env.ts";
 import { sessionKey } from "./desktop.ts";
 import { webhook } from "./web.ts";
@@ -91,7 +91,7 @@ async function health(env: Env, ipLimit: IpLimitState | null): Promise<Response>
 }
 
 /** Every route Cloudflare serves to the world: each meets the per-address cap before anything else. */
-export const PUBLIC_ROUTES = ["POST /v1/session-key", "POST /v1/actions-key", "POST /v1/item-grant", "GET /v1/login/config", "POST /v1/login/refresh", "GET /v1/key/health"];
+export const PUBLIC_ROUTES = ["POST /v1/session-key", "POST /v1/actions-key", "POST /v1/item-grant", "GET /v1/login/config", "POST /v1/login/refresh", "GET /v1/key/health", "HEAD /v1/key/health"];
 
 async function route(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const url = new URL(req.url);
@@ -113,6 +113,8 @@ async function route(req: Request, env: Env, ctx: ExecutionContext): Promise<Res
       return loginRefresh(req, env);
     case "GET /v1/key/health":
       return health(env, ipLimit);
+    case "HEAD /v1/key/health":
+      return withoutBody(await health(env, ipLimit));
     default:
       return new Response("not found", { status: 404 });
   }

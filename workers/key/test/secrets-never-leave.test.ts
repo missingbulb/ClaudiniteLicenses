@@ -40,6 +40,7 @@ const SCENARIOS: Record<string, Scenario[]> = {
   "GET /v1/login/config": [(e) => call("/v1/login/config", {}, e)],
   "POST /v1/login/refresh": [json("/v1/login/refresh", { refresh_token: "ghr_acme" }), json("/v1/login/refresh", "not json")],
   "GET /v1/key/health": [(e) => call("/v1/key/health", {}, e)],
+  "HEAD /v1/key/health": [(e) => call("/v1/key/health", { method: "HEAD" }, e)],
   "POST /webhook": [
     json(
       "/webhook",
