@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FEATURES } from "../../../packages/signing/src/index.ts";
 import { resetJwksCache } from "../src/oidc.ts";
-import { actionsClaims, call, certUse, DAY, env, freshDatabase, githubCalls, nowS, oidcIssuer, resetWorld, seedOveruse, seedRepo, seedSeats, seedSubscription, verified, world } from "./helpers.ts";
+import { actionsClaims, call, certUse, env, freshDatabase, githubCalls, oidcIssuer, resetWorld, seedRepo, seedSubscription, verified, world } from "./helpers.ts";
 
 let issuer: Awaited<ReturnType<typeof oidcIssuer>>;
 const jwksCalls = () => world.calls.filter((c) => c.url === "https://oidc.test/.well-known/jwks").length;
@@ -90,23 +90,6 @@ describe("POST /v1/actions-key", () => {
 
   it("refuses a repo the App is not installed on", async () => {
     await refusedWith(await issuer.sign(actionsClaims()), 403, "app-not-installed");
-  });
-
-  it("gives the Actions key its licensee's state: degraded past grace, grace during it, and writes nothing", async () => {
-    await seedRepo({ visibility: "private" });
-    await seedSubscription({ plan: "personal", seats: 5 });
-    await seedSeats(2002, 7);
-    await seedOveruse(2002, nowS() - 2 * DAY, nowS() + 28 * DAY);
-    const token = async () => issuer.sign(actionsClaims({ repository_visibility: "private" }));
-    const grace = (await (await ask(await token())).json()) as Record<string, unknown>;
-    expect(grace).toMatchObject({ plan: "personal", state: "grace", notice: "overused" });
-    expect(await verified(grace.key as string)).toMatchObject({ typ: "actions", state: "grace", seats: { paid: 5, counted: 7, headroom: 1 }, notice: "overused" });
-    await env().DB.prepare("UPDATE overuse SET grace_started_at = ?").bind(nowS() - 8 * DAY).run();
-    const degraded = (await (await ask(await token())).json()) as Record<string, unknown>;
-    expect(degraded).toMatchObject({ state: "degraded", notice: "seat-refused" });
-    expect(await verified(degraded.key as string)).toMatchObject({ features: [], notice: "seat-refused" });
-    expect(world.sent).toEqual([]);
-    expect(world.points.map((p) => p.blobs?.[1])).toEqual(["issued-grace", "issued-degraded"]);
   });
 
   it("gives a public repo of a paying organization an ok Organization key", async () => {

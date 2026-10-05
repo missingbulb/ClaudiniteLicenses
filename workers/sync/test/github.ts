@@ -30,9 +30,18 @@ export function repo(id: number, over: Partial<GitHubRepo> = {}): GitHubRepo {
   return { id, name, full_name: `${owner.login}/${name}`, private: false, default_branch: "main", owner, ...over };
 }
 
+/** The App's webhook secret the pool binds, and a delivery's X-Hub-Signature-256 under it. */
+export const WEBHOOK_SECRET = "acme-webhook-secret";
+
+export async function signGitHub(body: string, secret = WEBHOOK_SECRET): Promise<string> {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body)));
+  return "sha256=" + Array.from(mac, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 export async function freshDatabase(): Promise<void> {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
-  await env.DB.batch(["repos", "sync_state", "subscriptions", "seats", "overuse", "usage", "incidents"].map((t) => env.DB.prepare(`DELETE FROM ${t}`)));
+  await env.DB.batch(["repos", "sync_state", "subscriptions", "incidents"].map((t) => env.DB.prepare(`DELETE FROM ${t}`)));
 }
 
 export function fakeGitHub(): FakeGitHub {

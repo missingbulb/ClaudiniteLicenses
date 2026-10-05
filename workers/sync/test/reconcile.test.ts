@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
 import { WRITES_QUEUE } from "../src/writes.ts";
 import { reconcileInstallations } from "../src/reconcile.ts";
-import { env, fakeGitHub, freshDatabase, repo, rows, seed, type FakeGitHub } from "./github.ts";
+import { env, fakeGitHub, freshDatabase, repo, rows, seed, signGitHub, type FakeGitHub } from "./github.ts";
 
 const ACCOUNT = { id: 2002, login: "acme-user", type: "User" };
 const ORG = { id: 8008, login: "acme-org", type: "Organization" };
@@ -111,12 +111,9 @@ describe("GET /v1/sync/health", () => {
   it("reads back the stamps after a webhook and a reconcile", async () => {
     gh.installations = [{ id: 5005, account: ACCOUNT, repos: [repo(1), repo(2)] }];
     const r = repo(1);
+    const delivery = JSON.stringify({ action: "added", installation: { id: 5005, account: ACCOUNT }, repositories_added: [{ id: r.id, name: r.name, full_name: r.full_name, private: false }], repositories_removed: [] });
     await worker.fetch(
-      new Request("https://sync/webhook", {
-        method: "POST",
-        headers: { "X-GitHub-Event": "installation_repositories" },
-        body: JSON.stringify({ action: "added", installation: { id: 5005, account: ACCOUNT }, repositories_added: [{ id: r.id, name: r.name, full_name: r.full_name, private: false }], repositories_removed: [] }),
-      }),
+      new Request("https://license.claudinite.com/github-webhook", { method: "POST", headers: { "X-GitHub-Event": "installation_repositories", "X-Hub-Signature-256": await signGitHub(delivery) }, body: delivery }),
       env,
       createExecutionContext(),
     );

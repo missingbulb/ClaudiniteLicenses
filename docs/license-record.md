@@ -74,31 +74,21 @@ Rerun on 2026-10-01 for ClaudiniteLicenses#18, as the build plan requires before
 
 ### The routes
 
-One row per method and path each Worker answers. "Touches before refusing" reads *before → after* this review's changes. `tools/test/route-inventory.test.ts` holds the table to the code both ways, and each Worker's `test/ip-limit.test.ts` loops over its rows.
+One row per method and path each Worker answers today; the session-key, item-grant, login and service-binding rows this review listed went with the session keys, the public-key Worker and the router on 2026-10-05 (decision 60). "Touches before refusing" reads *before → after* this review's changes. `tools/test/route-inventory.test.ts` holds the table to the code both ways, and each Worker's `test/ip-limit.test.ts` loops over its rows.
 
 | Route | Worker | Reached | Caller | Authenticated by | Touches before refusing | Cap in front | Test |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `POST /v1/session-key` | key | public | A desktop with an App user token | GitHub, reading the user and the repo as the caller | GitHub twice and a usage point per bogus token → nothing past the cap; GitHub only for a token under it, and no point until GitHub accepts it | per-address 300/min, then the per-owner 600/min | `workers/key/test/ip-limit.test.ts` |
 | `POST /v1/actions-key` | key | public | An Actions run with an OIDC token | GitHub's OIDC signature, claims and the pin | The JWKS fetch on an unknown kid → nothing past the cap | per-address 300/min, then the per-owner 600/min | `workers/key/test/ip-limit.test.ts` |
-| `POST /v1/item-grant` | key | public | The executor with an Actions key | The key's chain to a trusted root | Nothing but the signature check → nothing past the cap | per-address 300/min, then the per-owner 600/min | `workers/key/test/ip-limit.test.ts` |
-| `GET /v1/login/config` | key | public | `cn login` | Nobody; it serves the App's public client id | Nothing | per-address 300/min | `workers/key/test/ip-limit.test.ts` |
-| `POST /v1/login/refresh` | key | public | `cn` refreshing its user token | GitHub, judging the refresh token | One GitHub OAuth call per body → nothing past the cap | per-address 300/min | `workers/key/test/ip-limit.test.ts` |
 | `GET /v1/key/health` | key | public | Monitors, the probe, the deploy | Nobody | A D1 read per request → nothing past the cap | per-address 300/min | `workers/key/test/ip-limit.test.ts` |
 | `HEAD /v1/key/health` | key | public | Status-only monitors | Nobody | A D1 read per request → nothing past the cap | per-address 300/min | `workers/key/test/ip-limit.test.ts` |
-| `POST /webhook` | key | service binding | The router, after GitHub's signature | The router's HMAC check | Nothing from outside: no route serves it | none: the router's HMAC check | `workers/key/test/ip-limit.test.ts` |
-| `POST /v1/public/session-key` | public-key | public | A desktop on a public repo | GitHub, reading the user and the repo as the caller | GitHub twice and a usage point per bogus token → nothing past the cap; no point until GitHub accepts the token | per-address 300/min | `workers/public-key/test/ip-limit.test.ts` |
-| `GET /v1/public/health` | public-key | public | Monitors, the probe, the deploy | Nobody | Nothing | per-address 300/min | `workers/public-key/test/ip-limit.test.ts` |
-| `HEAD /v1/public/health` | public-key | public | Status-only monitors | Nobody | Nothing | per-address 300/min | `workers/public-key/test/ip-limit.test.ts` |
-| `POST /webhook` | public-key | service binding | The router, after GitHub's signature | The router's HMAC check | Nothing from outside: no route serves it | none: the router's HMAC check | `workers/public-key/test/ip-limit.test.ts` |
 | `GET /v1/sync/health` | sync | public | Monitors, the probe, the deploy | Nobody | Two D1 reads per request → nothing past the cap | per-address 300/min | `workers/sync/test/ip-limit.test.ts` |
 | `HEAD /v1/sync/health` | sync | public | Status-only monitors | Nobody | Two D1 reads per request → nothing past the cap | per-address 300/min | `workers/sync/test/ip-limit.test.ts` |
 | `GET /v1/sync/alerts` | sync | public | Monitors, the probe, the deploy | Nobody | Two D1 reads per request → nothing past the cap | per-address 300/min | `workers/sync/test/ip-limit.test.ts` |
 | `HEAD /v1/sync/alerts` | sync | public | Status-only monitors | Nobody | Two D1 reads per request → nothing past the cap | per-address 300/min | `workers/sync/test/ip-limit.test.ts` |
 | `POST /v1/sync/polar-webhook` | sync | public | Polar | Polar's Standard Webhooks signature | One D1 write per unsigned delivery, an unbounded body read → a 1 MiB read and nothing past the cap | per-address 300/min on the refusal path only, and 100 refusals an hour recorded | `workers/sync/test/ip-limit.test.ts` |
-| `POST /webhook` | sync | service binding | The router, after GitHub's signature | The router's HMAC check | Nothing from outside: no route serves it | none: the router's HMAC check | `workers/sync/test/ip-limit.test.ts` |
-| `POST /github-webhook` | router | public | GitHub's App deliveries | HMAC over the body with the App's webhook secret | A body read up to 1 MiB and the HMAC | none: the HMAC check, after the 1 MiB body cap | `workers/router/test/router.test.ts` |
+| `POST /github-webhook` | sync | public | GitHub's App deliveries | HMAC over the body with the App's webhook secret | A body read up to 1 MiB and the HMAC | none: the HMAC check, after the 1 MiB body cap | `workers/sync/test/github-webhook.test.ts` |
 
-Every other path answers 404 from the Worker its route prefix reaches, or no Worker at all. The probe's `private-paths-unrouted` check asserts from outside that `/webhook` is answered by no Worker.
+Every other path answers 404 from the Worker its route prefix reaches, or no Worker at all.
 
 ### The abuse-limits rows
 

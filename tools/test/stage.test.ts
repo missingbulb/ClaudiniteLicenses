@@ -54,9 +54,9 @@ const UPLOADED = { stdout: "Total Upload: 12.00 KiB / gzip: 3.00 KiB\nUploaded c
 
 describe("tools/stage.mjs upload", () => {
   it("passes the config, tag, message, every --var and the secrets file through, and prints the version id", () => {
-    const res = stage(["upload", "--config", CONFIG, "--tag", "abc1234", "--message", "https://github.test/run/1", "--var", "TRUST_ROOTS:[\"r\"]", "--var", "A:b:c", "--secrets-file", "/tmp/acme.json"], { "versions upload": UPLOADED });
+    const res = stage(["upload", "--config", CONFIG, "--tag", "abc1234", "--message", "https://github.test/run/1", "--var", "ACME_VAR:[\"r\"]", "--var", "A:b:c", "--secrets-file", "/tmp/acme.json"], { "versions upload": UPLOADED });
     expect(res.status, res.stderr).toBe(0);
-    expect(res.calls).toEqual([["versions", "upload", "-c", CONFIG, "--tag", "abc1234", "--message", "https://github.test/run/1", "--var", "TRUST_ROOTS:[\"r\"]", "--var", "A:b:c", "--secrets-file", "/tmp/acme.json"]]);
+    expect(res.calls).toEqual([["versions", "upload", "-c", CONFIG, "--tag", "abc1234", "--message", "https://github.test/run/1", "--var", "ACME_VAR:[\"r\"]", "--var", "A:b:c", "--secrets-file", "/tmp/acme.json"]]);
     expect(res.out).toEqual({ version_id: "0b7d1d6e-1111-4222-8333-444455556666" });
   });
 

@@ -210,6 +210,7 @@ Each repository secret `deploy.yml` reads, and the Worker secret it is stored as
 
 - `CLAUDINITE_GITHUB_APP_ID`, as `GITHUB_APP_ID`
 - `CLAUDINITE_GITHUB_APP_PRIVATE_KEY`, as `GITHUB_APP_PRIVATE_KEY`
+- `CLAUDINITE_GITHUB_APP_WEBHOOK_SECRET`, as `GITHUB_APP_WEBHOOK_SECRET` (the App's webhook secret, which `POST /github-webhook` checks every delivery's signature with)
 - `POLAR_SANDBOX_TOKEN`, as `POLAR_ACCESS_TOKEN` (the sandbox organization's token, until the commercial track flips both Workers to production)
 
 The var `POLAR_API_BASE` is `https://sandbox-api.polar.sh`.
@@ -222,6 +223,6 @@ writes its secret to a file the Worker's deploy step puts in its secrets file. A
 new endpoint leaves `POLAR_WEBHOOK_SECRET` out of the file, and `--secrets-file` keeps a secret the
 file omits from the previous version.
 
-Like the three request-path Workers, whose secrets travel with each uploaded version, the sync
+Like the key Worker, whose secrets travel with each uploaded version, the sync
 Worker's travel with the version its `wrangler deploy --secrets-file` makes; no step runs
 `wrangler secret bulk`.

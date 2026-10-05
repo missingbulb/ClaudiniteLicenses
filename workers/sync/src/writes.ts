@@ -1,11 +1,10 @@
-// The writes queue's consumer: the seat, usage and overuse records and the incidents the key Worker
-// queues, written in message order as one D1 batch per delivery. Every seat statement is idempotent,
-// so a redelivered message changes nothing there; a redelivered incident is one more row, which only
-// errs toward an alert. A batch from the dead-letter queue is logged, stamped and counted as
-// incidents, never written, so a lost seat record is seen rather than silent. Every batch stamps the
-// version that consumed it beside its time, so health names the consumer's version. A committed
-// batch also answers which reconciles it requested, each by its latest request.
-import { GRACE_SPENT_S, isWriteMessage, licenseeOf, RECONCILE_MARKERS, SEAT_WINDOW_S, type ReconcileMarker, type WriteMessage } from "../../../packages/licensing/src/index.ts";
+// The writes queue's consumer: the incidents the key Worker queues, written in message order as one
+// D1 batch per delivery. A redelivered incident is one more row, which only errs toward an alert. A
+// batch from the dead-letter queue is logged, stamped and counted as incidents, never written, so a
+// lost message is seen rather than silent. Every batch stamps the version that consumed it beside its
+// time, so health names the consumer's version. A committed batch also answers which reconciles it
+// requested, each by its latest request.
+import { isWriteMessage, RECONCILE_MARKERS, type ReconcileMarker, type WriteMessage } from "../../../packages/licensing/src/index.ts";
 import { insertIncident } from "./incidents.ts";
 import { stamp } from "./repos.ts";
 import { versionOf, type VersionEnv } from "../../../packages/version/src/index.ts";
@@ -18,35 +17,7 @@ export interface WritesEnv extends VersionEnv {
 }
 
 function statementsFor(db: D1Database, m: WriteMessage): D1PreparedStatement[] {
-  if (m.kind === "usage") {
-    return [
-      db.prepare("INSERT OR IGNORE INTO usage (repo_id, user_id, day) VALUES (?, ?, ?)").bind(m.repo_id, m.user_id, m.day),
-      // SQLite evaluates every SET expression against the row as it was before the update.
-      db
-        .prepare(
-          `INSERT INTO seats (licensee_id, user_id, first_key_at, last_key_at) VALUES (?, ?, ?, ?)
-           ON CONFLICT (licensee_id, user_id) DO UPDATE SET
-             first_key_at = CASE WHEN seats.last_key_at < excluded.last_key_at - ${SEAT_WINDOW_S} THEN excluded.first_key_at ELSE seats.first_key_at END,
-             last_key_at = MAX(seats.last_key_at, excluded.last_key_at)`,
-        )
-        .bind(licenseeOf(m.plan, m.owner_id, m.repo_id), m.user_id, m.at, m.at),
-    ];
-  }
-  if (m.kind === "grace-start") {
-    return [
-      db
-        .prepare(
-          `INSERT INTO overuse (licensee_id, grace_started_at, grace_spent_until) VALUES (?, ?, ?)
-           ON CONFLICT (licensee_id) DO UPDATE SET
-             grace_started_at = COALESCE(overuse.grace_started_at, excluded.grace_started_at),
-             grace_spent_until = MAX(COALESCE(overuse.grace_spent_until, 0), excluded.grace_spent_until)`,
-        )
-        .bind(m.owner_id, m.at, m.at + GRACE_SPENT_S),
-    ];
-  }
-  if (m.kind === "incident") return [insertIncident(db, m.marker, m.at, m.detail)];
-  // Delivery order is best-effort: a reset older than the stored start leaves that start alone.
-  return [db.prepare("UPDATE overuse SET grace_started_at = NULL WHERE licensee_id = ? AND grace_started_at <= ?").bind(m.owner_id, m.at)];
+  return [insertIncident(db, m.marker, m.at, m.detail)];
 }
 
 /** Each reconcile a batch requested, by the time of its latest request. */
@@ -78,7 +49,7 @@ export async function consumeWrites(batch: MessageBatch, env: WritesEnv, nowS: n
     writes.push(...statementsFor(db, msg.body));
     oldest = Math.min(oldest, msg.body.at);
     const m = msg.body;
-    if (m.kind === "incident" && (RECONCILE_MARKERS as readonly string[]).includes(m.marker)) {
+    if ((RECONCILE_MARKERS as readonly string[]).includes(m.marker)) {
       const marker = m.marker as ReconcileMarker;
       requested[marker] = Math.max(requested[marker] ?? m.at, m.at);
     }

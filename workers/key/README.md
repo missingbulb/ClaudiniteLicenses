@@ -218,15 +218,12 @@ secret), and the binary runs the device
 
 Each repository secret `deploy.yml` reads, and the Worker secret it is stored as:
 
-- `CLAUDINITE_GITHUB_APP_ID`, as `GITHUB_APP_ID`
-- `CLAUDINITE_GITHUB_APP_PRIVATE_KEY`, as `GITHUB_APP_PRIVATE_KEY`
-- `CLAUDINITE_GITHUB_APP_CLIENT_SECRET`, as `GITHUB_APP_CLIENT_SECRET` (optional: only `/v1/login/refresh` needs it)
 - `KEY_ISSUING_KEY_PRIVATE`, as `ISSUING_KEY_PRIVATE` (the `license` issuing key's seed file)
 - `KEY_ISSUING_KEY_CERT`, as `ISSUING_KEY_CERT` (its `license` certificate JSON)
 - `POLAR_SANDBOX_TOKEN`, as `POLAR_ACCESS_TOKEN` (the sandbox organization's token, until the commercial track flips both Workers to production)
 
-The vars `POLAR_API_BASE` (`https://sandbox-api.polar.sh`) and `TRUST_ROOTS` are in
-`wrangler.jsonc`; the deploy passes the real `TRUST_ROOTS` with `--var`.
+The vars `POLAR_API_BASE` (`https://sandbox-api.polar.sh`) and `OIDC_ISSUER` are in
+`wrangler.jsonc`. The Worker acts as no GitHub App and holds none of the App's secrets.
 
 The `KEY_ISSUING_KEY_*` secrets hold the `license` issuing key ClaudiniteEngine's key ceremony
 certified; `deploy.yml` skips while either is unset, as for every other secret here.

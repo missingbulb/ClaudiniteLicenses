@@ -56,7 +56,7 @@ export async function actionsKey(req: Request, env: Env, ctx?: ExecutionContext)
   try {
     row = await readRepo(db, c.repositoryId);
   } catch (err) {
-    // Unlike a session key, an Actions key cannot fail open: the pin needs the row's default branch.
+    // An Actions key cannot fail open: the pin needs the row's default branch.
     incident(env, ctx, "d1-unreadable", "actions", { repo_id: c.repositoryId, path: "actions", error: String(err) });
     point("none", "refused-server-error");
     return refusal(503, "server-error");
@@ -74,8 +74,7 @@ export async function actionsKey(req: Request, env: Env, ctx?: ExecutionContext)
     point("none", "refused-workflow-not-pinned", row.owner_type);
     return refusal(403, "workflow-not-pinned");
   }
-  // The licensee's state, with no user of its own and nothing written.
-  const plan = await resolveForRow(env, db, { repoId: c.repositoryId, visibility: c.repositoryVisibility, ownerId: c.repositoryOwnerId, userId: null, typ: "actions" }, row, { ctx, path: "actions" });
+  const plan = await resolveForRow(env, db, { repoId: c.repositoryId, visibility: c.repositoryVisibility, ownerId: c.repositoryOwnerId }, row, { ctx, path: "actions" });
   if ("refused" in plan) {
     point("none", `refused-${plan.refused}`, row.owner_type);
     return refusal(503, plan.refused);

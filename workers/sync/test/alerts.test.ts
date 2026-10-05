@@ -73,7 +73,6 @@ describe("evaluateAlerts, one case each side of every threshold", () => {
     ["d1-unreadable", "d1-unreadable", 1],
     ["polar-unreachable", "polar-unreachable", 3],
     ["app-not-installed", "app-not-installed", 5],
-    ["secondary-rate-limit", "secondary-rate-limit", 1],
   ];
   for (const [id, marker, atLeast] of counted) {
     it(`${id}: ${atLeast} or more ${marker} in the last hour`, () => {

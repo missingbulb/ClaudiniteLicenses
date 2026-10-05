@@ -1,16 +1,17 @@
 import { createExecutionContext } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/index.ts";
-import { env, fakeGitHub, freshDatabase, repo, rows, seed, type FakeGitHub, type Row } from "./github.ts";
+import { env, fakeGitHub, freshDatabase, repo, rows, seed, signGitHub, type FakeGitHub, type Row } from "./github.ts";
 
 const ACCOUNT = { id: 2002, login: "acme-user", type: "User" };
 let gh: FakeGitHub;
 
 async function deliver(event: string, payload: unknown): Promise<Response> {
-  const req = new Request("https://sync/webhook", {
+  const body = JSON.stringify(payload);
+  const req = new Request("https://license.claudinite.com/github-webhook", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-GitHub-Event": event, "X-GitHub-Delivery": "acme-delivery" },
-    body: JSON.stringify(payload),
+    headers: { "Content-Type": "application/json", "X-GitHub-Event": event, "X-GitHub-Delivery": "acme-delivery", "X-Hub-Signature-256": await signGitHub(body) },
+    body,
   });
   return worker.fetch(req, env, createExecutionContext());
 }
@@ -150,7 +151,7 @@ describe("everything else", () => {
   });
 
   it("refuses a malformed payload with 400", async () => {
-    const res = await worker.fetch(new Request("https://sync/webhook", { method: "POST", headers: { "X-GitHub-Event": "installation" }, body: "{" }), env, createExecutionContext());
+    const res = await worker.fetch(new Request("https://license.claudinite.com/github-webhook", { method: "POST", headers: { "X-GitHub-Event": "installation", "X-Hub-Signature-256": await signGitHub("{") }, body: "{" }), env, createExecutionContext());
     expect(res.status).toBe(400);
   });
 });

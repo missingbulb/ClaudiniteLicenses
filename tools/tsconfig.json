@@ -14,7 +14,6 @@
   "include": [
     "test",
     "vitest.config.ts",
-    "../workers/public-key/test/global-setup.ts",
     "../workers/key/test/global-setup.ts"
   ]
 }

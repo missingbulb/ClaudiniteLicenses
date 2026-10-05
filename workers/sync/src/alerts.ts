@@ -24,7 +24,6 @@ export const INCIDENT_ALERTS: readonly { id: string; marker: IncidentMarker; atL
   { id: "d1-unreadable", marker: "d1-unreadable", atLeast: 1, windowS: HOUR },
   { id: "polar-unreachable", marker: "polar-unreachable", atLeast: 3, windowS: HOUR },
   { id: "app-not-installed", marker: "app-not-installed", atLeast: 5, windowS: HOUR },
-  { id: "secondary-rate-limit", marker: "secondary-rate-limit", atLeast: 1, windowS: HOUR },
 ];
 
 export type Stamps = Partial<Record<string, { at: number; detail: string | null }>>;

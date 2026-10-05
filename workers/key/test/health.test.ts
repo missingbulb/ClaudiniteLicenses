@@ -19,11 +19,11 @@ afterEach(() => vi.restoreAllMocks());
 describe("GET /v1/key/health", () => {
   const cert = () => JSON.parse(new TextDecoder().decode(b64urlDecode((JSON.parse(base.ISSUING_KEY_CERT) as { payload: string }).payload)));
 
-  it("names the issuing key, its certificate's expiry and days left, that D1 answers and the roots parse, calling no one", async () => {
+  it("names the issuing key, its certificate's expiry and days left and that D1 answers, calling no one", async () => {
     const res = await call("/v1/key/health");
     expect(res.status).toBe(200);
     const days = Math.floor((Date.parse(cert().notAfter) - Date.now()) / 86_400_000);
-    expect(await res.json()).toEqual({ ok: true, kid: cert().keyId, cert_exp: cert().notAfter, cert_days_left: days, d1: "ok", d1_served_by_primary: null, d1_served_by_region: null, d1_ms: expect.any(Number), queue: "bound", polar: "configured", trust_roots: "ok", fail_open: true, ip_limit: "counted", version: (base as unknown as { CF_VERSION_METADATA: { id: string } }).CF_VERSION_METADATA.id, alerts: [] });
+    expect(await res.json()).toEqual({ ok: true, kid: cert().keyId, cert_exp: cert().notAfter, cert_days_left: days, d1: "ok", d1_served_by_primary: null, d1_served_by_region: null, d1_ms: expect.any(Number), queue: "bound", polar: "configured", ip_limit: "counted", version: (base as unknown as { CF_VERSION_METADATA: { id: string } }).CF_VERSION_METADATA.id, alerts: [] });
     expect(world.calls).toHaveLength(0);
   });
 
@@ -46,12 +46,6 @@ describe("GET /v1/key/health", () => {
 
   it("answers 503 cert-expired once the certificate has expired", async () => {
     expect(await healthAt(-1)).toEqual({ status: 503, body: expect.objectContaining({ ok: false, alerts: ["cert-expired"] }) });
-  });
-
-  it("answers 503 trust-roots-invalid when TRUST_ROOTS does not parse", async () => {
-    const res = await call("/v1/key/health", {}, env({ TRUST_ROOTS: "nope" }));
-    expect(res.status).toBe(503);
-    expect(await res.json()).toMatchObject({ ok: false, trust_roots: "invalid", alerts: ["trust-roots-invalid"] });
   });
 
   it("says when the queue is unbound or Polar is unconfigured, which the probe judges", async () => {
@@ -87,8 +81,10 @@ describe("GET /v1/key/health", () => {
   });
 });
 
-it("answers 404 off its routes", async () => {
+it("answers 404 off its routes, the retired session, web, grant and login paths among them", async () => {
   expect((await call("/v1/key/other")).status).toBe(404);
-  expect((await call("/webhook")).status).toBe(404);
-  expect((await call("/v1/item-grant")).status).toBe(404);
+  for (const path of ["/webhook", "/v1/session-key", "/v1/item-grant", "/v1/login/refresh"]) {
+    expect((await call(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })).status, path).toBe(404);
+  }
+  expect((await call("/v1/login/config")).status).toBe(404);
 });

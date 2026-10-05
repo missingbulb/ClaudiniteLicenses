@@ -1,5 +1,5 @@
-// The producer half of the writes queue: the key Worker cannot write D1, so each key's usage, seat
-// and grace records go to the sync Worker as messages, sent after the answer so a key never waits.
+// The producer half of the writes queue: the key Worker cannot write D1, so its incidents go to the
+// sync Worker as messages, sent after the answer so a key never waits.
 import type { WriteMessage } from "../../../packages/licensing/src/index.ts";
 
 export function enqueueWrites(env: { WRITES?: Queue }, ctx: ExecutionContext, messages: WriteMessage[]): void {

@@ -8,7 +8,7 @@ import { perAddressCap, routeTable } from "../route-table.mjs";
 // row is a route, a row is "public" exactly when a wrangler route reaches it, and every row names
 // the test that pins its cap.
 const ROOT = resolve(import.meta.dirname, "../..");
-const WORKERS = ["key", "public-key", "sync", "router"];
+const WORKERS = ["key", "sync"];
 const read = (p: string) => readFileSync(join(ROOT, p), "utf8");
 const rows = routeTable(read("docs/license-record.md"));
 
@@ -34,7 +34,7 @@ describe("the security review's route table", () => {
   it("reads routes from every Worker, so the scan is not silently empty", () => {
     for (const w of WORKERS) expect(codeRoutes(w).length, w).toBeGreaterThan(0);
     expect(codeRoutes("key")).toContain("GET /v1/key/health");
-    expect(codeRoutes("router")).toEqual(["POST /github-webhook"]);
+    expect(codeRoutes("sync")).toContain("POST /github-webhook");
   });
 
   it("lists every route each Worker answers, and nothing it does not", () => {
@@ -45,15 +45,15 @@ describe("the security review's route table", () => {
     expect(new Set(rows.map((r) => r.worker))).toEqual(new Set(WORKERS));
   });
 
-  it("calls a row public exactly when a wrangler route reaches its path, and a service binding otherwise", () => {
+  it("calls a row public exactly when a wrangler route reaches its path, and has no service-binding path left", () => {
     for (const r of rows) {
       const want = reachedBy(r.path, patterns(r.worker)) ? "public" : "service binding";
       expect(r.reached, `${r.worker} ${r.method} ${r.path}`).toBe(want);
     }
-    expect(rows.filter((r) => r.reached === "service binding").map((r) => `${r.worker} ${r.path}`)).toEqual(["key /webhook", "public-key /webhook", "sync /webhook"]);
+    expect(rows.filter((r) => r.reached === "service binding")).toEqual([]);
   });
 
-  it("puts the per-address cap in front of every public route but GitHub's webhook, and none on the service-binding paths", () => {
+  it("puts the per-address cap in front of every public route but GitHub's webhook", () => {
     for (const r of rows) {
       const label = `${r.worker} ${r.method} ${r.path}`;
       if (r.reached === "public" && r.path !== "/github-webhook") expect(perAddressCap(r), label).toBe(true);
@@ -71,7 +71,7 @@ describe("the security review's route table", () => {
 
   it("binds IP_LIMIT on every Worker with a per-address row, each at the period the 429's Retry-After names", () => {
     const capped = [...new Set(rows.filter(perAddressCap).map((r) => r.worker))].sort();
-    expect(capped).toEqual(["key", "public-key", "sync"]);
+    expect(capped).toEqual(["key", "sync"]);
     for (const w of capped) {
       const config = JSON.parse(read(`workers/${w}/wrangler.jsonc`).replace(/^\s*\/\/.*$/gm, ""));
       const binding = (config.ratelimits ?? []).find((b: { name: string }) => b.name === "IP_LIMIT");
