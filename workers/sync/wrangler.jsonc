@@ -6,10 +6,12 @@
   "workers_dev": false,
   "observability": { "enabled": true },
   "version_metadata": { "binding": "CF_VERSION_METADATA" },
-  // The App's webhook path, /webhook, has no public route: it is reached only through the router's
-  // service binding. Everything under /v1/sync/ is public by design: health, alerts and Polar's
-  // webhook (verified by its signature).
-  "routes": [{ "pattern": "license.claudinite.com/v1/sync/*", "zone_name": "claudinite.com" }],
+  // Everything here is public by design: the App's webhook (verified by GitHub's HMAC), health,
+  // alerts and Polar's webhook (verified by its signature).
+  "routes": [
+    { "pattern": "license.claudinite.com/github-webhook", "zone_name": "claudinite.com" },
+    { "pattern": "license.claudinite.com/v1/sync/*", "zone_name": "claudinite.com" }
+  ],
   // deploy.yml writes the real database_id with tools/ensure-d1.mjs --write; the committed value is a placeholder.
   "d1_databases": [
     { "binding": "DB", "database_name": "claudinite-licenses", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "../../db/migrations" }

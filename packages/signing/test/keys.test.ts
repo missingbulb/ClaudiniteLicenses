@@ -113,11 +113,13 @@ describe("verifyKey", () => {
     expect(await verifyKey(key, { roots: [c.root.publicKey], now: NOW })).toEqual({ ok: false, reason: "kid-mismatch" });
   });
 
-  it("refuses a payload whose typ, state, features or release is malformed", async () => {
+  it("refuses a payload whose plan, typ, state, features or release is malformed", async () => {
     const c = await devChain();
     const cert = await c.certify(c.root, "license-public");
     const release = payload().release;
     const bad: Record<string, unknown>[] = [
+      { plan: "private-repo" },
+      { plan: "enterprise" },
       { typ: "admin" },
       { typ: undefined },
       { state: "fine" },
@@ -180,7 +182,7 @@ describe("verifyKey", () => {
     const nulls = payload({ seats: null, checkout_url: null, portal_url: null });
     expect((await verifyKey(await signKey(c.issuing.seed, cert, nulls), roots)).ok).toBe(true);
     const full = payload({
-      plan: "private-repo",
+      plan: "personal",
       state: "grace",
       grace_until: NOW_S + 7 * DAY,
       seats: { paid: 0, counted: 1, headroom: 0 },

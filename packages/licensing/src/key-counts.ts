@@ -1,4 +1,4 @@
-// The blob order of the key count point: what the key Worker and the public key Worker write into
+// The blob order of the key count point: what the key Worker writes into
 // the `claudinite_key_counts` Analytics Engine dataset as blob1..blob5, and what
 // `tools/key-counts.mjs` maps those columns back to. The index is the repo id and the one double is 1.
 

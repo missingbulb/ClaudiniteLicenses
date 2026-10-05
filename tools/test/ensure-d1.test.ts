@@ -92,18 +92,18 @@ describe("tools/ensure-d1.mjs", () => {
 
   it("--write patches database_id in exactly the three configs and leaves every other key untouched", () => {
     const dir = mkdtempSync(join(tmpdir(), "acme-d1-"));
-    for (const p of [...D1_CONFIGS, "workers/router/wrangler.jsonc"]) {
+    for (const p of [...D1_CONFIGS, "tools/dev-routes/wrangler.jsonc"]) {
       mkdirSync(dirname(join(dir, p)), { recursive: true });
       cpSync(join(ROOT, p), join(dir, p));
     }
-    const before = Object.fromEntries([...D1_CONFIGS, "workers/router/wrangler.jsonc"].map((p) => [p, readFileSync(join(dir, p), "utf8")]));
+    const before = Object.fromEntries([...D1_CONFIGS, "tools/dev-routes/wrangler.jsonc"].map((p) => [p, readFileSync(join(dir, p), "utf8")]));
     expect(writeDatabaseId(dir, NAME, "uuid-live")).toEqual(D1_CONFIGS);
     for (const p of D1_CONFIGS) {
       const want = parseJsonc(before[p]!);
       d1Of(want).database_id = "uuid-live";
       expect(parseJsonc(readFileSync(join(dir, p), "utf8")), p).toEqual(want);
     }
-    expect(readFileSync(join(dir, "workers/router/wrangler.jsonc"), "utf8")).toBe(before["workers/router/wrangler.jsonc"]);
+    expect(readFileSync(join(dir, "tools/dev-routes/wrangler.jsonc"), "utf8")).toBe(before["tools/dev-routes/wrangler.jsonc"]);
   });
 
   it("the three committed configs name the same database and the same placeholder id", () => {

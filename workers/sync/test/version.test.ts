@@ -33,10 +33,10 @@ describe("version", () => {
       await send("/v1/sync/health"),
       await send("/v1/sync/alerts"),
       await send("/v1/sync/polar-webhook", { method: "POST", body: "{}" }),
-      await send("/webhook", { method: "POST", body: "{not json" }),
+      await send("/github-webhook", { method: "POST", body: "{not json" }),
       await send("/elsewhere"),
     ];
-    expect(answers.map((r) => r.status)).toEqual([200, 503, 401, 400, 404]);
+    expect(answers.map((r) => r.status)).toEqual([200, 503, 401, 401, 404]);
     expect(answers.map((r) => r.headers.get("X-Claudinite-Version"))).toEqual(answers.map(() => ID));
   });
 

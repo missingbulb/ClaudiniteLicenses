@@ -4,8 +4,6 @@ import { b64urlDecode, b64urlEncode, verifyKey, type KeyPayload } from "../../..
 import worker, { type Env } from "../src/index.ts";
 import { resetLinkCaches } from "../src/links.ts";
 
-export const HEAD = "0123456789abcdef0123456789abcdef01234567";
-export const NONCE = "acme-nonce-0123456789abcdef";
 export const base = testEnv as unknown as Env & { TEST_MIGRATIONS: D1Migration[]; DEV_ROOTS: string };
 export const roots: string[] = JSON.parse(base.DEV_ROOTS);
 
@@ -22,7 +20,7 @@ export interface GitHubCall {
   body: string;
 }
 
-/** What the fetch spy answers and records: GitHub's API and web hosts, the OIDC issuer and Polar. */
+/** What the fetch spy answers and records: the OIDC issuer and Polar. */
 export interface World {
   calls: GitHubCall[];
   points: Point[];
@@ -43,9 +41,6 @@ export interface World {
   limited: Record<string, number>;
   /** Each IP_LIMIT bucket's count. */
   ipLimited: Record<string, number>;
-  user: () => Response;
-  repo: () => Response;
-  oauth: () => Response;
   jwks: () => Response;
   polarProducts: () => Response;
   polarCheckout: () => Response | Promise<Response>;
@@ -75,12 +70,9 @@ export function resetWorld(): World {
     send: async () => {},
     limited: {},
     ipLimited: {},
-    user: () => Response.json({ id: 3003, login: "acme-dev", type: "User" }),
-    repo: () => Response.json(githubRepo()),
-    oauth: () => Response.json({ access_token: "ghu_new", expires_in: 28800, refresh_token: "ghr_new", refresh_token_expires_in: 15811200 }),
     jwks: () => Response.json({ keys: [] }),
     polarProducts: () => {
-      const items = ["private-repo", "personal", "organization"].flatMap((p) => ["month", "year"].map((i) => managedProduct(p, i)));
+      const items = ["personal", "organization"].flatMap((p) => ["month", "year"].map((i) => managedProduct(p, i)));
       return Response.json({ items, pagination: { total_count: items.length, max_page: 1 } });
     },
     polarCheckout: () => Response.json({ id: "chk_acme", url: CHECKOUT_URL, expires_at: "2026-10-02T00:00:00Z" }, { status: 201 }),
@@ -92,11 +84,6 @@ export function resetWorld(): World {
     world.calls.push({ url: req.url, method: req.method, headers: req.headers, body });
     const url = new URL(req.url);
     if (url.origin === POLAR) world.polarSignals.push(init?.signal ?? req.signal);
-    if (url.pathname.endsWith("/access_tokens")) return Response.json({ token: "ghs_acme" }, { status: 201 });
-    if (url.pathname.endsWith("/check-runs")) return Response.json({ id: 77 }, { status: 201 });
-    if (req.url === "https://github-api.test/user") return world.user();
-    if (/^\/repos\/[^/]+\/[^/]+$/.test(url.pathname)) return world.repo();
-    if (req.url === "https://github-web.test/login/oauth/access_token") return world.oauth();
     if (req.url === "https://oidc.test/.well-known/jwks") return world.jwks();
     if (url.origin === POLAR && req.method === "GET" && url.pathname === "/v1/products/") return world.polarProducts();
     if (url.origin === POLAR && req.method === "POST" && url.pathname === "/v1/checkouts/") return world.polarCheckout();
@@ -106,10 +93,6 @@ export function resetWorld(): World {
   vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => void world.logs.push(a.join(" ")));
   vi.spyOn(console, "error").mockImplementation((...a: unknown[]) => void world.logs.push(a.join(" ")));
   return world;
-}
-
-export function githubRepo(over: Record<string, unknown> = {}) {
-  return { id: 1001, name: "acme-repo", full_name: "acme-user/acme-repo", private: false, visibility: "public", owner: { id: 2002, login: "acme-user", type: "User" }, permissions: { push: true }, ...over };
 }
 
 /**
@@ -180,42 +163,25 @@ export function env(over: Partial<Env> & { brokenDb?: boolean; limit?: number; i
     } as unknown as Queue,
     POLAR_API_BASE: POLAR,
     POLAR_ACCESS_TOKEN: "polar_oat_acme",
-    TRUST_ROOTS: base.DEV_ROOTS,
     ...rest,
   };
 }
 
 export async function freshDatabase(): Promise<void> {
   await applyD1Migrations(base.DB, base.TEST_MIGRATIONS);
-  await base.DB.batch(["repos", "subscriptions", "seats", "overuse", "usage"].map((t) => base.DB.prepare(`DELETE FROM ${t}`)));
+  await base.DB.batch(["repos", "subscriptions"].map((t) => base.DB.prepare(`DELETE FROM ${t}`)));
 }
 
 export const DAY = 86400;
 export const nowS = () => Math.floor(Date.now() / 1000);
 
-export async function seedSubscription(over: Partial<{ id: string; owner_id: number; owner_type: string; plan: string; seats: number; repo_ids: string | null; status: string; ended_at: number | null }> = {}) {
-  const r = { id: `sub_${crypto.randomUUID()}`, owner_id: 2002, owner_type: "User", plan: "personal", seats: 5, repo_ids: null, status: "active", ended_at: null, ...over };
+export async function seedSubscription(over: Partial<{ id: string; owner_id: number; owner_type: string; plan: string; seats: number | null; status: string; ended_at: number | null }> = {}) {
+  const r = { id: `sub_${crypto.randomUUID()}`, owner_id: 2002, owner_type: "User", plan: "personal", seats: null, status: "active", ended_at: null, ...over };
   await base.DB.prepare(
-    "INSERT INTO subscriptions (polar_subscription_id, owner_id, owner_type, plan, seats, repo_ids, source, modified_at, raw, status, ended_at) VALUES (?, ?, ?, ?, ?, ?, 'polar', 1, '{}', ?, ?)",
+    "INSERT INTO subscriptions (polar_subscription_id, owner_id, owner_type, plan, seats, source, modified_at, raw, status, ended_at) VALUES (?, ?, ?, ?, ?, 'polar', 1, '{}', ?, ?)",
   )
-    .bind(r.id, r.owner_id, r.owner_type, r.plan, r.seats, r.repo_ids, r.status, r.ended_at)
+    .bind(r.id, r.owner_id, r.owner_type, r.plan, r.seats, r.status, r.ended_at)
     .run();
-}
-
-/** Seats for `n` users of a licensee, user ids 4001.., in that order of first key, each active yesterday. */
-export async function seedSeats(licenseeId: number, n: number) {
-  const now = nowS();
-  for (let i = 0; i < n; i++) {
-    await base.DB.prepare("INSERT INTO seats (licensee_id, user_id, first_key_at, last_key_at) VALUES (?, ?, ?, ?)").bind(licenseeId, 4001 + i, now - 20 * DAY + i * 60, now - DAY).run();
-  }
-}
-
-export async function seedOveruse(ownerId: number, startedAt: number | null, spentUntil: number | null) {
-  await base.DB.prepare("INSERT INTO overuse (licensee_id, grace_started_at, grace_spent_until) VALUES (?, ?, ?)").bind(ownerId, startedAt, spentUntil).run();
-}
-
-export async function seedUsage(repoId: number, userId: number, day: string) {
-  await base.DB.prepare("INSERT INTO usage (repo_id, user_id, day) VALUES (?, ?, ?)").bind(repoId, userId, day).run();
 }
 
 /** The request's ExecutionContext, recording what it is handed. */
@@ -241,6 +207,12 @@ export async function call(path: string, init: RequestInit = {}, e: Env = env())
 
 /** The queued messages of every send, in order. */
 export const sentMessages = () => world.sent.flat() as { kind: string; [k: string]: unknown }[];
+
+/** The Polar requests, in order. */
+export const polarCalls = () => world.calls.filter((c) => c.url.startsWith(POLAR));
+
+/** The body of the last checkout Polar was asked for. */
+export const lastCheckout = () => JSON.parse(polarCalls().filter((c) => c.url.endsWith("/v1/checkouts/")).at(-1)?.body ?? "null");
 
 /** The queued incident messages, in order. */
 export const sentIncidents = () => sentMessages().filter((m) => m.kind === "incident");

@@ -2,7 +2,7 @@ name: probe
 
 # The outside probe, from outside Cloudflare. GitHub fires a cron late or not at all under load and
 # disables it after 60 days without repository activity, so this is the best-effort interim; the
-# uptime service polling the four health and alerts URLs every minute is what pages.
+# uptime service polling the three health and alerts URLs every minute is what pages.
 on:
   schedule:
     - cron: "7,22,37,52 * * * *"

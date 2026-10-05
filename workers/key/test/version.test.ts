@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import wranglerConfig from "../wrangler.jsonc?raw";
-import { base, call, env, freshDatabase, NONCE, resetWorld } from "./helpers.ts";
+import { base, call, env, freshDatabase, resetWorld } from "./helpers.ts";
 
 const ID = (base as unknown as { CF_VERSION_METADATA: { id: string } }).CF_VERSION_METADATA.id;
 
@@ -22,15 +22,10 @@ describe("version", () => {
     const answers = [
       await call("/v1/key/health"),
       await call("/v1/key/health", {}, env({ brokenDb: true })),
-      await call("/v1/login/config"),
-      await call("/v1/login/refresh", post({})),
-      await call("/v1/session-key", post({ repo: "acme-user/acme-repo", nonce: NONCE, engine_version: "1.1.0" })),
       await call("/v1/actions-key", post({ engine_version: "1.1.0" })),
-      await call("/v1/item-grant", post({ issue: 1 })),
-      await call("/webhook", { method: "POST", body: "{not json" }),
       await call("/elsewhere"),
     ];
-    expect(answers.map((r) => r.status)).toEqual([200, 503, 200, 400, 401, 401, 401, 400, 404]);
+    expect(answers.map((r) => r.status)).toEqual([200, 503, 401, 404]);
     expect(answers.map((r) => r.headers.get("X-Claudinite-Version"))).toEqual(answers.map(() => ID));
   });
 

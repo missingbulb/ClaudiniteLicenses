@@ -9,8 +9,6 @@
   "compatibility_date": "2026-08-15",
   "workers_dev": false,
   "services": [
-    { "binding": "CLAUDINITE_ROUTER", "service": "claudinite-router" },
-    { "binding": "CLAUDINITE_PUBLIC_KEY", "service": "claudinite-public-key" },
     { "binding": "CLAUDINITE_KEY", "service": "claudinite-key" },
     { "binding": "CLAUDINITE_SYNC", "service": "claudinite-sync" }
   ],

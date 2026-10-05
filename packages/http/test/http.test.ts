@@ -15,7 +15,7 @@ import {
   withinIpLimit,
 } from "../src/index.ts";
 
-const post = (body: BodyInit | null, headers: Record<string, string> = {}) => new Request("https://license.claudinite.com/v1/session-key", { method: "POST", body, headers });
+const post = (body: BodyInit | null, headers: Record<string, string> = {}) => new Request("https://license.claudinite.com/v1/actions-key", { method: "POST", body, headers });
 
 /** A stand-in for the rate-limit binding: `limit` calls allowed per key, every call recorded. */
 function limiter(limit: number) {

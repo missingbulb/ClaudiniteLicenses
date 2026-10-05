@@ -6,12 +6,8 @@
   "workers_dev": false,
   "observability": { "enabled": true },
   "version_metadata": { "binding": "CF_VERSION_METADATA" },
-  // The webhook path has no public route: it is reached only through the router's service binding.
   "routes": [
-    { "pattern": "license.claudinite.com/v1/session-key", "zone_name": "claudinite.com" },
     { "pattern": "license.claudinite.com/v1/actions-key", "zone_name": "claudinite.com" },
-    { "pattern": "license.claudinite.com/v1/item-grant", "zone_name": "claudinite.com" },
-    { "pattern": "license.claudinite.com/v1/login/*", "zone_name": "claudinite.com" },
     { "pattern": "license.claudinite.com/v1/key/*", "zone_name": "claudinite.com" }
   ],
   // Read only: D1 has no read-only binding, so a test pins that no write statement appears in src/.
@@ -20,7 +16,7 @@
     { "binding": "DB", "database_name": "claudinite-licenses", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "../../db/migrations" }
   ],
   "analytics_engine_datasets": [{ "binding": "KEY_COUNTS", "dataset": "claudinite_key_counts" }],
-  // Each key's usage, seat and grace records; the sync Worker consumes the queue as D1's only writer.
+  // The incidents the key Worker reports; the sync Worker consumes the queue as D1's only writer.
   "queues": { "producers": [{ "binding": "WRITES", "queue": "claudinite-licenses-writes" }] },
   // OWNER_LIMIT counts an authenticated caller's owner; IP_LIMIT counts every public request's
   // address before anything is spent on it. Each namespace_id is this Worker's own.
@@ -29,14 +25,7 @@
     { "name": "IP_LIMIT", "namespace_id": "1002", "simple": { "limit": 300, "period": 60 } }
   ],
   "vars": {
-    "GITHUB_API_BASE": "https://api.github.com",
-    "GITHUB_WEB_BASE": "https://github.com",
     "OIDC_ISSUER": "https://token.actions.githubusercontent.com",
-    "GITHUB_APP_CLIENT_ID": "Iv23lixTgnYXROPw9nb8",
-    "FAIL_OPEN": "true",
-    "POLAR_API_BASE": "https://sandbox-api.polar.sh",
-    // The roots an Actions key must chain to for a grant: packages/signing/roots/, which deploy.yml
-    // also passes with --var.
-    "TRUST_ROOTS": "[\"zbIx-NsR2QOtuDxN_NRWdaic7korqWlbavM2SGImfwo\",\"AhHHTZ9fOPKENvhdnp4ScvxYooGpxPcwLePrHaRLyKs\"]"
+    "POLAR_API_BASE": "https://sandbox-api.polar.sh"
   }
 }

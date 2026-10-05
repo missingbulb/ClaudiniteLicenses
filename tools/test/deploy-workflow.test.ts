@@ -23,7 +23,7 @@ interface ReadmeSecret {
   optional: boolean;
 }
 
-const WORKERS = ["public-key", "key", "sync", "router"];
+const WORKERS = ["key", "sync"];
 
 function readmeSecrets(worker: string): ReadmeSecret[] {
   const text = readFileSync(join(ROOT, "workers", worker, "README.md"), "utf8");
@@ -138,11 +138,22 @@ describe("deploy.yml", () => {
   const secrets = [...new Set(["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", ...listed.map((s) => s.repo)])];
   const optional = listed.filter((s) => s.optional).map((s) => s.repo);
 
-  it("uploads public-key and key, deploys sync, then uploads the router that binds to all three", () => {
-    const order = [uploadAt("public-key"), uploadAt("key"), deployAt("sync"), uploadAt("router")];
+  it("uploads key and deploys sync, and stages no retired Worker", () => {
+    const order = [uploadAt("key"), deployAt("sync")];
     expect(order.every((i) => i > -1), JSON.stringify(order)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
-    for (const w of ["public-key", "key", "router"]) expect(deployAt(w), w).toBe(-1);
+    expect(deployAt("key")).toBe(-1);
+    for (const step of steps) expect(step.run ?? "", step.name).not.toMatch(/workers\/(public-key|router)\//);
+  });
+
+  const retireStep = () => steps.find((s) => (s.run ?? "").includes("tools/retire-workers.mjs"))!;
+
+  it("deletes the retired router and public-key Workers before the sync Worker takes their webhook route", () => {
+    expect(retireStep()).toBeTruthy();
+    expect(runLines(retireStep())).toEqual(["node tools/retire-workers.mjs --name claudinite-router --name claudinite-public-key"]);
+    expect(steps.indexOf(retireStep())).toBeLessThan(deployAt("sync"));
+    expect(steps.indexOf(retireStep())).toBeGreaterThan(stepAt((s) => /wrangler d1 migrations apply/.test(s.run ?? "")));
+    expect(retireStep().env).toMatchObject({ CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}", CLOUDFLARE_ACCOUNT_ID: "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" });
   });
 
   it("creates the D1 database, writes its id, records the restore point, and applies the migrations before any Worker deploys", () => {
@@ -171,15 +182,13 @@ describe("deploy.yml", () => {
     expect(runStep(pointStep(), {}, { PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, GITHUB_STEP_SUMMARY: join(dir, "summary") }).status).not.toBe(0);
   });
 
-  const ISSUING = ["ISSUING_KEY_PRIVATE", "ISSUING_KEY_CERT", "KEY_ISSUING_KEY_PRIVATE", "KEY_ISSUING_KEY_CERT"];
+  const ISSUING = ["KEY_ISSUING_KEY_PRIVATE", "KEY_ISSUING_KEY_CERT"];
   const allBut = (...names: string[]) => Object.fromEntries(secrets.filter((s) => !names.includes(s)).map((s) => [s, "set"]));
 
   it("skips on each missing secret the Workers' READMEs list, the issuing keys included, other than the optional ones", () => {
-    expect(readmeSecrets("public-key").length).toBeGreaterThanOrEqual(4);
-    expect(readmeSecrets("key").length).toBeGreaterThanOrEqual(5);
-    expect(readmeSecrets("sync").length).toBeGreaterThanOrEqual(2);
-    expect(readmeSecrets("router").length).toBeGreaterThanOrEqual(1);
-    expect(optional).toEqual(["CLAUDINITE_GITHUB_APP_CLIENT_SECRET"]);
+    expect(readmeSecrets("key").map((s) => s.repo)).toEqual(["KEY_ISSUING_KEY_PRIVATE", "KEY_ISSUING_KEY_CERT", "POLAR_SANDBOX_TOKEN"]);
+    expect(readmeSecrets("sync").map((s) => s.repo)).toEqual(["CLAUDINITE_GITHUB_APP_ID", "CLAUDINITE_GITHUB_APP_PRIVATE_KEY", "CLAUDINITE_GITHUB_APP_WEBHOOK_SECRET", "POLAR_SANDBOX_TOKEN"]);
+    expect(optional).toEqual([]);
     for (const name of ISSUING) expect(secrets, name).toContain(name);
     for (const name of secrets.filter((s) => !optional.includes(s))) {
       const res = runGate(allBut(name));
@@ -189,10 +198,12 @@ describe("deploy.yml", () => {
     }
   });
 
-  it("proceeds without the optional secrets", () => {
-    const res = runGate(allBut(...optional));
-    expect(res.status).toBe(0);
-    expect(res.output).toBe("skip=false\n");
+  it("gates on no secret only a retired Worker read: the public issuing key and the App's client secret", () => {
+    const names = Object.keys(gate.env ?? {});
+    for (const retired of ["ISSUING_KEY_PRIVATE", "ISSUING_KEY_CERT", "CLAUDINITE_GITHUB_APP_CLIENT_SECRET"]) {
+      expect(names, retired).not.toContain(retired);
+      for (const step of steps) expect(JSON.stringify(step.env ?? {}), `${step.name} ${retired}`).not.toContain(`secrets.${retired} `);
+    }
   });
 
   it("exits clean and skips with nothing set, and proceeds with everything set", () => {
@@ -207,7 +218,7 @@ describe("deploy.yml", () => {
   });
 
   it("stores no committed key: every issuing key and certificate comes from the repository secrets", () => {
-    for (const w of ["public-key", "key"]) expect(uploadStep(w)!.run!, w).not.toMatch(/keys\/|useDev/);
+    expect(uploadStep("key")!.run!).not.toMatch(/keys\/|useDev/);
   });
 
   it("stores each repository secret as the Worker secret its README names", () => {
@@ -217,12 +228,6 @@ describe("deploy.yml", () => {
       const { bulk } = storedSecrets(worker, values);
       expect(bulk, worker).toEqual(want);
     }
-  });
-
-  it("leaves an unset optional secret out of the Worker's secrets", () => {
-    const values = Object.fromEntries(secrets.map((s) => [s, `value-of-${s}`]));
-    const { bulk } = storedSecrets("key", { ...values, CLAUDINITE_GITHUB_APP_CLIENT_SECRET: "" });
-    expect(bulk).not.toHaveProperty("GITHUB_APP_CLIENT_SECRET");
   });
 
   // ClaudiniteLicenses#25: a secret minted per run made every rollback a changed-secret refusal.
@@ -236,7 +241,7 @@ describe("deploy.yml", () => {
     expect(workflow.jobs.deploy.permissions).toEqual({ contents: "read", "id-token": "write" });
     const run = steps.find((s) => s.name === "Read back the live Workers")!.run!;
     for (const step of steps) expect(step.run ?? "", step.name).not.toMatch(/\/v1\/sync\/(polar-)?reconcile\b/);
-    for (const route of ["/v1/public/health", "/v1/key/health", "/v1/sync/health", "/v1/actions-key", "/github-webhook"]) {
+    for (const route of ["/v1/key/health", "/v1/sync/health", "/v1/actions-key", "/github-webhook"]) {
       expect(run, route).toContain(`https://license.claudinite.com${route}`);
     }
     expect(run).toContain("audience=claudinite");
@@ -295,13 +300,11 @@ describe("deploy.yml", () => {
     expect(existsSync(join(res.dir, "polar-webhook-secret"))).toBe(false);
   });
 
-  it("uploads the key Worker with TRUST_ROOTS from tools/keys.mjs trust-roots", () => {
+  it("uploads the key Worker with no --var: it takes no trust roots and no fail-open switch", () => {
     const res = runWithStandIns(uploadStep("key")!);
     expect(res.status, res.stderr).toBe(0);
-    const args = res.calls[0]!;
-    const v = args[args.indexOf("--var") + 1]!;
-    expect(v.split(":")[0]).toBe("TRUST_ROOTS");
-    expect(JSON.parse(v.slice("TRUST_ROOTS:".length))).toEqual(["root.pub", "standby.pub"].map((f) => readFileSync(join(ROOT, "packages/signing/roots", f), "utf8").trim()));
+    expect(res.calls[0]!).not.toContain("--var");
+    expect(uploadStep("key")!.env ?? {}).not.toHaveProperty("KEY_FAIL_OPEN");
   });
 
   it("reads back the queue, Polar and a live checkout whose checkout.created delivery reaches the sync Worker", () => {
@@ -310,7 +313,14 @@ describe("deploy.yml", () => {
     expect(run).toContain('b.queue==="bound"');
     expect(run).toContain('b.polar==="configured"');
     expect(run).toContain("b.polar_webhook_secret===true");
-    expect(run).toMatch(/node tools\/polar-checkout\.mjs --plan private-repo --owner-id "\$GITHUB_REPOSITORY_OWNER_ID" --owner-login "\$GITHUB_REPOSITORY_OWNER" --owner-type "\$OWNER_TYPE" --repo-id "\$GITHUB_REPOSITORY_ID" --repo "\$GITHUB_REPOSITORY"/);
+    expect(run).toMatch(/node tools\/polar-checkout\.mjs --plan "\$checkout_plan" --owner-id "\$GITHUB_REPOSITORY_OWNER_ID" --owner-login "\$GITHUB_REPOSITORY_OWNER" --owner-type "\$OWNER_TYPE"\)/);
+    expect(run).not.toContain("private-repo");
+    // The fleet the repo's owner can buy: Personal for a User, Organization for an Organization.
+    const choose = run.split("\n").filter((l) => /checkout_plan=/.test(l) && !l.includes("polar-checkout.mjs")).join("\n");
+    for (const [ownerType, plan] of [["User", "personal"], ["Organization", "organization"]]) {
+      const res = spawnSync("bash", ["-e", "-c", `${choose}\necho "$checkout_plan"`], { env: { PATH: process.env.PATH!, OWNER_TYPE: ownerType }, encoding: "utf8" });
+      expect(res.stdout.trim(), ownerType).toBe(plan);
+    }
     expect(run).toContain("b.last_polar_webhook_at>=$started");
     expect(run.indexOf("polar-checkout.mjs")).toBeLessThan(run.indexOf("b.last_polar_webhook_at>=$started"));
     expect(step.env).toMatchObject({ POLAR_ACCESS_TOKEN: "${{ secrets.POLAR_SANDBOX_TOKEN }}", OWNER_TYPE: "${{ github.event.repository.owner.type }}" });
@@ -358,7 +368,7 @@ describe("deploy.yml", () => {
     expect(alertsRun(502, '{"ok":false,"alerts":[]}').status).not.toBe(0);
   });
 
-  const STAGED = ["public-key", "key", "router"];
+  const STAGED = ["key"];
   const named = (name: string) => steps.find((s) => s.name === name)!;
   const runLines = (step: Step) => (step.run ?? "").split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
 
@@ -421,59 +431,59 @@ describe("deploy.yml", () => {
     }
   });
 
-  it("judges the sync Worker by its health and alerts right after its deploy, before the router uploads", () => {
+  it("judges the sync Worker by its health and alerts right after its deploy, before the key Worker's split", () => {
     const judge = stepAt((s) => (s.run ?? "").includes("https://license.claudinite.com/v1/sync/health") && (s.run ?? "").includes("https://license.claudinite.com/v1/sync/alerts") && s.name !== "Read back the live Workers");
     expect(judge).toBe(deployAt("sync") + 1);
-    expect(judge).toBeLessThan(uploadAt("router"));
+    expect(judge).toBeLessThan(steps.indexOf(named("Serve the new version to one tenth of requests")));
   });
 
   it("reads every Worker's live version first, and refuses to start on a split left standing", () => {
     const live = named("Read the live versions");
-    expect(steps.indexOf(live)).toBeLessThan(uploadAt("public-key"));
+    expect(steps.indexOf(live)).toBeLessThan(uploadAt("key"));
     const res = runWithStandIns(live);
     expect(res.status, res.stderr).toBe(0);
     expect(res.calls.map((c) => c.slice(0, 3).join(" "))).toEqual(WORKERS.map((w) => `status --config workers/${w}/wrangler.jsonc`));
-    expect(res.output).toBe("public_key=live-public-key\nkey=live-key\nsync=live-sync\nrouter=live-router\n");
-    const fresh = runWithStandIns(live, {}, { STATUS_ROUTER: '{"versions":[]}' });
+    expect(res.output).toBe("key=live-key\nsync=live-sync\n");
+    const fresh = runWithStandIns(live, {}, { STATUS_KEY: '{"versions":[]}' });
     expect(fresh.status, fresh.stderr).toBe(0);
-    expect(fresh.output).toContain("router=\n");
+    expect(fresh.output).toContain("key=\n");
     const stuck = runWithStandIns(live, {}, { STATUS_KEY: '{"versions":[{"id":"a","percentage":90},{"id":"b","percentage":10}]}' });
     expect(stuck.status).not.toBe(0);
     expect(stuck.stdout).toMatch(/^::error::claudinite-key has a split standing; roll it back by hand with node tools\/stage\.mjs rollback/m);
   });
 
-  const splitEnv = { PUBLIC_KEY_NEW: "new-public-key", KEY_NEW: "new-key", ROUTER_NEW: "new-router", PUBLIC_KEY_LIVE: "live-public-key", KEY_LIVE: "live-key", ROUTER_LIVE: "live-router" };
+  const splitEnv = { KEY_NEW: "new-key", KEY_LIVE: "live-key" };
 
-  it("splits public-key, key and router at one tenth, in that order, noting each live version before its split", () => {
-    const split = named("Serve the new versions to one tenth of requests");
-    expect(steps.indexOf(split)).toBeGreaterThan(uploadAt("router"));
+  it("splits key at one tenth, noting its live version before the split", () => {
+    const split = named("Serve the new version to one tenth of requests");
+    expect(steps.indexOf(split)).toBeGreaterThan(uploadAt("key"));
     const res = runWithStandIns(split, {}, splitEnv);
     expect(res.status, res.stderr).toBe(0);
     expect(res.calls.map((c) => c.slice(0, 7))).toEqual(STAGED.map((w) => ["split", "--config", `workers/${w}/wrangler.jsonc`, "--new", `new-${w}`, "--percent", "10"]));
     for (const w of STAGED) expect(readFileSync(join(res.dir, `staged/${w}`), "utf8")).toBe(`live-${w}`);
-    expect(res.output).toBe("public_key_previous=live-public-key\nkey_previous=live-key\nrouter_previous=live-router\n");
+    expect(res.output).toBe("key_previous=live-key\n");
     const broken = runWithStandIns(split, {}, { ...splitEnv, STAGE_FAIL: "split:key" });
     expect(broken.status).not.toBe(0);
-    expect(["public-key", "key", "router"].map((w) => existsSync(join(broken.dir, `staged/${w}`)))).toEqual([true, true, false]);
+    expect(existsSync(join(broken.dir, "staged/key"))).toBe(true);
   });
 
   const canaryStep = () => steps.find((s) => runLines(s).some((l) => l.startsWith("node tools/probe.mjs") && l.includes("--expect-version")))!;
 
-  it("probes the new versions by name after the split and the DNS, without the standing issue", () => {
+  it("probes the new version by name after the split and the DNS, without the standing issue", () => {
     const canary = canaryStep();
     expect(canary.id).toBe("canary");
-    expect(steps.indexOf(canary)).toBeGreaterThan(steps.indexOf(named("Serve the new versions to one tenth of requests")));
+    expect(steps.indexOf(canary)).toBeGreaterThan(steps.indexOf(named("Serve the new version to one tenth of requests")));
     expect(steps.indexOf(canary)).toBeGreaterThan(stepAt((s) => (s.run ?? "").includes("tools/ensure-dns.mjs")));
     const line = runLines(canary).find((l) => l.startsWith("node tools/probe.mjs"))!;
-    expect(line).toContain('--expect-version "public-key=$PUBLIC_KEY_NEW,key=$KEY_NEW,router=$ROUTER_NEW"');
+    expect(line).toContain('--expect-version "key=$KEY_NEW"');
     expect(line).toContain("--base https://license.claudinite.com");
     expect(line).toMatch(/--oidc-token-env \w+/);
     expect(line).not.toMatch(/--issue\b/);
-    expect(canary.env).toMatchObject({ PUBLIC_KEY_NEW: "${{ steps.upload-public-key.outputs.version_id }}", KEY_NEW: "${{ steps.upload-key.outputs.version_id }}", ROUTER_NEW: "${{ steps.upload-router.outputs.version_id }}" });
+    expect(canary.env).toEqual({ KEY_NEW: "${{ steps.upload-key.outputs.version_id }}" });
   });
 
-  it("promotes only on the canary's success, then applies triggers for all four Workers", () => {
-    const promote = named("Promote the new versions to all requests");
+  it("promotes only on the canary's success, then applies triggers for both Workers", () => {
+    const promote = named("Promote the new version to all requests");
     expect(promote.if).toContain("steps.canary.outcome == 'success'");
     expect(steps.indexOf(promote)).toBe(steps.indexOf(canaryStep()) + 1);
     const res = runWithStandIns(promote, {}, splitEnv);
@@ -491,14 +501,14 @@ describe("deploy.yml", () => {
     expect(steps.indexOf(rollback)).toBe(steps.length - 1);
     const dir = standIns();
     mkdirSync(join(dir, "staged"));
-    writeFileSync(join(dir, "staged/public-key"), "live-public-key");
-    writeFileSync(join(dir, "staged/key"), "");
+    writeFileSync(join(dir, "staged/key"), "live-key");
     writeFileSync(join(dir, "staged/sync"), "live-sync");
     const res = runStep(rollback, {}, { PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir });
     expect(res.status, res.stderr).toBe(0);
-    expect(stageCalls(dir).filter((c) => c[0] === "rollback").map((c) => c.join(" "))).toEqual(["rollback --config workers/public-key/wrangler.jsonc --id live-public-key", "rollback --config workers/sync/wrangler.jsonc --id live-sync"]);
-    expect(res.stdout).toMatch(/^::warning::claudinite-key had no live version/m);
-    expect(res.stdout).toMatch(/^::error::claudinite-public-key rolled back to live-public-key$/m);
+    expect(stageCalls(dir).filter((c) => c[0] === "rollback").map((c) => c.join(" "))).toEqual(["rollback --config workers/key/wrangler.jsonc --id live-key", "rollback --config workers/sync/wrangler.jsonc --id live-sync"]);
+    expect(res.stdout).toMatch(/^::error::claudinite-key rolled back to live-key$/m);
+    writeFileSync(join(dir, "staged/key"), "");
+    expect(runStep(rollback, {}, { PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir }).stdout).toMatch(/^::warning::claudinite-key had no live version/m);
     const failing = runStep(rollback, {}, { PATH: `${dir}:${process.env.PATH}`, RUNNER_TEMP: dir, STAGE_FAIL: "rollback:sync" });
     expect(failing.status).not.toBe(0);
     expect(failing.stdout).toMatch(/claudinite-sync could not be rolled back/);
@@ -744,10 +754,10 @@ describe("deploy.yml", () => {
   }
   const rolledBack = (calls: string[][]) => calls.filter((c) => c[0] === "rollback").map((c) => /workers\/([^/]+)\//.exec(c[2]!)![1]);
 
-  it("rolls back the three split Workers and not sync when the canary fails after sync passed its judge, and says why", () => {
-    const res = rollbackAfter({ "staged/public-key": "live-public-key", "staged/key": "live-key", "staged/router": "live-router", "sync-judged": "" });
+  it("rolls back the split key Worker and not sync when the canary fails after sync passed its judge, and says why", () => {
+    const res = rollbackAfter({ "staged/key": "live-key", "sync-judged": "" });
     expect(res.status, res.stderr).toBe(0);
-    expect(rolledBack(res.calls)).toEqual(["public-key", "key", "router"]);
+    expect(rolledBack(res.calls)).toEqual(["key"]);
     expect(res.stdout).toMatch(/claudinite-sync passed its own judge/);
   });
 
@@ -794,35 +804,10 @@ describe("deploy.yml", () => {
     expect(named("Roll back to the versions that were live").env).toMatchObject({ BEFORE: "${{ github.event.before }}" });
   });
 
-  it("passes FAIL_OPEN from the KEY_FAIL_OPEN repository variable only when it is set, refusing anything but true or false", () => {
-    const step = uploadStep("key")!;
-    expect(step.env).toMatchObject({ KEY_FAIL_OPEN: "${{ vars.KEY_FAIL_OPEN }}" });
-    const failOpenVar = (args: string[]) => args.flatMap((a, i) => (a === "--var" && args[i + 1]!.startsWith("FAIL_OPEN:") ? [args[i + 1]] : []));
-    for (const value of ["true", "false"]) {
-      const res = runWithStandIns(step, {}, {}, { KEY_FAIL_OPEN: value });
-      expect(res.status, res.stderr).toBe(0);
-      expect(failOpenVar(res.calls[0]!), value).toEqual([`FAIL_OPEN:${value}`]);
-      expect(res.output).toContain(`fail_open=${value}\n`);
-    }
-    const unset = runWithStandIns(step);
-    expect(unset.status, unset.stderr).toBe(0);
-    expect(failOpenVar(unset.calls[0]!)).toEqual([]);
-    expect(unset.output).toContain("fail_open=true\n");
-    const wrong = runWithStandIns(step, {}, {}, { KEY_FAIL_OPEN: "TRUE" });
-    expect(wrong.status).not.toBe(0);
-    expect(wrong.stdout + wrong.stderr).toMatch(/KEY_FAIL_OPEN.*TRUE/);
-    expect(wrong.calls).toEqual([]);
-  });
-
-  it("reads fail_open back from the key Worker's health as the upload passed it", () => {
-    const step = named("Read back the live Workers");
-    expect(step.env).toMatchObject({ FAIL_OPEN_WANT: "${{ steps.upload-key.outputs.fail_open }}" });
-    expect(step.run).toContain('probe 200 "b.fail_open===$FAIL_OPEN_WANT" -- https://license.claudinite.com/v1/key/health');
-  });
-
-  it("reads back that the split Workers' health reads met the per-address cap, the binding bound and called", () => {
+  it("reads back that the key Worker's health read met the per-address cap, the binding bound and called, and no retired health field", () => {
     const run = named("Read back the live Workers").run!;
-    expect(run).toContain(`probe 200 'b.ip_limit==="counted"' -- https://license.claudinite.com/v1/public/health`);
+    expect(run).not.toMatch(/public\/health|fail_open|FAIL_OPEN/);
+    expect(run).toContain(`probe 200 'b.github_webhook_secret===true' -- https://license.claudinite.com/v1/sync/health`);
     expect(run).toMatch(/^ *probe 200 'b\.d1==="ok"&&b\.queue==="bound"&&b\.polar==="configured"&&b\.ip_limit==="counted"(&&[^']*)?' -- https:\/\/license\.claudinite\.com\/v1\/key\/health$/m);
   });
 
@@ -1064,7 +1049,7 @@ exec "${process.execPath}" "$@"
       const rehearse = stepAt((s) => runLines(s).includes("node tools/d1-restore-rehearsal.mjs"));
       expect(at).toBeGreaterThan(rehearse);
       expect(at).toBe(rehearse + 1);
-      expect(at).toBeLessThan(uploadAt("public-key"));
+      expect(at).toBeLessThan(uploadAt("key"));
       expect(replicationStep().env).toMatchObject({ D1_READ_REPLICATION: "${{ vars.D1_READ_REPLICATION }}", CLOUDFLARE_API_TOKEN: "${{ secrets.CLOUDFLARE_API_TOKEN }}" });
       expect(runLines(replicationStep())).toContain('auto) out=$(node tools/ensure-d1.mjs --name claudinite-licenses --read-replication auto) ;;');
     });

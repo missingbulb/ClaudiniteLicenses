@@ -38,7 +38,7 @@ signed by the issuing key the certificate certifies. The payload:
 | `repo_id`, `owner_id` | numeric GitHub ids |
 | `owner_type` | `User` or `Organization` |
 | `owner_login` | the owner's login when issued |
-| `plan` | `public`, `private-repo`, `personal`, `organization` or `internal` |
+| `plan` | `public`, `personal`, `organization` or `internal`; any other plan, the retired `private-repo` among them, is refused for shape |
 | `user_id`, `nonce` | session keys only: the GitHub user and the session's nonce |
 | `iat`, `exp` | unix seconds |
 | `state` | `ok`, `grace`, `degraded` or `unverified` |
@@ -46,13 +46,17 @@ signed by the issuing key the certificate certifies. The payload:
 | `features` | distinct names; only `work-checks`, `forced-skill-loading`, `in-session-growth`, `claudinite-tasks`, `updates` and `fleet` turn a feature on, and any other name is ignored, so the server may add one without an engine release; a Public key carries all but `fleet` |
 | `release` | `{"held": [], "revoked": [], "security_fixes": [], "pack_index_serial": 0, "pack_keys": []}`: `held`, `revoked` and `security_fixes` are engine version strings, `pack_index_serial` a non-negative integer, and `pack_keys` the key ids of the accepted pack-index signing certificates |
 | `seats` | optional: `null`, or `{"paid", "counted", "headroom"}` of non-negative integers: the licensee's paid seat count, the distinct users counted in the 30-day window including this one, and the headroom |
-| `checkout_url` | optional: `null` or an `https` URL, the plan's checkout for this owner (and, under `private-repo`, this repo) |
+| `checkout_url` | optional: `null` or an `https` URL, the checkout of the fleet plan the owner can buy |
 | `portal_url` | optional: `null` or an `https` URL, the owner's Polar customer portal |
 | `issue` | optional, grant keys only: a positive integer, the work item's issue number |
-| `notice` | optional: `null` or a non-empty string, what the licensee's seat state asks the binary to say; `over-within-headroom`, `overused` and `seat-refused` have a meaning (the key Worker README's table), and any other name is carried and ignored, as an unknown feature is, so the server may add a notice without an engine release |
+| `notice` | optional: `null` or a non-empty string, what the licensee's seat state asks the binary to say; `over-within-headroom`, `overused` and `seat-refused` have a meaning, and any other name is carried and ignored, as an unknown feature is, so the server may add a notice without an engine release |
 
 The five optional fields are absent or `null` on a key that has nothing to say; a verifier treats
 absence as `null`, so a key issued before they existed still verifies.
+
+The key Worker now issues only `actions` keys, each `state` `ok` with `seats` and `notice` `null`
+(the license record's decision 60). The other key types, states, the seat counts and the notices
+stay in the format, so the vectors and every verifier built before it still read them.
 
 ## Verifying a key
 

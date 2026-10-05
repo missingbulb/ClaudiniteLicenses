@@ -1,15 +1,15 @@
 // The subscriptions table, written only here, from Polar's subscription object as its webhooks and
 // its listing carry it. A row is filed under the GitHub account the checkout named as the external
-// customer id; a subscription with none, or on a product we do not manage, pays for nobody.
+// customer id; a subscription with none, or on a product we do not manage or a plan no longer sold,
+// pays for nobody.
 import { MANAGED_BY, type PolarSubscription } from "../../../packages/polar/src/index.ts";
 
 export interface SubscriptionRow {
   polar_subscription_id: string;
   owner_id: number;
   owner_type: "User" | "Organization";
-  plan: "private-repo" | "personal" | "organization" | "internal";
+  plan: "personal" | "organization" | "internal";
   seats: number | null;
-  repo_ids: string | null;
   source: "polar";
   period_end: number | null;
   cancel_at_period_end: number | null;
@@ -22,9 +22,9 @@ export interface SubscriptionRow {
 }
 
 /** The columns the reconcile compares; `raw` is left out, since Polar's listing and its webhooks may serialize the same object differently. */
-export const COMPARED = ["owner_id", "owner_type", "plan", "seats", "repo_ids", "period_end", "cancel_at_period_end", "modified_at", "status", "ended_at", "product_id", "interval"] as const;
+export const COMPARED = ["owner_id", "owner_type", "plan", "seats", "period_end", "cancel_at_period_end", "modified_at", "status", "ended_at", "product_id", "interval"] as const;
 
-const PLANS = ["private-repo", "personal", "organization", "internal"];
+const PLANS = ["personal", "organization", "internal"];
 const DIGITS = /^[1-9][0-9]{0,15}$/;
 
 const seconds = (t: unknown): number | null => (typeof t === "string" && !Number.isNaN(Date.parse(t)) ? Math.floor(Date.parse(t) / 1000) : null);
@@ -44,7 +44,6 @@ export function subscriptionRow(sub: PolarSubscription): { row: SubscriptionRow 
   if (ownerType !== "User" && ownerType !== "Organization") return { skip: "polar-no-owner-type" };
   const modified = seconds(sub.modified_at) ?? seconds(sub.created_at);
   if (modified === null) return { skip: "polar-malformed" };
-  const repoId = typeof meta.github_repo_id === "string" && DIGITS.test(meta.github_repo_id) ? Number(meta.github_repo_id) : null;
   const interval = pm.claudinite_interval === "month" || pm.claudinite_interval === "year" ? pm.claudinite_interval : null;
   return {
     row: {
@@ -53,7 +52,6 @@ export function subscriptionRow(sub: PolarSubscription): { row: SubscriptionRow 
       owner_type: ownerType,
       plan: plan as SubscriptionRow["plan"],
       seats: typeof sub.seats === "number" ? sub.seats : null,
-      repo_ids: plan === "private-repo" && repoId !== null ? JSON.stringify([repoId]) : null,
       source: "polar",
       period_end: seconds(sub.current_period_end),
       cancel_at_period_end: typeof sub.cancel_at_period_end === "boolean" ? Number(sub.cancel_at_period_end) : null,
@@ -67,7 +65,7 @@ export function subscriptionRow(sub: PolarSubscription): { row: SubscriptionRow 
   };
 }
 
-const COLUMNS = ["polar_subscription_id", "owner_id", "owner_type", "plan", "seats", "repo_ids", "source", "period_end", "cancel_at_period_end", "modified_at", "raw", "status", "ended_at", "product_id", "interval"] as const;
+const COLUMNS = ["polar_subscription_id", "owner_id", "owner_type", "plan", "seats", "source", "period_end", "cancel_at_period_end", "modified_at", "raw", "status", "ended_at", "product_id", "interval"] as const;
 
 /**
  * The row's upsert. A webhook's write is skipped when the stored row is newer by Polar's modified

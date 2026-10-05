@@ -1,7 +1,7 @@
 import { generateKeyPairSync } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { b64urlDecode } from "../../signing/src/index.ts";
-import { appJwt, createKeyCheckRun, GitHubError, installationToken, pemToPkcs8, type GitHubClient } from "../src/index.ts";
+import { appJwt, GitHubError, installationToken, pemToPkcs8, type GitHubClient } from "../src/index.ts";
 
 const { privateKey: PKCS1 } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs1", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
 const gh: GitHubClient = { base: "https://github-api.test", appId: "4242", privateKey: PKCS1, userAgent: "acme-agent" };
@@ -70,19 +70,5 @@ describe("installationToken", () => {
     const err = await installationToken(gh, 5005, { permissions: { checks: "write" } }, NOW_S).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(GitHubError);
     expect(err).toMatchObject({ status: 401, call: "installation token" });
-  });
-});
-
-describe("createKeyCheckRun", () => {
-  it("asks for a checks: write token scoped to the repo, then creates one completed neutral check run", async () => {
-    const output = { title: "Claudinite key", summary: "s", text: "k" };
-    await createKeyCheckRun(gh, { installationId: 5005, repoName: "acme-repo", fullName: "acme-user/acme-repo", head: "a".repeat(40), nonce: "acme-nonce-0123456789" }, output, NOW_S);
-    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
-      "POST https://github-api.test/app/installations/5005/access_tokens",
-      "POST https://github-api.test/repos/acme-user/acme-repo/check-runs",
-    ]);
-    expect(calls[0]!.body).toEqual({ repositories: ["acme-repo"], permissions: { checks: "write" } });
-    expect(calls[1]!.headers.get("Authorization")).toBe("Bearer ghs_acme");
-    expect(calls[1]!.body).toEqual({ name: "Claudinite key", head_sha: "a".repeat(40), external_id: "acme-nonce-0123456789", status: "completed", conclusion: "neutral", output });
   });
 });

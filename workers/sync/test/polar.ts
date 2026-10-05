@@ -82,7 +82,6 @@ export interface SubscriptionRowRead {
   owner_type: string;
   plan: string;
   seats: number | null;
-  repo_ids: string | null;
   source: string;
   period_end: number | null;
   cancel_at_period_end: number | null;

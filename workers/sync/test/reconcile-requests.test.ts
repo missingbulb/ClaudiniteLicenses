@@ -59,10 +59,10 @@ describe("a reconcile requested through the writes queue", () => {
   });
 
   it("runs each reconcile once for a batch carrying several requests of it, beside other writes", async () => {
-    await consume([request("reconcile-now"), request("polar-reconcile-now"), request("reconcile-now"), { v: 1, kind: "grace-start", at: nowS(), owner_id: 2002 }, request("polar-reconcile-now")]);
+    await consume([request("reconcile-now"), request("polar-reconcile-now"), request("reconcile-now"), { v: 1, kind: "incident", at: nowS(), marker: "polar-unreachable" }, request("polar-reconcile-now")]);
     expect(githubListings()).toBe(1);
     expect(polar.calls).toHaveLength(1);
-    expect(await all("SELECT COUNT(*) AS n FROM overuse")).toEqual([{ n: 1 }]);
+    expect(await all("SELECT COUNT(*) AS n FROM incidents WHERE marker = 'polar-unreachable'")).toEqual([{ n: 1 }]);
   });
 
   it("runs nothing again for a redelivered request a reconcile since has already answered", async () => {

@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 // The outside probe: checks the license server from outside Cloudflare the way a customer meets it,
-// ten named checks: the three health routes, the alerts endpoint, the router's signature check, the
-// desktop path reaching GitHub, the token refresh refusing a body with no token, Polar's webhook
-// refusing an unsigned delivery, the service-binding-only paths answered by no Worker, and, with an
-// OIDC token, the Actions path's verifier and pin. Unpinned, each sends one request (the private
-// paths two); the deploy's read-back proves the per-address cap. A pinned walk can send dozens from
+// six named checks: the two health routes, the alerts endpoint, the App webhook's signature check,
+// Polar's webhook refusing an unsigned delivery, and, with an OIDC token, the Actions path's
+// verifier and pin. Unpinned, each sends one request; the deploy's read-back proves the per-address
+// cap. A pinned walk can send dozens from
 // one address, so an answer of 429 `rate-limited` is the cap, not the check's verdict: the probe
 // waits out the cap's period and asks again, up to CAP_WAITS times per request, and the row
 // reports `cap_waits`.
@@ -22,14 +21,10 @@
 //
 // A check answered by a Worker fails when the answer names no version: every version deployed since
 // ClaudiniteLicenses#16 sets the header on every answer, so a versionless one did not come from the
-// Worker the deploy judged. Such a row keeps the answer's raw headers. The two versionless rows of
-// run 36927209537 (router-signature, actions-key-oidc) came 10 to 26 seconds into the promotion,
-// on the first attempt, with answers only the versions before #16 give, which set no header: those
-// versions were still serving some requests while the promotion spread (ClaudiniteLicenses#18).
+// Worker the deploy judged. Such a row keeps the answer's raw headers.
 //
 //   node tools/probe.mjs --base <url> [--oidc-token-env NAME] [--issue --repo owner/name --token-env GITHUB_TOKEN] [--json <path>] [--attempts N]
 //                        [--expect-version <worker>=<id>[,<worker>=<id>...]] [--cap-wait-ms N]
-import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { VERSION_HEADER } from "../packages/version/src/index.ts";
@@ -41,7 +36,7 @@ const RETRY_DELAY_MS = 5_000;
 export const AFFINITY_HEADER = "Cloudflare-Workers-Version-Key";
 /** One key in ten lands on a 10% version, so missing it in this many keys is a 0.2% event. */
 export const VERSION_KEYS = 60;
-export const WORKERS = ["public-key", "key", "sync", "router"];
+export const WORKERS = ["key", "sync"];
 /** The per-address cap's period, 60 seconds, and a second of slack. */
 export const CAP_WAIT_MS = 61_000;
 export const CAP_WAITS = 2;
@@ -66,7 +61,7 @@ async function ask(url, init = {}, extra = {}) {
     try {
       body = JSON.parse(text);
     } catch {
-      // A plain-text answer, such as the router's refusal.
+      // A plain-text answer, such as a webhook's refusal.
     }
     return { status: res.status, body, text, version: res.headers.get(VERSION_HEADER), headers: Object.fromEntries(res.headers), latency_ms: Math.round(performance.now() - started) };
   } catch (err) {
@@ -77,9 +72,9 @@ async function ask(url, init = {}, extra = {}) {
 /**
  * The checks in order, each a request and what its answer must be.
  * @param {string} base @param {string | null} oidc
- * `worker` is the Worker that answers, or null for a check no Worker may answer. `carry` names body
- * fields copied onto the row, each null when the body lacks it, and never judged.
- * @returns {{ name: string, worker: string | null, request: Request, judge: (a: Answer) => string | null, carry?: CarriedField[] }[]}
+ * `worker` is the Worker that answers. `carry` names body fields copied onto the row, each null when
+ * the body lacks it, and never judged.
+ * @returns {{ name: string, worker: string, request: Request, judge: (a: Answer) => string | null, carry?: CarriedField[] }[]}
  */
 function checks(base, oidc) {
   const status = (/** @type {number} */ want) => (/** @type {Answer} */ a) => (a.status === want ? null : `want ${want}`);
@@ -94,44 +89,21 @@ function checks(base, oidc) {
     return wrong.length ? wrong.join("; ") : null;
   };
   const list = [
-    { name: "public-health", worker: "public-key", request: (extra) => ask(`${base}/v1/public/health`, {}, extra), judge: healthy({ ip_limit: "counted" }) },
     {
       name: "key-health",
       worker: "key",
       request: (extra) => ask(`${base}/v1/key/health`, {}, extra),
-      judge: healthy({ d1: "ok", queue: "bound", polar: "configured", trust_roots: "ok", ip_limit: "counted" }),
+      judge: healthy({ d1: "ok", queue: "bound", polar: "configured", ip_limit: "counted" }),
       carry: [...KEY_HEALTH_CARRIED],
     },
     { name: "sync-health", worker: "sync", request: (extra) => ask(`${base}/v1/sync/health`, {}, extra), judge: status(200) },
     { name: "sync-alerts", worker: "sync", request: (extra) => ask(`${base}/v1/sync/alerts`, {}, extra), judge: status(200) },
     {
-      name: "router-signature",
-      worker: "router",
+      // An unsigned delivery is refused before anything else; secret-unset would mean the live Worker lost GITHUB_APP_WEBHOOK_SECRET.
+      name: "github-webhook-signature",
+      worker: "sync",
       request: (extra) => ask(`${base}/github-webhook`, { method: "POST", headers: { "Content-Type": "application/json", "X-GitHub-Event": "ping" }, body: "{}" }, extra),
-      judge: status(401),
-    },
-    {
-      // The key Worker asks GitHub who `probe` is and GitHub refuses: the desktop path's upstream answers.
-      name: "session-key-upstream",
-      worker: "key",
-      request: (extra) =>
-        ask(
-          `${base}/v1/session-key`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: "Bearer probe" },
-            body: JSON.stringify({ repo: "missingbulb/probe", nonce: randomBytes(16).toString("hex"), engine_version: "probe" }),
-          },
-          extra,
-        ),
-      judge: (/** @type {Answer} */ a) => (a.status === 401 && a.body?.refused === "token-invalid" ? null : "want 401 token-invalid"),
-    },
-    {
-      // A body with no refresh token is refused before the Worker calls GitHub.
-      name: "login-refresh-unauthenticated",
-      worker: "key",
-      request: (extra) => ask(`${base}/v1/login/refresh`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }, extra),
-      judge: (/** @type {Answer} */ a) => (a.status === 400 && a.body?.refused === "no-refresh-token" ? null : "want 400 no-refresh-token"),
+      judge: (/** @type {Answer} */ a) => (a.status === 401 && a.text.trim() === "bad-signature" ? null : "want 401 bad-signature"),
     },
     {
       // secret-unset would mean the live Worker lost POLAR_WEBHOOK_SECRET.
@@ -139,25 +111,6 @@ function checks(base, oidc) {
       worker: "sync",
       request: (extra) => ask(`${base}/v1/sync/polar-webhook`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }, extra),
       judge: (/** @type {Answer} */ a) => (a.status === 401 && a.text.trim() === "signature-missing" ? null : "want 401 signature-missing"),
-    },
-    {
-      // /webhook is reached only over a service binding, so no Worker answers it from outside; the
-      // key Worker's route prefix reaches /v1/key/webhook, where its router must answer 404.
-      name: "private-paths-unrouted",
-      worker: null,
-      request: async (extra) => {
-        const bare = await ask(`${base}/webhook`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }, extra);
-        const prefixed = await ask(`${base}/v1/key/webhook`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }, extra);
-        const wrong = [
-          bare.error ? `/webhook: ${bare.error}` : null,
-          bare.version ? `/webhook answered by version ${bare.version}` : null,
-          bare.status !== null && bare.status < 400 ? `/webhook answered ${bare.status}` : null,
-          prefixed.error ? `/v1/key/webhook: ${prefixed.error}` : null,
-          prefixed.status !== null && prefixed.status !== 404 ? `/v1/key/webhook answered ${prefixed.status}, want 404` : null,
-        ].filter(Boolean);
-        return { ...bare, body: { wrong }, text: `/webhook ${bare.status ?? "-"}, /v1/key/webhook ${prefixed.status ?? "-"}`, latency_ms: bare.latency_ms + prefixed.latency_ms };
-      },
-      judge: (/** @type {Answer} */ a) => (a.body.wrong.length ? a.body.wrong.join("; ") : null),
     },
   ];
   if (oidc) {
@@ -234,11 +187,11 @@ export async function runProbe({ base, oidc = null, attempts = 1, retryDelayMs =
   /** @type {Check[]} */
   const results = [];
   for (const c of checks(base.replace(/\/$/, ""), oidc)) {
-    const pin = c.worker ? (expect[c.worker] ?? null) : null;
+    const pin = expect[c.worker] ?? null;
     const waits = { count: 0 };
     const request = throughCap(c.request, capWaitMs, waits);
     /** @param {Answer} a */
-    const judged = (a) => (a.error ? a.error : (c.judge(a) ?? (c.worker && !a.version ? "version header missing" : null)));
+    const judged = (a) => (a.error ? a.error : (c.judge(a) ?? (!a.version ? "version header missing" : null)));
     let a;
     let wrong;
     for (let i = 1; ; i++) {
@@ -259,7 +212,7 @@ export async function runProbe({ base, oidc = null, attempts = 1, retryDelayMs =
     for (const field of c.carry ?? []) check[field] = a.body?.[field] ?? null;
     if (waits.count > 0) check.cap_waits = waits.count;
     if (Array.isArray(a.body?.alerts) && a.body.alerts.length > 0) check.alerts = a.body.alerts;
-    if (c.worker && !a.version && a.status !== null) check.headers = a.headers;
+    if (!a.version && a.status !== null) check.headers = a.headers;
     if (wrong) check.detail = `${wrong}; got ${a.status ?? "no answer"} ${a.text.slice(0, 200)}`.trim();
     results.push(check);
   }

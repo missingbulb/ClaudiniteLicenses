@@ -1,9 +1,7 @@
 import { signKey, type Certificate, type KeyPayload, type KeySeats, type Plan, type ReleaseStates } from "../../../packages/signing/src/index.ts";
 import releaseStates from "../release-states.json";
 
-const SESSION_SECONDS = 7 * 86400;
 const ACTIONS_SECONDS = 6 * 3600;
-const GRANT_SECONDS = 6 * 3600;
 
 interface Subject {
   repoId: number;
@@ -20,19 +18,9 @@ interface Subject {
   notice: string | null;
 }
 
-export type KeySubject =
-  | (Subject & { typ: "session"; userId: number; nonce: string })
-  | (Subject & { typ: "actions" })
-  /** `notAfter`: the Actions key's exp, which a grant never outlives. */
-  | (Subject & { typ: "grant"; issue: number; notAfter: number });
+export type KeySubject = Subject & { typ: "actions" };
 
-function expiry(s: KeySubject, nowS: number): number {
-  if (s.typ === "session") return nowS + SESSION_SECONDS;
-  if (s.typ === "actions") return nowS + ACTIONS_SECONDS;
-  return Math.min(nowS + GRANT_SECONDS, s.notAfter);
-}
-
-/** Signs a session key (7 days, bound to its user and nonce), an Actions key (6 hours) or an item grant (6 hours at most) with the license issuing key. */
+/** Signs an Actions key, good for 6 hours, with the license issuing key. */
 export async function mintKey(issuingSeed: string, cert: Certificate, s: KeySubject, nowS: number): Promise<string> {
   const payload: KeyPayload = {
     v: 1,
@@ -43,9 +31,8 @@ export async function mintKey(issuingSeed: string, cert: Certificate, s: KeySubj
     owner_type: s.ownerType,
     owner_login: s.ownerLogin,
     plan: s.plan,
-    ...(s.typ === "session" ? { user_id: s.userId, nonce: s.nonce } : {}),
     iat: nowS,
-    exp: expiry(s, nowS),
+    exp: nowS + ACTIONS_SECONDS,
     state: s.state,
     grace_until: s.graceUntil,
     features: s.features,
@@ -54,7 +41,6 @@ export async function mintKey(issuingSeed: string, cert: Certificate, s: KeySubj
     checkout_url: s.checkoutUrl,
     portal_url: s.portalUrl,
     notice: s.notice,
-    ...(s.typ === "grant" ? { issue: s.issue } : {}),
   };
   return signKey(issuingSeed, cert, payload);
 }

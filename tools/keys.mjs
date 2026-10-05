@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Development key chains for the license Workers, and the committed trust roots. Production roots
+// Development key chains for the license Workers. Production roots
 // and issuing-key certificates come from ClaudiniteEngine's cn-keys ceremony (ClaudiniteEngine#5);
 // the files written here use the same formats, so a Worker cannot tell the two apart.
 //
@@ -7,9 +7,8 @@
 //   node tools/keys.mjs gen-issuing --out <dir> [--name issuing]
 //   node tools/keys.mjs certify --root <root.key> --pub <issuing.pub> --purpose <use> --days <n>
 //   node tools/keys.mjs dev-chain --out <dir>
-//   node tools/keys.mjs trust-roots
 import { generateKeyPairSync, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { b64urlDecode, generateKeyPair, issueCertificate, keyId } from "../packages/signing/src/index.ts";
@@ -69,48 +68,18 @@ export function parseDevVars(text) {
 export async function devChain(out) {
   mkdirSync(out, { recursive: true });
   const root = await genPair(out, "root");
-  const standby = await genPair(out, "standby");
-  const pub = await genPair(out, "license-public");
+  await genPair(out, "standby");
   const lic = await genPair(out, "license");
-  const pubCert = await certify(root.seed, pub.publicKey, "license-public", 90);
   const licCert = await certify(root.seed, lic.publicKey, "license", 90);
-  writeNew(join(out, "license-public.cert.json"), JSON.stringify(pubCert) + "\n", 0o644);
   writeNew(join(out, "license.cert.json"), JSON.stringify(licCert) + "\n", 0o644);
   const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs1", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
   writeNew(join(out, "github-app.pem"), privateKey, 0o600);
   const secret = randomBytes(32).toString("hex");
-  const publicKeyVars = {
-    GITHUB_APP_ID: "1",
-    GITHUB_APP_PRIVATE_KEY: privateKey,
-    ISSUING_KEY_PRIVATE: pub.seed,
-    ISSUING_KEY_CERT: JSON.stringify(pubCert),
-  };
-  const keyVars = {
-    GITHUB_APP_ID: "1",
-    GITHUB_APP_PRIVATE_KEY: privateKey,
-    ISSUING_KEY_PRIVATE: lic.seed,
-    ISSUING_KEY_CERT: JSON.stringify(licCert),
-    TRUST_ROOTS: JSON.stringify([root.publicKey, standby.publicKey]),
-  };
-  const syncVars = { GITHUB_APP_ID: "1", GITHUB_APP_PRIVATE_KEY: privateKey };
-  writeNew(join(out, "public-key.dev.vars"), formatDevVars(publicKeyVars), 0o600);
+  const keyVars = { ISSUING_KEY_PRIVATE: lic.seed, ISSUING_KEY_CERT: JSON.stringify(licCert) };
+  const syncVars = { GITHUB_APP_ID: "1", GITHUB_APP_PRIVATE_KEY: privateKey, GITHUB_APP_WEBHOOK_SECRET: secret };
   writeNew(join(out, "key.dev.vars"), formatDevVars(keyVars), 0o600);
   writeNew(join(out, "sync.dev.vars"), formatDevVars(syncVars), 0o600);
-  writeNew(join(out, "router.dev.vars"), formatDevVars({ GITHUB_APP_WEBHOOK_SECRET: secret }), 0o600);
-  return { root, publicKeyVars, keyVars, syncVars, webhookSecret: secret, licenseCert: licCert };
-}
-
-/**
- * The roots an Actions key must chain to before the key Worker grants on it: the committed
- * `packages/signing/roots/*.pub`, ClaudiniteEngine's key ceremony roots.
- * @param {string} [root] the repository root
- * @returns {string[]}
- */
-export function trustRoots(root = join(import.meta.dirname, "..")) {
-  const dir = join(root, "packages/signing/roots");
-  const pubs = existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".pub")).sort() : [];
-  if (pubs.length === 0) throw new Error(`${dir} holds no .pub root key`);
-  return pubs.map((f) => readFileSync(join(dir, f), "utf8").trim());
+  return { root, keyVars, syncVars, webhookSecret: secret, licenseCert: licCert };
 }
 
 async function main(argv) {
@@ -139,14 +108,11 @@ async function main(argv) {
     case "dev-chain": {
       const out = need("out");
       const chain = await devChain(out);
-      console.log(`dev chain in ${out}: root ${chain.root.keyId}; public-key.dev.vars, key.dev.vars, sync.dev.vars and router.dev.vars hold the Workers' dev secrets`);
+      console.log(`dev chain in ${out}: root ${chain.root.keyId}; key.dev.vars and sync.dev.vars hold the Workers' dev secrets`);
       return;
     }
-    case "trust-roots":
-      console.log(JSON.stringify(trustRoots()));
-      return;
     default:
-      throw new Error("usage: keys.mjs gen-root|gen-issuing|certify|dev-chain|trust-roots ...");
+      throw new Error("usage: keys.mjs gen-root|gen-issuing|certify|dev-chain ...");
   }
 }
 

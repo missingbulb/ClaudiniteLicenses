@@ -1,28 +1,14 @@
 # Every secret each Worker reads. `node tools/keys.mjs dev-chain --out .dev` writes dev values into
-# .dev/<worker>.dev.vars for public-key, key, sync and router; `node tools/local-roundtrip.mjs`
-# copies them beside each wrangler.jsonc as .dev.vars, which wrangler dev reads.
-
-# workers/router/.dev.vars
-GITHUB_APP_WEBHOOK_SECRET='dev-webhook-secret'
-
-# workers/public-key/.dev.vars
-GITHUB_APP_ID='1'
-GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----\n"
-ISSUING_KEY_PRIVATE='<base64url 32-byte seed>'
-ISSUING_KEY_CERT='{"payload":"...","signature":"..."}'
-GITHUB_API_BASE='http://127.0.0.1:<stub port>'
+# .dev/<worker>.dev.vars for key and sync; `node tools/local-roundtrip.mjs` copies them beside each
+# wrangler.jsonc as .dev.vars, which wrangler dev reads.
 
 # workers/key/.dev.vars
-GITHUB_APP_ID='1'
-GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----\n"
 ISSUING_KEY_PRIVATE='<base64url 32-byte seed of the license issuing key>'
 ISSUING_KEY_CERT='{"payload":"...","signature":"..."}'
-GITHUB_APP_CLIENT_SECRET='<optional: the App client secret, for /v1/login/refresh>'
-GITHUB_API_BASE='http://127.0.0.1:<stub port>'
-GITHUB_WEB_BASE='http://127.0.0.1:<stub port>'
 OIDC_ISSUER='http://127.0.0.1:<stub port>'
 
 # workers/sync/.dev.vars
 GITHUB_APP_ID='1'
 GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----\n"
+GITHUB_APP_WEBHOOK_SECRET='dev-webhook-secret'
 GITHUB_API_BASE='http://127.0.0.1:<stub port>'

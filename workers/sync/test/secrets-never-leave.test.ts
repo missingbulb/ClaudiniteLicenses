@@ -4,7 +4,7 @@ import record from "../../../docs/license-record.md?raw";
 import { routeTable } from "../../../tools/route-table.mjs";
 import worker, { type Env } from "../src/index.ts";
 import { WRITES_QUEUE } from "../src/writes.ts";
-import { env as base, freshDatabase } from "./github.ts";
+import { env as base, freshDatabase, signGitHub } from "./github.ts";
 import { polarDelivery, polarSub } from "./polar.ts";
 
 // Every route the security review lists for this Worker, driven well-formed and malformed against a
@@ -16,6 +16,7 @@ const SECRETS = {
   GITHUB_APP_ID: "SENTINEL-GITHUB-APP-ID",
   POLAR_ACCESS_TOKEN: "SENTINEL-POLAR-ACCESS-TOKEN",
   POLAR_WEBHOOK_SECRET: `whsec_${WEBHOOK_KEY}`,
+  GITHUB_APP_WEBHOOK_SECRET: "SENTINEL-GITHUB-APP-WEBHOOK-SECRET",
   // It must parse, so the pool's own PEM stands in.
   GITHUB_APP_PRIVATE_KEY: base.GITHUB_APP_PRIVATE_KEY,
 };
@@ -38,15 +39,13 @@ const SCENARIOS: Record<string, (() => Promise<Response>)[]> = {
   "GET /v1/sync/alerts": [() => send(req("GET", "/v1/sync/alerts"))],
   "HEAD /v1/sync/alerts": [() => send(req("HEAD", "/v1/sync/alerts"))],
   "POST /v1/sync/polar-webhook": [async () => send(await polarDelivery("subscription.created", polarSub(), { secret: SECRETS.POLAR_WEBHOOK_SECRET })), () => send(req("POST", "/v1/sync/polar-webhook", { body: "{}" }))],
-  "POST /webhook": [
-    () =>
-      send(
-        req("POST", "/webhook", {
-          headers: { "X-GitHub-Event": "installation_repositories", "X-GitHub-Delivery": "acme-delivery" },
-          body: JSON.stringify({ action: "added", installation: { id: 5005, account: { id: 2002, login: "acme-user", type: "User" } }, repositories_added: [repo], repositories_removed: [] }),
-        }),
-      ),
-    () => send(req("POST", "/webhook", { headers: { "X-GitHub-Event": "repository" }, body: "not json" })),
+  "POST /github-webhook": [
+    async () => {
+      const body = JSON.stringify({ action: "added", installation: { id: 5005, account: { id: 2002, login: "acme-user", type: "User" } }, repositories_added: [repo], repositories_removed: [] });
+      return send(req("POST", "/github-webhook", { headers: { "X-GitHub-Event": "installation_repositories", "X-GitHub-Delivery": "acme-delivery", "X-Hub-Signature-256": await signGitHub(body, SECRETS.GITHUB_APP_WEBHOOK_SECRET) }, body }));
+    },
+    async () => send(req("POST", "/github-webhook", { headers: { "X-GitHub-Event": "repository", "X-Hub-Signature-256": await signGitHub("not json", SECRETS.GITHUB_APP_WEBHOOK_SECRET) }, body: "not json" })),
+    () => send(req("POST", "/github-webhook", { headers: { "X-GitHub-Event": "repository", "X-Hub-Signature-256": "sha256=00" }, body: "{}" })),
   ],
 };
 

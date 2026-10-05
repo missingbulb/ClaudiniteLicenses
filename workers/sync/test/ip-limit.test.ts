@@ -121,9 +121,9 @@ describe("the sync Worker's per-address cap", () => {
 });
 
 describe("the sync Worker's webhook body caps", () => {
-  it("refuses a Polar delivery and a forwarded GitHub webhook over 1 MiB with 413 and no write", async () => {
+  it("refuses a Polar delivery and a GitHub App delivery over 1 MiB with 413 and no write", async () => {
     const big = "x".repeat(BODY_MAX_WEBHOOK + 1);
-    for (const path of ["/v1/sync/polar-webhook", "/webhook"]) {
+    for (const path of ["/v1/sync/polar-webhook", "/github-webhook"]) {
       const res = await send(new Request(`https://license.claudinite.com${path}`, { method: "POST", headers: { "CF-Connecting-IP": "192.0.2.1" }, body: big }), env(300));
       expect(res.status, path).toBe(413);
     }

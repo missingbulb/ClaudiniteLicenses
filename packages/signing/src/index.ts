@@ -14,7 +14,7 @@ export type Use = "manifest" | "packs" | "license" | "license-public";
 
 const MAX_VALIDITY_DAYS: Record<Use, number> = { manifest: 365, packs: 90, license: 90, "license-public": 90 };
 
-export const PLANS = ["public", "private-repo", "personal", "organization", "internal"] as const;
+export const PLANS = ["public", "personal", "organization", "internal"] as const;
 export type Plan = (typeof PLANS)[number];
 
 export const FEATURES = ["work-checks", "forced-skill-loading", "in-session-growth", "claudinite-tasks", "updates", "fleet"] as const;

@@ -22,8 +22,8 @@ a key never waits on Polar). `listAll` walks every page.
 
 `createCheckout` offers both of the plan's products, monthly first, so the buyer picks the interval
 on Polar's page. The owner's numeric GitHub id, as a string, is `external_customer_id`; the
-metadata holds `claudinite_plan`, `github_owner_id`, `github_owner_login`, `github_owner_type` and,
-for `private-repo`, `github_repo_id` and `github_repo_full_name`. Polar hands the external id and
+metadata holds `claudinite_plan`, `github_owner_id`, `github_owner_login` and `github_owner_type`;
+a fleet covers every repo its owner has, so no repo is named. Polar hands the external id and
 the metadata back on every subscription it sends, which is how the sync Worker files a subscription
 under its GitHub account.
 

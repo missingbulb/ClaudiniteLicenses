@@ -1,24 +1,28 @@
-// The sync Worker, the only writer of D1: the Claudinite App's installation and repository
-// webhooks, forwarded by the router, keep the repos table current; Polar's signed webhooks and the
-// Polar reconcile keep subscriptions current; and the writes queue brings the seat, usage and
-// overuse records and the incidents the key Worker produces. The nightly reconciles repair whatever
-// a lost or reordered webhook left, and a marker on the writes queue runs either one at once, the coverage audit after them finds paying accounts the App no
-// longer covers, and GET /v1/sync/alerts judges it all. It holds no signing key.
+// The sync Worker, the only writer of D1: the Claudinite App's signed installation and repository
+// webhooks, delivered to its own /github-webhook, keep the repos table current; Polar's signed
+// webhooks and the Polar reconcile keep subscriptions current; and the writes queue brings the
+// incidents the key Worker produces. The nightly reconciles repair whatever a lost or reordered
+// webhook left, and a marker on the writes queue runs either one at once, the coverage audit after
+// them finds paying accounts the App no longer covers, and GET /v1/sync/alerts judges it all. It
+// holds no signing key.
 import { alertsRoute } from "./alerts.ts";
 import { auditCoverage } from "./coverage.ts";
 import { pruneIncidents } from "./incidents.ts";
 import { polarReconcileDue, reconcilePolar } from "./polar-reconcile.ts";
 import { polarWebhook } from "./polar-webhook.ts";
 import { githubClient, reconcileInstallations } from "./reconcile.ts";
-import { applyWebhook, stamp } from "./repos.ts";
+import { githubWebhook } from "./github-webhook.ts";
+import { stamp } from "./repos.ts";
 import { consumeWrites, type ReconcileRequests } from "./writes.ts";
-import { BODY_MAX_WEBHOOK, ipLimited, ipLimitState, readJsonCapped, withinIpLimit, withoutBody, type IpLimitEnv, type IpLimitState } from "../../../packages/http/src/index.ts";
+import { ipLimited, ipLimitState, withinIpLimit, withoutBody, type IpLimitEnv, type IpLimitState } from "../../../packages/http/src/index.ts";
 import { versionOf, withVersion, type VersionEnv } from "../../../packages/version/src/index.ts";
 
 export interface Env extends VersionEnv, IpLimitEnv {
   DB: D1Database;
   GITHUB_APP_ID: string;
   GITHUB_APP_PRIVATE_KEY: string;
+  /** The App's webhook secret, which every delivery to /github-webhook must be signed with. */
+  GITHUB_APP_WEBHOOK_SECRET?: string;
   GITHUB_API_BASE?: string;
   POLAR_API_BASE?: string;
   POLAR_ACCESS_TOKEN?: string;
@@ -32,12 +36,7 @@ const HOURLY_CRON = "47 * * * *";
 const nowS = () => Math.floor(Date.now() / 1000);
 
 async function health(env: Env, ipLimit: IpLimitState | null): Promise<Response> {
-  const nowS = Math.floor(Date.now() / 1000);
-  const counts = await env.DB.prepare(
-    "SELECT (SELECT COUNT(*) FROM repos) AS repos, (SELECT COUNT(*) FROM subscriptions) AS subscriptions, (SELECT COUNT(*) FROM seats WHERE last_key_at >= ?) AS seats",
-  )
-    .bind(nowS - 30 * 86400)
-    .first<{ repos: number; subscriptions: number; seats: number }>();
+  const counts = await env.DB.prepare("SELECT (SELECT COUNT(*) FROM repos) AS repos, (SELECT COUNT(*) FROM subscriptions) AS subscriptions").first<{ repos: number; subscriptions: number }>();
   const { results } = await env.DB.prepare("SELECT name, at, detail FROM sync_state").all<{ name: string; at: number; detail: string | null }>();
   const row = (name: string) => results.find((r) => r.name === name);
   const at = (name: string) => row(name)?.at ?? null;
@@ -46,7 +45,6 @@ async function health(env: Env, ipLimit: IpLimitState | null): Promise<Response>
     ok: true,
     repos: counts?.repos ?? 0,
     subscriptions: counts?.subscriptions ?? 0,
-    seats: counts?.seats ?? 0,
     last_webhook_at: at("last_webhook_at"),
     last_reconcile_at: at("last_reconcile_at"),
     last_reconcile_corrections: count("last_reconcile_corrections"),
@@ -63,6 +61,7 @@ async function health(env: Env, ipLimit: IpLimitState | null): Promise<Response>
     last_cron_version: row("last_cron_version")?.detail ?? null,
     paying_uncovered: count("paying_uncovered"),
     polar_webhook_secret: Boolean(env.POLAR_WEBHOOK_SECRET),
+    github_webhook_secret: Boolean(env.GITHUB_APP_WEBHOOK_SECRET),
     ip_limit: ipLimit,
     version: versionOf(env),
   });
@@ -121,7 +120,8 @@ async function requestedReconciles(env: Env, requested: ReconcileRequests): Prom
 
 /**
  * Every route Cloudflare serves to the world that meets the per-address cap before anything else.
- * Polar's webhook is public too, and meets the cap only once its signature has failed.
+ * Polar's webhook is public too, and meets the cap only once its signature has failed; GitHub's
+ * meets none, its HMAC check being its gate.
  */
 export const CAPPED_ROUTES = ["GET /v1/sync/health", "HEAD /v1/sync/health", "GET /v1/sync/alerts", "HEAD /v1/sync/alerts"];
 
@@ -129,12 +129,7 @@ async function route(req: Request, env: Env): Promise<Response> {
   const url = new URL(req.url);
   const ipLimit = CAPPED_ROUTES.includes(`${req.method} ${url.pathname}`) ? await ipLimitState(env, req) : null;
   if (ipLimit === "refused") return ipLimited();
-  if (req.method === "POST" && url.pathname === "/webhook") {
-    const read = await readJsonCapped(req, BODY_MAX_WEBHOOK);
-    if (!read.ok) return read.reason === "body-too-large" ? new Response("payload-too-large", { status: 413 }) : new Response("malformed-payload", { status: 400 });
-    const payload = read.value;
-    return applyWebhook(env, githubClient(env), req.headers.get("X-GitHub-Event") ?? "", payload as never, nowS(), req.headers.get("X-GitHub-Delivery"));
-  }
+  if (req.method === "POST" && url.pathname === "/github-webhook") return githubWebhook(req, env, githubClient(env), nowS());
   if (req.method === "GET" && url.pathname === "/v1/sync/health") return health(env, ipLimit);
   if (req.method === "HEAD" && url.pathname === "/v1/sync/health") return withoutBody(await health(env, ipLimit));
   if (req.method === "GET" && url.pathname === "/v1/sync/alerts") return alertsRoute(env.DB, nowS());

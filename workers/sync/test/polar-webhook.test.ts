@@ -30,7 +30,6 @@ describe("POST /v1/sync/polar-webhook", () => {
         owner_type: "User",
         plan: "personal",
         seats: 5,
-        repo_ids: null,
         source: "polar",
         period_end: unix("2026-10-01T00:00:00Z"),
         cancel_at_period_end: 0,
@@ -67,10 +66,17 @@ describe("POST /v1/sync/polar-webhook", () => {
     expect((await subscriptionRows())[0]).toMatchObject({ status: "canceled", ended_at: unix("2026-09-04T00:00:00Z") });
   });
 
-  it("stores a Private repo subscription's one repo id", async () => {
-    const sub = polarSub({ plan: "private-repo", metadata: { claudinite_plan: "private-repo", github_owner_id: "2002", github_owner_type: "Organization", github_repo_id: "1001", github_repo_full_name: "acme-org/acme-repo" } });
+  it("files an Organization fleet subscription under its owner with Polar's seats, naming no repo", async () => {
+    const sub = polarSub({ plan: "organization", seats: 12, metadata: { claudinite_plan: "organization", github_owner_id: "2002", github_owner_type: "Organization", github_repo_id: "1001" } });
     await send(await polarDelivery("subscription.active", sub));
-    expect((await subscriptionRows())[0]).toMatchObject({ plan: "private-repo", repo_ids: "[1001]", owner_type: "Organization" });
+    expect((await subscriptionRows())[0]).toMatchObject({ plan: "organization", seats: 12, owner_type: "Organization" });
+  });
+
+  it("writes nothing for a subscription on the retired Private repo plan, logging polar-not-managed", async () => {
+    const sub = polarSub({ plan: "private-repo", metadata: { claudinite_plan: "private-repo", github_owner_id: "2002", github_owner_type: "User", github_repo_id: "1001" } });
+    expect((await send(await polarDelivery("subscription.active", sub))).status).toBe(200);
+    expect(await subscriptionRows()).toEqual([]);
+    expect(logs.some((l) => l.includes('"marker":"polar-not-managed"'))).toBe(true);
   });
 
   it("writes nothing for a subscription with no numeric external id, or on a product we do not manage, and logs why", async () => {

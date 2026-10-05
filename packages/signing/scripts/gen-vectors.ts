@@ -81,7 +81,7 @@ export async function generateVectors(): Promise<string> {
   const grant: KeyPayload = { ...actions, typ: "grant", issue: 42 };
   const graceSession: KeyPayload = {
     ...base,
-    plan: "private-repo",
+    plan: "personal",
     state: "grace",
     grace_until: iat + 7 * 86400,
     seats: { paid: 5, counted: 7, headroom: 1 },
@@ -113,6 +113,7 @@ export async function generateVectors(): Promise<string> {
     { name: "unknown feature name", key: await signKey(seeds.licensePublic, certificates["license-public"], { ...base, features: [...base.features, "acme-feature"] }), valid: true },
     { name: "release carries a field the verifier does not know", key: await signKey(seeds.licensePublic, certificates["license-public"], { ...base, release: { ...release, acme_field: [1] } } as KeyPayload), valid: true },
     { name: "payload carries a field the verifier does not know", key: await signKey(seeds.licensePublic, certificates["license-public"], { ...base, acme_field: { any: "thing" } } as KeyPayload), valid: true },
+    { name: "retired private-repo plan", key: await signKey(seeds.license, certificates.license, { ...actions, plan: "private-repo" } as unknown as KeyPayload), valid: false, reason: "shape" },
     { name: "pack_keys entry is not a key id", key: await signKey(seeds.licensePublic, certificates["license-public"], { ...base, release: { ...release, pack_keys: ["acme"] } }), valid: false, reason: "shape" },
     { name: "item grant carrying its issue", key: await signKey(seeds.license, certificates.license, grant), valid: true },
     { name: "grace session key carrying seats and a checkout link", key: await signKey(seeds.license, certificates.license, graceSession), valid: true },
@@ -134,6 +135,7 @@ export async function generateVectors(): Promise<string> {
       "The certificate encoding is ClaudiniteEngine's (shared/sign/testdata/vectors.json); the key envelope is specified in packages/signing/README.md.",
       "Verify every case against roots [root, standby] at `now`; an invalid case names the first check that refuses it.",
       "A key is valid from 300 seconds before its iat, to absorb clock skew.",
+      "plan is one of public, personal, organization and internal; a key naming any other plan, the retired private-repo among them, is refused for shape.",
       "A license certificate signs a key of any plan; a license-public certificate signs only a public plan key.",
       "An unknown feature name, release field or payload field is ignored, so the server can add one without an engine release.",
       "seats, checkout_url, portal_url and issue are optional: absent or null says nothing; when present, seats holds three non-negative integers, a link is an https URL and issue a positive integer.",

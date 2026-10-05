@@ -22,7 +22,7 @@ export const STUB_VERSIONS = ["2026-04", "2026-10", "2027-01"];
  * @typedef {{ id: string, created_at: string, modified_at: string | null, source: string, amount_type: string, price_currency: string, tax_behavior: string | null, is_archived: boolean, product_id: string, seat_tiers?: any, price_amount?: number }} Price
  * @typedef {{ id: string, created_at: string, modified_at: string | null, name: string, description: string | null, visibility: string, recurring_interval: string | null, recurring_interval_count: number | null, is_recurring: boolean, is_archived: boolean, organization_id: string, metadata: Record<string, unknown>, prices: Price[], benefits: { id: string }[], medias: [], attached_custom_fields: [] }} Product
  * @typedef {{ name?: string, metadata?: Record<string, unknown>, recurring_interval?: string | null, is_archived?: boolean, prices?: any[], benefits?: string[] }} Seed
- * @typedef {{ id?: string, externalId: string | null, plan: string, interval?: "month" | "year", seats: number, status?: string, ownerType?: string, repo?: { id: number, fullName: string }, metadata?: Record<string, unknown>, product?: any, managed?: boolean }} SubscriptionSeed
+ * @typedef {{ id?: string, externalId: string | null, plan: string, interval?: "month" | "year", seats: number, status?: string, ownerType?: string, metadata?: Record<string, unknown>, product?: any, managed?: boolean }} SubscriptionSeed
  * @typedef {{ id: string, created_at: string, modified_at: string | null, url: string, name: string | null, api_version: string, format: string, secret: string, organization_id: string, events: string[], enabled: boolean, uses_standard_webhook_signature: boolean }} Endpoint
  */
 
@@ -131,7 +131,6 @@ export async function startPolarStub(opts = {}) {
       claudinite_plan: seed.plan,
       ...(seed.externalId ? { github_owner_id: seed.externalId } : {}),
       github_owner_type: seed.ownerType ?? (seed.plan === "organization" ? "Organization" : "User"),
-      ...(seed.repo ? { github_repo_id: String(seed.repo.id), github_repo_full_name: seed.repo.fullName } : {}),
       ...seed.metadata,
     };
     const sub = {

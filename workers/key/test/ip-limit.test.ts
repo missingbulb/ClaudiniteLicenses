@@ -3,7 +3,7 @@ import { resetIpLimitLog } from "../../../packages/http/src/index.ts";
 import { VERSION_HEADER } from "../../../packages/version/src/index.ts";
 import record from "../../../docs/license-record.md?raw";
 import { perAddressCap, routeTable } from "../../../tools/route-table.mjs";
-import { base, call, env, freshDatabase, NONCE, resetWorld, seedRepo, world } from "./helpers.ts";
+import { base, call, env, freshDatabase, resetWorld, seedRepo, world } from "./helpers.ts";
 
 const rows = routeTable(record).filter((r) => r.worker === "key");
 const version = (base as unknown as { CF_VERSION_METADATA: { id: string } }).CF_VERSION_METADATA.id;
@@ -11,12 +11,7 @@ const version = (base as unknown as { CF_VERSION_METADATA: { id: string } }).CF_
 /** A request each route would spend something on if nothing stood in front of it. */
 function costly(method: string, path: string, ip = "192.0.2.1"): RequestInit {
   const headers: Record<string, string> = { "CF-Connecting-IP": ip, "Content-Type": "application/json", Authorization: "Bearer ghu_acme" };
-  const bodies: Record<string, unknown> = {
-    "/v1/session-key": { repo: "acme-user/acme-repo", nonce: NONCE, engine_version: "1.1.0" },
-    "/v1/actions-key": { engine_version: "1.1.0" },
-    "/v1/item-grant": { issue: 7 },
-    "/v1/login/refresh": { refresh_token: "ghr_acme" },
-  };
+  const bodies: Record<string, unknown> = { "/v1/actions-key": { engine_version: "1.1.0" } };
   return method === "GET" || method === "HEAD" ? { method, headers } : { method, headers, body: JSON.stringify(bodies[path] ?? {}) };
 }
 
@@ -30,12 +25,12 @@ afterEach(() => vi.restoreAllMocks());
 
 describe("the key Worker's per-address cap", () => {
   it("reads its routes from the security review's table", () => {
-    expect(rows.filter(perAddressCap).length).toBeGreaterThanOrEqual(6);
+    expect(rows.filter(perAddressCap).map((r) => `${r.method} ${r.path}`)).toEqual(["POST /v1/actions-key", "GET /v1/key/health", "HEAD /v1/key/health"]);
   });
 
   for (const r of rows.filter(perAddressCap)) {
     it(`caps ${r.method} ${r.path} before anything costs`, async () => {
-      const e = env({ ipLimit: 0, GITHUB_APP_CLIENT_SECRET: "acme-client-secret" });
+      const e = env({ ipLimit: 0 });
       const res = await call(r.path, costly(r.method, r.path), e);
       expect([res.status, await res.json()]).toEqual([429, { refused: "rate-limited" }]);
       expect(res.headers.get(VERSION_HEADER)).toBe(version);
@@ -90,7 +85,7 @@ describe("the key Worker's answer to HEAD", () => {
   });
 
   it("leaves HEAD on a route that is not a health check unanswered", async () => {
-    const res = await call("/v1/login/config", costly("HEAD", "/v1/login/config"), env());
+    const res = await call("/v1/actions-key", costly("HEAD", "/v1/actions-key"), env());
     expect(res.status).toBe(404);
   });
 });

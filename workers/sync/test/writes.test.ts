@@ -5,10 +5,9 @@ import worker from "../src/index.ts";
 import { DEAD_LETTER_QUEUE, WRITES_QUEUE } from "../src/writes.ts";
 import { env, freshDatabase } from "./github.ts";
 
-const DAY = 86400;
 const T = 1_790_000_000;
-const usage = (over: Partial<Extract<WriteMessage, { kind: "usage" }>> = {}): WriteMessage => ({ v: 1, kind: "usage", at: T, repo_id: 1001, user_id: 3003, owner_id: 2002, plan: "personal", day: "2026-09-21", ...over });
-const grace = (kind: "grace-start" | "grace-reset", at = T): WriteMessage => ({ v: 1, kind, at, owner_id: 2002 });
+const incident = (at = T, marker: WriteMessage["marker"] = "polar-unreachable"): WriteMessage => ({ v: 1, kind: "incident", at, marker, detail: "checkout" });
+const usage = { v: 1, kind: "usage", at: T, repo_id: 1001, user_id: 3003, owner_id: 2002, plan: "personal", day: "2026-09-21" };
 
 let logs: string[];
 
@@ -33,76 +32,32 @@ beforeEach(async () => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("the writes queue consumer", () => {
-  it("writes a usage message's usage row and its seat, keyed by the plan's licensee, and acks the batch", async () => {
-    const res = await consume([usage(), usage({ plan: "private-repo", user_id: 3004 })]);
-    expect(res).toMatchObject({ outcome: "ok", ackAll: true, retryBatch: { retry: false } });
-    expect(await all("SELECT repo_id, user_id, day FROM usage ORDER BY user_id")).toEqual([
-      { repo_id: 1001, user_id: 3003, day: "2026-09-21" },
-      { repo_id: 1001, user_id: 3004, day: "2026-09-21" },
-    ]);
-    expect(await all("SELECT licensee_id, user_id, first_key_at, last_key_at FROM seats ORDER BY user_id")).toEqual([
-      { licensee_id: 2002, user_id: 3003, first_key_at: T, last_key_at: T },
-      { licensee_id: 1001, user_id: 3004, first_key_at: T, last_key_at: T },
-    ]);
-  });
-
-  it("changes nothing on a redelivered message", async () => {
-    await consume([usage()]);
-    await consume([usage(), usage()]);
-    expect(await all("SELECT COUNT(*) AS n FROM usage")).toEqual([{ n: 1 }]);
-    expect(await all("SELECT first_key_at, last_key_at FROM seats")).toEqual([{ first_key_at: T, last_key_at: T }]);
-  });
-
-  it("moves last_key_at only on a later usage, never back", async () => {
-    await consume([usage()]);
-    await consume([usage({ at: T + DAY, day: "2026-09-22" })]);
-    await consume([usage({ at: T - DAY, day: "2026-09-20" })]);
-    expect(await all("SELECT first_key_at, last_key_at FROM seats")).toEqual([{ first_key_at: T, last_key_at: T + DAY }]);
-    expect(await all("SELECT COUNT(*) AS n FROM usage")).toEqual([{ n: 3 }]);
-  });
-
-  it("starts the seat afresh on a usage more than 30 days after its last key", async () => {
-    await consume([usage()]);
-    await consume([usage({ at: T + 31 * DAY, day: "2026-10-22" })]);
-    expect(await all("SELECT first_key_at, last_key_at FROM seats")).toEqual([{ first_key_at: T + 31 * DAY, last_key_at: T + 31 * DAY }]);
-  });
-
-  it("keeps the first grace start and the later spent date across two grace-starts", async () => {
-    await consume([grace("grace-start", T)]);
-    await consume([grace("grace-start", T + DAY)]);
-    expect(await all("SELECT licensee_id, grace_started_at, grace_spent_until FROM overuse")).toEqual([{ licensee_id: 2002, grace_started_at: T, grace_spent_until: T + DAY + 30 * DAY }]);
-  });
-
-  it("clears the start on grace-reset and keeps grace_spent_until", async () => {
-    await consume([grace("grace-start", T)]);
-    await consume([grace("grace-reset", T + DAY)]);
-    expect(await all("SELECT grace_started_at, grace_spent_until FROM overuse")).toEqual([{ grace_started_at: null, grace_spent_until: T + 30 * DAY }]);
-  });
-
-  it("leaves a grace start later than a grace-reset delivered after it, as the queue may reorder them", async () => {
-    await consume([grace("grace-start", T + DAY)]);
-    await consume([grace("grace-reset", T)]);
-    expect(await all("SELECT grace_started_at FROM overuse")).toEqual([{ grace_started_at: T + DAY }]);
-    await consume([grace("grace-reset", T + DAY)]);
-    expect(await all("SELECT grace_started_at FROM overuse")).toEqual([{ grace_started_at: null }]);
+  it("acks a retired seat message (usage, grace-start, grace-reset) as malformed, writing no row", async () => {
+    const res = await consume([usage, { v: 1, kind: "grace-start", at: T, owner_id: 2002 }, { v: 1, kind: "grace-reset", at: T, owner_id: 2002 }]);
+    expect(res).toMatchObject({ ackAll: true });
+    expect(logs.filter((l) => l.includes('"marker":"write-malformed"'))).toHaveLength(3);
+    expect(await all("SELECT COUNT(*) AS n FROM incidents")).toEqual([{ n: 0 }]);
   });
 
   it("writes in message order within one batch", async () => {
-    await consume([grace("grace-start", T), grace("grace-reset", T + 1)]);
-    expect(await all("SELECT grace_started_at FROM overuse")).toEqual([{ grace_started_at: null }]);
+    await consume([incident(T), incident(T + 1, "d1-unreadable")]);
+    expect(await all("SELECT marker, at FROM incidents ORDER BY id")).toEqual([
+      { marker: "polar-unreachable", at: T },
+      { marker: "d1-unreadable", at: T + 1 },
+    ]);
   });
 
   it("retries every message and writes nothing when D1 throws", async () => {
     const broken = { ...env, DB: new Proxy(env.DB, { get: (t, p) => (p === "batch" ? async () => Promise.reject(new Error("D1_ERROR: acme outage")) : Reflect.get(t, p)) }) as D1Database };
-    const res = await consume([usage(), grace("grace-start")], WRITES_QUEUE, broken);
+    const res = await consume([incident(), incident()], WRITES_QUEUE, broken);
     expect(res).toMatchObject({ ackAll: false, retryBatch: { retry: true } });
-    expect(await all("SELECT COUNT(*) AS n FROM usage")).toEqual([{ n: 0 }]);
+    expect(await all("SELECT COUNT(*) AS n FROM incidents")).toEqual([{ n: 0 }]);
     expect(await stampOf("last_queue_at")).toBeNull();
   });
 
   it("stamps last_queue_at and the lag of the oldest message", async () => {
     const now = Math.floor(Date.now() / 1000);
-    await consume([usage({ at: now - 40 }), grace("grace-start", now - 10)]);
+    await consume([incident(now - 40), incident(now - 10)]);
     const at = await stampOf("last_queue_at");
     expect(at!.at).toBeGreaterThanOrEqual(now);
     const lag = await stampOf("queue_lag_s");
@@ -112,19 +67,19 @@ describe("the writes queue consumer", () => {
 
   it("stamps last_queue_version with the running version beside last_queue_at, on a writes batch and on a dead-letter batch", async () => {
     const now = Math.floor(Date.now() / 1000);
-    await consume([usage()]);
+    await consume([incident()]);
     const at = await stampOf("last_queue_at");
     expect(await stampOf("last_queue_version")).toEqual({ at: at!.at, detail: ID });
     expect(at!.at).toBeGreaterThanOrEqual(now);
     await freshDatabase();
-    await consume([usage()], DEAD_LETTER_QUEUE);
+    await consume([incident()], DEAD_LETTER_QUEUE);
     const dead = await stampOf("last_dead_letter_at");
     expect(await stampOf("last_queue_version")).toEqual({ at: dead!.at, detail: ID });
   });
 
   it("stamps neither last_queue_at nor last_queue_version when the batch is retried", async () => {
     const broken = { ...env, DB: new Proxy(env.DB, { get: (t, p) => (p === "batch" ? async () => Promise.reject(new Error("D1_ERROR: acme outage")) : Reflect.get(t, p)) }) as D1Database };
-    await consume([usage()], WRITES_QUEUE, broken);
+    await consume([incident()], WRITES_QUEUE, broken);
     expect(await stampOf("last_queue_version")).toBeNull();
   });
 
@@ -137,47 +92,44 @@ describe("the writes queue consumer", () => {
   });
 
   it("acks and logs a message it does not know rather than retrying it forever", async () => {
-    const res = await consume([{ v: 2, kind: "usage" }, usage()]);
+    const res = await consume([{ v: 2, kind: "incident" }, incident()]);
     expect(res).toMatchObject({ ackAll: true });
     expect(logs.some((l) => l.includes('"marker":"write-malformed"'))).toBe(true);
-    expect(await all("SELECT COUNT(*) AS n FROM usage")).toEqual([{ n: 1 }]);
+    expect(await all("SELECT COUNT(*) AS n FROM incidents")).toEqual([{ n: 1 }]);
   });
 
   it("writes nothing from the dead-letter queue: it logs each message and stamps last_dead_letter_at", async () => {
-    const res = await consume([usage(), grace("grace-start")], DEAD_LETTER_QUEUE);
+    const res = await consume([incident(), usage], DEAD_LETTER_QUEUE);
     expect(res).toMatchObject({ ackAll: true });
-    expect(await all("SELECT COUNT(*) AS n FROM usage")).toEqual([{ n: 0 }]);
-    expect(await all("SELECT COUNT(*) AS n FROM overuse")).toEqual([{ n: 0 }]);
+    expect(await all("SELECT COUNT(*) AS n FROM incidents WHERE marker <> 'write-dead-lettered'")).toEqual([{ n: 0 }]);
     const lines = logs.filter((l) => l.includes('"marker":"write-dead-lettered"')).map((l) => JSON.parse(l));
     expect(lines).toEqual([
+      { marker: "write-dead-lettered", kind: "incident", at: T },
       { marker: "write-dead-lettered", kind: "usage", at: T },
-      { marker: "write-dead-lettered", kind: "grace-start", at: T },
     ]);
     expect(await stampOf("last_dead_letter_at")).not.toBeNull();
   });
 
-  it("writes one write-dead-lettered incident per dead-lettered message, and still no seat", async () => {
+  it("writes one write-dead-lettered incident per dead-lettered message", async () => {
     const now = Math.floor(Date.now() / 1000);
-    await consume([usage(), grace("grace-start")], DEAD_LETTER_QUEUE);
+    await consume([incident(), usage], DEAD_LETTER_QUEUE);
     const rows = await all("SELECT marker, at, detail FROM incidents ORDER BY id");
     expect(rows).toEqual([
+      { marker: "write-dead-lettered", at: expect.any(Number), detail: "incident" },
       { marker: "write-dead-lettered", at: expect.any(Number), detail: "usage" },
-      { marker: "write-dead-lettered", at: expect.any(Number), detail: "grace-start" },
     ]);
     expect((rows[0] as { at: number }).at).toBeGreaterThanOrEqual(now);
-    expect(await all("SELECT COUNT(*) AS n FROM seats")).toEqual([{ n: 0 }]);
   });
 
   it("writes an incident message as an incidents row, with or without its detail", async () => {
     const res = await consume([
-      { v: 1, kind: "incident", at: T, marker: "d1-unreadable", detail: "desktop" },
+      { v: 1, kind: "incident", at: T, marker: "d1-unreadable", detail: "actions" },
       { v: 1, kind: "incident", at: T + 1, marker: "polar-unreachable" },
     ]);
     expect(res).toMatchObject({ ackAll: true });
     expect(await all("SELECT marker, at, detail FROM incidents ORDER BY id")).toEqual([
-      { marker: "d1-unreadable", at: T, detail: "desktop" },
+      { marker: "d1-unreadable", at: T, detail: "actions" },
       { marker: "polar-unreachable", at: T + 1, detail: null },
     ]);
-    expect(await all("SELECT COUNT(*) AS n FROM seats")).toEqual([{ n: 0 }]);
   });
 });

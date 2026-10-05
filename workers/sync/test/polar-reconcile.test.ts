@@ -100,7 +100,6 @@ describe("GET /v1/sync/health", () => {
       ok: true,
       repos: 0,
       subscriptions: 0,
-      seats: 0,
       last_webhook_at: null,
       last_reconcile_at: null,
       last_reconcile_corrections: null,
@@ -117,11 +116,14 @@ describe("GET /v1/sync/health", () => {
       last_cron_version: null,
       paying_uncovered: null,
       polar_webhook_secret: true,
+      github_webhook_secret: true,
       ip_limit: "counted",
       version: (env as unknown as { CF_VERSION_METADATA: { id: string } }).CF_VERSION_METADATA.id,
     });
     const { POLAR_WEBHOOK_SECRET: _unset, ...noSecret } = env;
     expect(await (await fetchPath("/v1/sync/health", undefined, noSecret)).json()).toMatchObject({ polar_webhook_secret: false });
+    const { GITHUB_APP_WEBHOOK_SECRET: _gone, ...noGitHubSecret } = env;
+    expect(await (await fetchPath("/v1/sync/health", undefined, noGitHubSecret)).json()).toMatchObject({ github_webhook_secret: false });
   });
 
   it("reads back every stamp after a webhook, a reconcile and a consumed batch", async () => {
@@ -129,20 +131,12 @@ describe("GET /v1/sync/health", () => {
     polar.subscriptions = [polarSub()];
     await reconcilePolar(env, Math.floor(Date.now() / 1000));
     const now = Math.floor(Date.now() / 1000);
-    const batch = createMessageBatch(WRITES_QUEUE, [{ id: "m0", timestamp: new Date(), attempts: 1, body: { v: 1, kind: "usage", at: now - 5, repo_id: 1001, user_id: 3003, owner_id: 2002, plan: "personal", day: "2026-09-21" } }]);
+    const batch = createMessageBatch(WRITES_QUEUE, [{ id: "m0", timestamp: new Date(), attempts: 1, body: { v: 1, kind: "incident", at: now - 5, marker: "polar-unreachable" } }]);
     await worker.queue(batch, env, createExecutionContext());
     const h = await health();
-    expect(h).toMatchObject({ subscriptions: 1, seats: 1, last_polar_reconcile_corrections: 0 });
+    expect(h).toMatchObject({ subscriptions: 1, last_polar_reconcile_corrections: 0 });
+    expect(h).not.toHaveProperty("seats");
     for (const k of ["last_polar_webhook_at", "last_polar_reconcile_at", "last_queue_at", "queue_lag_s"]) expect(typeof h[k], k).toBe("number");
     expect(h.last_dead_letter_at).toBeNull();
-  });
-
-  it("counts only seats whose last key is within 30 days", async () => {
-    const now = Math.floor(Date.now() / 1000);
-    await env.DB.batch([
-      env.DB.prepare("INSERT INTO seats (licensee_id, user_id, first_key_at, last_key_at) VALUES (1, 1, ?, ?)").bind(now - 40 * 86400, now - 31 * 86400),
-      env.DB.prepare("INSERT INTO seats (licensee_id, user_id, first_key_at, last_key_at) VALUES (1, 2, ?, ?)").bind(now - 40 * 86400, now - 86400),
-    ]);
-    expect((await health()).seats).toBe(1);
   });
 });

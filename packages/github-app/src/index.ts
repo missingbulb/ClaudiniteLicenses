@@ -1,6 +1,6 @@
-// The Claudinite App's GitHub client, shared by the Workers that act as the App: its JWT, an
-// installation token for exactly the repositories and permissions a call needs, and the key check
-// run. A source package only: each Worker bundles its own copy, so nothing is shared at runtime.
+// The Claudinite App's GitHub client, shared by the Worker and the tools that act as the App: its
+// JWT and an installation token for exactly the repositories and permissions a call needs. A source
+// package only: each bundles its own copy, so nothing is shared at runtime.
 import { b64urlEncode } from "../../signing/src/index.ts";
 
 export class GitHubError extends Error {
@@ -13,10 +13,6 @@ export class GitHubError extends Error {
     this.status = status;
     this.body = body;
     this.call = call;
-  }
-
-  get secondaryRateLimit(): boolean {
-    return this.status === 403 && /secondary rate limit/i.test(this.body);
   }
 }
 
@@ -108,39 +104,3 @@ export async function installationToken(gh: GitHubClient, installationId: number
   if (typeof token.token !== "string") throw new GitHubError(502, "no token in the answer", "installation token");
   return token.token;
 }
-
-export interface CheckRunOutput {
-  title: string;
-  summary: string;
-  text?: string;
-}
-
-/** Creates one completed, neutral `Claudinite key` check run with an installation token scoped to the repo. */
-export async function createKeyCheckRun(
-  gh: GitHubClient,
-  target: { installationId: number; repoName: string; fullName: string; head: string; nonce: string },
-  output: CheckRunOutput,
-  nowS: number,
-): Promise<void> {
-  const token = await installationToken(gh, target.installationId, { repositories: [target.repoName], permissions: { checks: "write" } }, nowS);
-  await githubCall(
-    gh,
-    "POST",
-    `/repos/${target.fullName}/check-runs`,
-    token,
-    { name: "Claudinite key", head_sha: target.head, external_id: target.nonce, status: "completed", conclusion: "neutral", output },
-    "check run",
-  );
-}
-
-/**
- * The summary of a `Claudinite key refused` check run, `<reason>: <text>`: the binary takes what
- * precedes the first colon as the cause, so the reason is one word and the text holds no colon.
- */
-export function refusalSummary(reason: string, text: string): string {
-  if (!/^[a-z0-9-]+$/.test(reason)) throw new Error(`refusal reason ${JSON.stringify(reason)} is not one lower-case word`);
-  if (text.includes(":")) throw new Error(`refusal text for ${reason} holds a colon, which would move the binary's cut`);
-  return `${reason}: ${text}`;
-}
-
-export * from "./session.ts";
