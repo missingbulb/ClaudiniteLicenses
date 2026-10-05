@@ -72,7 +72,7 @@ export function resetWorld(): World {
     ipLimited: {},
     jwks: () => Response.json({ keys: [] }),
     polarProducts: () => {
-      const items = ["private-repo", "personal", "organization"].flatMap((p) => ["month", "year"].map((i) => managedProduct(p, i)));
+      const items = ["personal", "organization"].flatMap((p) => ["month", "year"].map((i) => managedProduct(p, i)));
       return Response.json({ items, pagination: { total_count: items.length, max_page: 1 } });
     },
     polarCheckout: () => Response.json({ id: "chk_acme", url: CHECKOUT_URL, expires_at: "2026-10-02T00:00:00Z" }, { status: 201 }),
@@ -175,12 +175,12 @@ export async function freshDatabase(): Promise<void> {
 export const DAY = 86400;
 export const nowS = () => Math.floor(Date.now() / 1000);
 
-export async function seedSubscription(over: Partial<{ id: string; owner_id: number; owner_type: string; plan: string; seats: number; repo_ids: string | null; status: string; ended_at: number | null }> = {}) {
-  const r = { id: `sub_${crypto.randomUUID()}`, owner_id: 2002, owner_type: "User", plan: "personal", seats: 5, repo_ids: null, status: "active", ended_at: null, ...over };
+export async function seedSubscription(over: Partial<{ id: string; owner_id: number; owner_type: string; plan: string; seats: number | null; status: string; ended_at: number | null }> = {}) {
+  const r = { id: `sub_${crypto.randomUUID()}`, owner_id: 2002, owner_type: "User", plan: "personal", seats: null, status: "active", ended_at: null, ...over };
   await base.DB.prepare(
-    "INSERT INTO subscriptions (polar_subscription_id, owner_id, owner_type, plan, seats, repo_ids, source, modified_at, raw, status, ended_at) VALUES (?, ?, ?, ?, ?, ?, 'polar', 1, '{}', ?, ?)",
+    "INSERT INTO subscriptions (polar_subscription_id, owner_id, owner_type, plan, seats, source, modified_at, raw, status, ended_at) VALUES (?, ?, ?, ?, ?, 'polar', 1, '{}', ?, ?)",
   )
-    .bind(r.id, r.owner_id, r.owner_type, r.plan, r.seats, r.repo_ids, r.status, r.ended_at)
+    .bind(r.id, r.owner_id, r.owner_type, r.plan, r.seats, r.status, r.ended_at)
     .run();
 }
 
@@ -207,6 +207,12 @@ export async function call(path: string, init: RequestInit = {}, e: Env = env())
 
 /** The queued messages of every send, in order. */
 export const sentMessages = () => world.sent.flat() as { kind: string; [k: string]: unknown }[];
+
+/** The Polar requests, in order. */
+export const polarCalls = () => world.calls.filter((c) => c.url.startsWith(POLAR));
+
+/** The body of the last checkout Polar was asked for. */
+export const lastCheckout = () => JSON.parse(polarCalls().filter((c) => c.url.endsWith("/v1/checkouts/")).at(-1)?.body ?? "null");
 
 /** The queued incident messages, in order. */
 export const sentIncidents = () => sentMessages().filter((m) => m.kind === "incident");

@@ -14,7 +14,7 @@ afterEach(() => vi.restoreAllMocks());
 
 const allButFleet = FEATURES.filter((f) => f !== "fleet");
 
-const request = (over: Partial<PlanRequest> = {}): PlanRequest => ({ repoId: 1001, visibility: "private", ownerId: 2002, ...over });
+const request = (over: Partial<PlanRequest> = {}): PlanRequest => ({ repoId: 1001, ownerId: 2002, ownerType: "User", ...over });
 
 function issued(r: Resolution) {
   if ("refused" in r) throw new Error(`refused ${r.refused}`);
@@ -27,36 +27,66 @@ async function resolve(e: Env, req: PlanRequest): Promise<Resolution> {
   return resolveForRow(e, reader(e), req, row);
 }
 
+const org = { owner_id: 8008, owner_type: "Organization", owner_login: "acme-org", full_name: "acme-org/acme-repo" };
+const orgRequest = request({ ownerId: 8008, ownerType: "Organization" });
+
 describe("resolveForRow", () => {
-  it("gives a public repo with no paid owner plan the Public plan, ok, no seats and no notice", async () => {
-    await seedRepo();
-    const r = issued(await resolve(env(), request({ visibility: "public" })));
-    expect(r).toMatchObject({ plan: "public", state: "ok", seats: null, notice: null, grace_until: null, subscribed: false, row: { repo_id: 1001 } });
-    expect(r.features).toEqual(allButFleet);
-  });
-
-  it("reads the owner's subscriptions and nothing else: no seat, overuse or usage row", async () => {
-    await seedRepo({ visibility: "private" });
-    await seedSubscription({ plan: "personal", seats: 5 });
-    issued(await resolve(env(), request()));
-    expect(world.dbSql).toEqual(["SELECT plan, seats, repo_ids, status, ended_at FROM subscriptions WHERE owner_id = ?"]);
-  });
-
-  it("gives a paying Personal, Organization or internal owner its plan, ok, every feature, with no seats on the key", async () => {
-    for (const plan of ["personal", "organization", "internal"]) {
+  it("gives an owner with no fleet the Public plan, ok, no seats and no notice, whether the repo is public or private", async () => {
+    for (const visibility of ["public", "private"]) {
       await freshDatabase();
-      await seedRepo({ visibility: "private" });
-      await seedSubscription({ plan, seats: 5 });
+      await seedRepo({ visibility });
       const r = issued(await resolve(env(), request()));
-      expect(r, plan).toMatchObject({ plan, state: "ok", seats: null, notice: null, subscribed: true });
-      expect(r.features, plan).toEqual([...FEATURES]);
+      expect(r, visibility).toMatchObject({ plan: "public", state: "ok", seats: null, notice: null, grace_until: null, subscribed: false, row: { repo_id: 1001 } });
+      expect(r.features, visibility).toEqual(allButFleet);
     }
   });
 
-  it("reads a revoked subscription as no plan, while it still counts as subscribed", async () => {
-    await seedRepo({ visibility: "public" });
-    await seedSubscription({ plan: "personal", seats: 5, status: "canceled", ended_at: nowS() - DAY });
-    expect(issued(await resolve(env(), request({ visibility: "public" })))).toMatchObject({ plan: "public", state: "ok", subscribed: true });
+  it("reads the owner's subscriptions and nothing else, and never their seats", async () => {
+    await seedRepo({ visibility: "private" });
+    await seedSubscription({ plan: "personal" });
+    issued(await resolve(env(), request()));
+    expect(world.dbSql).toEqual(["SELECT plan, status, ended_at FROM subscriptions WHERE owner_id = ?"]);
+  });
+
+  it("gives a User paying for the Personal fleet Personal, and an Organization paying for the Organization fleet Organization, every feature and no seats", async () => {
+    await seedRepo({ visibility: "private" });
+    await seedSubscription({ plan: "personal" });
+    const personal = issued(await resolve(env(), request()));
+    expect(personal).toMatchObject({ plan: "personal", state: "ok", seats: null, notice: null, subscribed: true });
+    expect(personal.features).toEqual([...FEATURES]);
+    await freshDatabase();
+    await seedRepo({ repo_id: 1001, ...org });
+    await seedSubscription({ owner_id: 8008, owner_type: "Organization", plan: "organization", seats: 0 });
+    const organization = issued(await resolve(env(), orgRequest));
+    expect(organization).toMatchObject({ plan: "organization", state: "ok", seats: null, notice: null, subscribed: true });
+    expect(organization.features).toEqual([...FEATURES]);
+  });
+
+  it("gives no fleet to a User whose row is an Organization fleet, or an Organization whose row is a Personal fleet", async () => {
+    await seedRepo();
+    await seedSubscription({ plan: "organization" });
+    expect(issued(await resolve(env(), request()))).toMatchObject({ plan: "public", subscribed: true });
+    await freshDatabase();
+    await seedRepo({ repo_id: 1001, ...org });
+    await seedSubscription({ owner_id: 8008, owner_type: "Organization", plan: "personal" });
+    expect(issued(await resolve(env(), orgRequest))).toMatchObject({ plan: "public", subscribed: true });
+  });
+
+  it("gives an internal row's owner Internal, of either type, ahead of any fleet", async () => {
+    await seedRepo();
+    await seedSubscription({ plan: "personal" });
+    await seedSubscription({ plan: "internal" });
+    expect(issued(await resolve(env(), request()))).toMatchObject({ plan: "internal", features: [...FEATURES] });
+    await freshDatabase();
+    await seedRepo({ repo_id: 1001, ...org });
+    await seedSubscription({ owner_id: 8008, owner_type: "Organization", plan: "internal" });
+    expect(issued(await resolve(env(), orgRequest))).toMatchObject({ plan: "internal" });
+  });
+
+  it("reads a revoked subscription as no fleet, while it still counts as subscribed", async () => {
+    await seedRepo();
+    await seedSubscription({ plan: "personal", status: "canceled", ended_at: nowS() - DAY });
+    expect(issued(await resolve(env(), request()))).toMatchObject({ plan: "public", state: "ok", subscribed: true });
   });
 
   it("refuses server-error and reports d1-unreadable when the subscriptions cannot be read", async () => {

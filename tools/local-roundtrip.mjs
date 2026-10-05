@@ -2,9 +2,12 @@
 // Every key path, locally: the GitHub and Polar stubs, the two Workers and the dev route front under
 // one `wrangler dev` over a local D1 the migrations built, then, in order: a signed installation
 // webhook the sync Worker writes, an Actions request with a token the stub's OIDC issuer signed, and
-// a reconcile requested on the writes queue, as the deploy requests it; then the paid path on a
-// private repo: the Actions key with no plan, a signed Polar subscription delivery, the owner's fleet
-// key and the Polar reconcile; then the alerts: none on the fresh set, an account the App no longer
+// a reconcile requested on the writes queue, as the deploy requests it; then the fleets: a User's
+// private repo answered Public with the Personal fleet's checkout, a signed Polar subscription
+// delivery, the owner's Personal key and the Polar reconcile, and an Organization answered Public
+// with the Organization fleet's checkout, then Organization once it subscribes; then the alerts:
+// none on the fresh set, a polar-unreachable incident from a key whose Polar call ran out of time
+// reaching D1 and the alert firing at three and clearing an hour later, an account the App no longer
 // covers firing and clearing across two reconciles; then what stands in front of the costly calls:
 // an unsigned App delivery and an unsigned Polar delivery refused, an Actions body over 16 KiB
 // refused before the OIDC issuer is asked, and where the key Worker's D1 read was served; the
@@ -259,7 +262,11 @@ for (const [worker, path, init] of /** @type {const} */ ([["key", "/v1/key/healt
 }
 
 // The Actions path: an OIDC token for a pinned workflow on the default branch the sync Worker read.
-await actionsKey("actions, public repo, no plan", repo, { typ: "actions", plan: "public", state: "ok", notice: null });
+const HTTPS = /^https:\/\//;
+await actionsKey("actions, public repo, no fleet", repo, { typ: "actions", plan: "public", state: "ok", notice: null, checkout_url: HTTPS, portal_url: null });
+const userCheckout = polar.state.checkouts.at(-1)?.body;
+if (userCheckout?.metadata?.claudinite_plan !== "personal" || userCheckout.external_customer_id !== String(inst.account.id)) await fail(`a User with no fleet was offered ${JSON.stringify(userCheckout)}`);
+console.log(`checkout: a User with no fleet is offered the Personal fleet, products ${userCheckout.products.join(", ")}`);
 
 // The reconcile, requested on the writes queue as the deploy requests it.
 const { after: afterReconcile } = await requestReconcile("reconcile-now");
@@ -268,8 +275,8 @@ if (afterWebhook.last_reconcile_at !== null || typeof afterReconcile?.last_recon
 }
 console.log(`reconcile: last_reconcile_at moved from null to ${afterReconcile.last_reconcile_at}, ${afterReconcile.last_reconcile_corrections} corrections, ${afterReconcile.repos} repo`);
 
-// The paid path, on the private repo of a User account.
-await actionsKey("actions, private repo, no plan", PRIVATE, { typ: "actions", plan: "private-repo", state: "ok", notice: null });
+// A private repo is free as well: one repo needs no plan, whatever its visibility.
+await actionsKey("actions, private repo, no fleet", PRIVATE, { typ: "actions", plan: "public", state: "ok", notice: null, checkout_url: HTTPS });
 
 // The owner buys Personal; Polar's signed delivery reaches the sync Worker.
 const sub = polar.createSubscription({ externalId: String(inst.account.id), plan: "personal", seats: 1 });
@@ -278,9 +285,9 @@ if (status !== 200 && status !== 204) await fail(`the subscription.created deliv
 const subscribed = await healthUntil("the subscription row", (h) => h.subscriptions === 1 && typeof h.last_polar_webhook_at === "number");
 console.log(`polar webhook: subscription.created written, subscriptions ${subscribed.subscriptions}, last_polar_webhook_at ${subscribed.last_polar_webhook_at}`);
 
-// Every repo of the owner now takes the fleet plan, with no seat on the key.
-await actionsKey("actions, private repo, Personal", PRIVATE, { typ: "actions", plan: "personal", state: "ok", seats: null, notice: null });
-await actionsKey("actions, public repo, Personal", repo, { typ: "actions", plan: "personal", state: "ok", seats: null, notice: null });
+// Every repo of the owner now takes the fleet plan, with no seat and no link on the key.
+await actionsKey("actions, private repo, Personal", PRIVATE, { typ: "actions", plan: "personal", state: "ok", seats: null, notice: null, checkout_url: null, portal_url: null });
+await actionsKey("actions, public repo, Personal", repo, { typ: "actions", plan: "personal", state: "ok", seats: null, notice: null, checkout_url: null, portal_url: null });
 
 // The consumer stamps the version that wrote each batch; no cron has run here, so its stamps are null.
 const stamped = await call("/v1/sync/health");
@@ -295,6 +302,23 @@ if (beforePolar?.last_polar_reconcile_at !== null || typeof afterPolar?.last_pol
   await fail(`sync health around the Polar reconcile: before ${JSON.stringify(beforePolar)}, after ${JSON.stringify(afterPolar)}`);
 }
 console.log(`polar reconcile: last_polar_reconcile_at moved from null to ${afterPolar.last_polar_reconcile_at}, ${afterPolar.last_polar_reconcile_corrections} corrections, ${afterPolar.subscriptions} subscription`);
+
+// An Organization installs the App: with no fleet it is offered the Organization fleet, and once it
+// subscribes, with Polar's seats, its repo takes the Organization plan.
+const ORG = { id: 1004, name: "acme-org-repo", full_name: "acme-org/acme-org-repo", private: true, default_branch: "main" };
+const orgAccount = { id: 2005, login: "acme-org", type: "Organization" };
+world.installations.push({ id: 7007, account: orgAccount, repos: [ORG] });
+const { after: withOrg } = await requestReconcile("reconcile-now");
+if (withOrg.repos !== 3) await fail(`the reconcile with the Organization's installation left: ${JSON.stringify(withOrg)}`);
+await actionsKey("actions, Organization repo, no fleet", ORG, { typ: "actions", plan: "public", state: "ok", owner_type: "Organization", checkout_url: HTTPS, portal_url: null }, orgAccount);
+const orgCheckout = polar.state.checkouts.at(-1)?.body;
+if (orgCheckout?.metadata?.claudinite_plan !== "organization" || orgCheckout.metadata.github_owner_type !== "Organization" || orgCheckout.external_customer_id !== String(orgAccount.id)) await fail(`an Organization with no fleet was offered ${JSON.stringify(orgCheckout)}`);
+console.log(`checkout: an Organization with no fleet is offered the Organization fleet, products ${orgCheckout.products.join(", ")}`);
+const orgSub = polar.createSubscription({ externalId: String(orgAccount.id), plan: "organization", seats: 3, ownerType: "Organization" });
+const orgStatus = await polar.deliver("subscription.created", orgSub, { endpointId: endpoint.id });
+if (orgStatus !== 200 && orgStatus !== 204) await fail(`the Organization's subscription.created delivery answered ${orgStatus}`);
+await healthUntil("the Organization's subscription row", (h) => h.subscriptions === 2);
+await actionsKey("actions, Organization repo, Organization", ORG, { typ: "actions", plan: "organization", state: "ok", seats: null, checkout_url: null, portal_url: null }, orgAccount);
 
 /** The alerts endpoint's answer. */
 async function alerts() {
@@ -341,6 +365,43 @@ async function polarIncidents() {
 const fresh = await alerts();
 if (fresh.status !== 200 || fresh.ids.length !== 0) await fail(`the alerts on the fresh set: ${fresh.status} ${JSON.stringify(fresh.ids)}`);
 console.log("alerts: 200, none on the fresh set");
+
+// A third account, a User with no fleet, installs the App. Polar holds every answer past the key
+// Worker's 3-second deadline, and a link Polar did not give is never cached, so each key there asks
+// again: its Public key still verifies, with no checkout link, and its one polar-unreachable
+// incident reaches D1 through the queue, below the threshold.
+const OTHER = { id: 1003, name: "acme-other-private", full_name: "acme-other/acme-other-private", private: true, default_branch: "main" };
+const otherAccount = { id: 2004, login: "acme-other", type: "User" };
+world.installations.push({ id: 6006, account: otherAccount, repos: [OTHER] });
+const { after: withOther } = await requestReconcile("reconcile-now");
+if (withOther.repos !== 4) await fail(`the reconcile with a third installation left: ${JSON.stringify(withOther)}`);
+polar.slow(10_000);
+const slowKey = () => actionsKey("actions, a third account, Polar too slow", OTHER, { typ: "actions", plan: "public", state: "ok", checkout_url: null, portal_url: null }, otherAccount);
+await slowKey();
+let incidentRows;
+while ((incidentRows = await polarIncidents()).length === 0) {
+  if (Date.now() > deadline) await fail("no polar-unreachable incident reached D1");
+  await sleep(500);
+}
+const under = await alerts();
+if (under.status !== 200 || under.ids.length !== 0) await fail(`one polar-unreachable must stay under the threshold: ${under.status} ${JSON.stringify(under.ids)}`);
+console.log(`incident: ${incidentRows.length} polar-unreachable row in D1 (${incidentRows.map((/** @type {any} */ r) => r.detail).join(", ")}), alerts still 200`);
+
+// Two more such keys put it over the threshold of three in the hour.
+await slowKey();
+await slowKey();
+polar.slow(0);
+await alertsUntil("polar-unreachable firing", (a) => a.status === 503 && a.ids.includes("polar-unreachable"));
+console.log(`alerts: 503 polar-unreachable after three slow keys, ${(await polarIncidents()).length} incidents`);
+
+// An hour later the window has passed them: aged by hand here, the alert clears on its own.
+try {
+  await localSql("UPDATE incidents SET at = at - 3700 WHERE marker = 'polar-unreachable'");
+} catch (err) {
+  await fail(String(err));
+}
+await alertsUntil("polar-unreachable clearing", (a) => a.status === 200 && a.ids.length === 0);
+console.log("alerts: 200 again once the polar-unreachable incidents are an hour old");
 
 // The App leaves the account's repos: Personal needs it on at least one, so the account is uncovered.
 const keptRepos = inst.repos;

@@ -1,50 +1,57 @@
 import { describe, expect, it } from "vitest";
 import { FEATURES } from "../../signing/src/index.ts";
-import { INCIDENT_MARKERS, isWriteMessage, paidSeats, planFeatures, type SubscriptionRow } from "../src/index.ts";
+import { checkoutPlanFor, fleetPlan, INCIDENT_MARKERS, isWriteMessage, planFeatures, type SubscriptionRow } from "../src/index.ts";
 
 const DAY = 86400;
 const NOW = 1_790_000_000;
 
-const sub = (over: Partial<SubscriptionRow> = {}): SubscriptionRow => ({ plan: "personal", seats: 5, repo_ids: null, status: "active", ended_at: null, ...over });
+const sub = (over: Partial<SubscriptionRow> = {}): SubscriptionRow => ({ plan: "personal", status: "active", ended_at: null, ...over });
 
 const allButFleet = FEATURES.filter((f) => f !== "fleet");
 
 describe("planFeatures", () => {
-  it("gives Public and Private repo every feature but fleet, and the owner-wide plans every feature", () => {
+  it("gives Public every feature but fleet, and the fleet plans every feature", () => {
     expect(planFeatures("public")).toEqual(allButFleet);
-    expect(planFeatures("private-repo")).toEqual(allButFleet);
     for (const plan of ["personal", "organization", "internal"] as const) expect(planFeatures(plan)).toEqual([...FEATURES]);
   });
 });
 
-describe("paidSeats", () => {
-  it("sums the Private repo rows naming the repo and ignores one naming another", () => {
-    const rows = [sub({ plan: "private-repo", seats: 3, repo_ids: "[1001]" }), sub({ plan: "private-repo", seats: 2, repo_ids: "[1001]" }), sub({ plan: "private-repo", seats: 9, repo_ids: "[4040]" })];
-    expect(paidSeats(rows, NOW, { plan: "private-repo", repoId: 1001 })).toBe(5);
-    expect(paidSeats(rows, NOW, { plan: "private-repo", repoId: 4040 })).toBe(9);
+describe("fleetPlan", () => {
+  it("gives a User owner Personal and an Organization owner Organization, never the other way round", () => {
+    expect(fleetPlan("User", [sub({ plan: "personal" })])).toBe("personal");
+    expect(fleetPlan("Organization", [sub({ plan: "organization" })])).toBe("organization");
+    expect(fleetPlan("Organization", [sub({ plan: "personal" })])).toBeNull();
+    expect(fleetPlan("User", [sub({ plan: "organization" })])).toBeNull();
   });
 
-  it("counts active, trialing and past_due rows, and ignores a revoked, an incomplete or another plan's row", () => {
-    const rows = [
-      sub({ seats: 5 }),
-      sub({ seats: 2, status: "trialing" }),
-      sub({ seats: 1, status: "past_due" }),
-      sub({ seats: 7, status: "canceled", ended_at: NOW - DAY }),
-      sub({ seats: 4, status: "incomplete" }),
-      sub({ seats: 6, status: "active", ended_at: NOW - DAY }),
-      sub({ plan: "organization", seats: 11 }),
-    ];
-    expect(paidSeats(rows, NOW, { plan: "personal", repoId: 1001 })).toBe(8);
-    expect(paidSeats(rows, NOW, { plan: "organization", repoId: 1001 })).toBe(11);
+  it("checks Internal first, for either owner type", () => {
+    for (const type of ["User", "Organization"] as const) {
+      expect(fleetPlan(type, [sub({ plan: "personal" }), sub({ plan: "organization" }), sub({ plan: "internal" })]), type).toBe("internal");
+    }
   });
 
-  it("counts a canceled row that has not ended: the seats last to the period's end", () => {
-    expect(paidSeats([sub({ status: "canceled", seats: 3 })], NOW, { plan: "personal", repoId: 1 })).toBe(0);
-    expect(paidSeats([sub({ status: "active", seats: 3 })], NOW, { plan: "personal", repoId: 1 })).toBe(3);
+  it("counts an active, trialing or past_due row that has not ended, and ignores a revoked, an incomplete or an ended one", () => {
+    for (const status of ["active", "trialing", "past_due"]) expect(fleetPlan("User", [sub({ status })]), status).toBe("personal");
+    for (const row of [sub({ status: "canceled", ended_at: NOW - DAY }), sub({ status: "incomplete" }), sub({ status: "active", ended_at: NOW - DAY }), sub({ status: null }), sub({ status: "canceled" })]) {
+      expect(fleetPlan("User", [row]), JSON.stringify(row)).toBeNull();
+    }
   });
 
-  it("reads an unknown seat count as no seats", () => {
-    expect(paidSeats([sub({ seats: null })], NOW, { plan: "personal", repoId: 1 })).toBe(0);
+  it("does not read seats: an Organization row with no seat count, or none left, still pays for the fleet", () => {
+    expect(fleetPlan("Organization", [{ ...sub({ plan: "organization" }), seats: 0 } as SubscriptionRow])).toBe("organization");
+    expect(fleetPlan("Organization", [{ ...sub({ plan: "organization" }), seats: null } as SubscriptionRow])).toBe("organization");
+  });
+
+  it("answers null with no rows, and for a row naming a retired or unknown plan", () => {
+    expect(fleetPlan("User", [])).toBeNull();
+    expect(fleetPlan("User", [sub({ plan: "private-repo" })])).toBeNull();
+  });
+});
+
+describe("checkoutPlanFor", () => {
+  it("offers a User the Personal fleet and an Organization the Organization fleet", () => {
+    expect(checkoutPlanFor("User")).toBe("personal");
+    expect(checkoutPlanFor("Organization")).toBe("organization");
   });
 });
 

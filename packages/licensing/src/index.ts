@@ -1,49 +1,42 @@
-// The plan rules the key Worker decides from, as pure functions, and the write messages the key
+// The fleet rules the key Worker decides from, as pure functions, and the write messages the key
 // Worker queues for the sync Worker. Both Workers bundle this package, so the plan a key carries and
 // the rows the sync Worker writes follow one definition. No I/O: callers pass the rows.
 import { FEATURES, type Plan } from "../../signing/src/index.ts";
 
 export type PaidPlan = Exclude<Plan, "public">;
+/** The fleets Polar sells; `internal` is never sold. */
+export type FleetPlan = "personal" | "organization";
+export type OwnerType = "User" | "Organization";
 
-/** The subscription columns the paid-seat rule reads. `repo_ids` is the stored JSON text, or an array. */
+/** The subscription columns the fleet rule reads. */
 export interface SubscriptionRow {
   plan: string;
-  seats: number | null;
-  repo_ids: string | number[] | null;
   status: string | null;
   ended_at: number | null;
 }
 
 const PAYING = ["active", "trialing", "past_due"];
 
-function repoIdsOf(v: SubscriptionRow["repo_ids"]): number[] {
-  if (Array.isArray(v)) return v;
-  if (typeof v !== "string") return [];
-  try {
-    const parsed: unknown = JSON.parse(v);
-    return Array.isArray(parsed) ? parsed.map(Number) : [];
-  } catch {
-    return [];
-  }
-}
+const pays = (s: SubscriptionRow, plan: PaidPlan) => s.plan === plan && s.ended_at === null && PAYING.includes(s.status ?? "");
 
 /**
- * The seats the owner's rows pay for under `plan`: a row counts while its status is active,
- * trialing or past_due and it has not ended; a Private repo row only for the repos it names.
+ * The fleet the owner's rows pay for, or null: `internal` first, then `personal` for a User owner
+ * and `organization` for an Organization owner. A row pays while its status is active, trialing or
+ * past_due and it has not ended; its seat count is never read.
  */
-export function paidSeats(subscriptions: SubscriptionRow[], _now: number, scope: { plan: PaidPlan; repoId: number }): number {
-  let paid = 0;
-  for (const s of subscriptions) {
-    if (s.plan !== scope.plan || s.ended_at !== null || !PAYING.includes(s.status ?? "")) continue;
-    if (scope.plan === "private-repo" && !repoIdsOf(s.repo_ids).includes(scope.repoId)) continue;
-    paid += typeof s.seats === "number" && s.seats > 0 ? s.seats : 0;
-  }
-  return paid;
+export function fleetPlan(ownerType: OwnerType, subscriptions: SubscriptionRow[]): PaidPlan | null {
+  const wanted: PaidPlan[] = ["internal", ownerType === "User" ? "personal" : "organization"];
+  return wanted.find((plan) => subscriptions.some((s) => pays(s, plan))) ?? null;
 }
 
-/** The features `ok` keys carry: everything but fleet on Public and Private repo, everything on the owner-wide plans. */
+/** The fleet an owner of this type can buy. */
+export function checkoutPlanFor(ownerType: OwnerType): FleetPlan {
+  return ownerType === "User" ? "personal" : "organization";
+}
+
+/** The features `ok` keys carry: everything but fleet on Public, everything on a fleet plan. */
 export function planFeatures(plan: Plan): string[] {
-  return plan === "public" || plan === "private-repo" ? FEATURES.filter((f) => f !== "fleet") : [...FEATURES];
+  return plan === "public" ? FEATURES.filter((f) => f !== "fleet") : [...FEATURES];
 }
 
 /**

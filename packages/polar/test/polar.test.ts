@@ -57,9 +57,9 @@ describe("listManagedProducts", () => {
     stub.addProduct({ name: "Hand-made", metadata: { claudinite_plan: "personal", claudinite_interval: "month" } });
     stub.addProduct({ name: "Archived", metadata: { claudinite_plan: "personal", claudinite_interval: "month", managed_by: MANAGED_BY }, is_archived: true });
     const products = await listManagedProducts(client());
-    expect(Object.keys(products).sort()).toEqual(["organization", "personal", "private-repo"]);
+    expect(Object.keys(products).sort()).toEqual(["organization", "personal"]);
     expect(products.personal?.month?.id).toBe(made.find((p) => p.metadata.claudinite_plan === "personal" && p.metadata.claudinite_interval === "month")!.id);
-    expect(products["private-repo"]?.year?.metadata.claudinite_interval).toBe("year");
+    expect(products.organization?.year?.metadata.claudinite_interval).toBe("year");
   });
 });
 
@@ -67,21 +67,21 @@ describe("createCheckout", () => {
   it("offers both of the plan's products, monthly first, with the owner as external customer id and every metadata key", async () => {
     seedManagedProducts();
     const products = await listManagedProducts(client());
-    const out = await createCheckout(client(), { plan: "private-repo", ownerId: 2002, ownerLogin: "acme-user", ownerType: "User", repo: { id: 1001, fullName: "acme-user/acme-repo" } });
+    const out = await createCheckout(client(), { plan: "personal", ownerId: 2002, ownerLogin: "acme-user", ownerType: "User" });
     expect(out.url).toMatch(/^https:\/\//);
     expect(typeof out.id).toBe("string");
     expect(typeof out.expires_at).toBe("string");
     const body = stub.state.checkouts.at(-1)!.body;
     expect(body).toEqual({
-      products: [products["private-repo"]!.month!.id, products["private-repo"]!.year!.id],
+      products: [products.personal!.month!.id, products.personal!.year!.id],
       external_customer_id: "2002",
-      metadata: { claudinite_plan: "private-repo", github_owner_id: "2002", github_owner_login: "acme-user", github_owner_type: "User", github_repo_id: "1001", github_repo_full_name: "acme-user/acme-repo" },
+      metadata: { claudinite_plan: "personal", github_owner_id: "2002", github_owner_login: "acme-user", github_owner_type: "User" },
     });
   });
 
-  it("names no repo for an owner-wide plan, and refuses a plan with no managed products", async () => {
+  it("names the owner and never a repo, a fleet covering every repo the owner has, and refuses a plan with no managed products", async () => {
     seedManagedProducts();
-    await createCheckout(client(), { plan: "organization", ownerId: 8008, ownerLogin: "acme-org", ownerType: "Organization", repo: { id: 1001, fullName: "acme-org/acme-repo" } });
+    await createCheckout(client(), { plan: "organization", ownerId: 8008, ownerLogin: "acme-org", ownerType: "Organization", repo: { id: 1001, fullName: "acme-org/acme-repo" } } as never);
     expect(stub.state.checkouts.at(-1)!.body.metadata).toEqual({ claudinite_plan: "organization", github_owner_id: "8008", github_owner_login: "acme-org", github_owner_type: "Organization" });
     await expect(createCheckout(client(), { plan: "internal", ownerId: 1, ownerLogin: "acme", ownerType: "User" })).rejects.toThrow(/no managed products for internal/);
   });

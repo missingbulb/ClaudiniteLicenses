@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-// Makes the Polar organization sell exactly the plans billing/plans.json lists: one seat-based
-// subscription product per plan and billing interval, since a Polar product carries a single
-// interval; every other unarchived product is archived, never deleted. It also turns on seat
-// management in the customer portal. Without --apply it only prints what it would change.
+// Makes the Polar organization sell exactly the plans billing/plans.json lists: one subscription
+// product per plan and billing interval, since a Polar product carries a single interval, priced
+// flat (`price`) or per seat (`price_per_seat`); every other unarchived product is archived, never
+// deleted, and so is a managed product whose price kind differs from the plan's, which a new one
+// replaces. It also turns on seat management in the customer portal. Without --apply it only prints what it would change.
 // Reads POLAR_ACCESS_TOKEN, an organization access token for the --env's organization, and
 // POLAR_API_BASE when set, in place of the --env's API address.
 //
@@ -19,17 +20,19 @@ const INTERVAL_WORD = { month: "monthly", year: "yearly" };
 
 /**
  * @typedef {"month" | "year"} Interval
- * @typedef {{ id: string, name: string, price_per_seat: Record<Interval, number> }} Plan
+ * @typedef {{ id: string, name: string, price: Record<Interval, number> } | { id: string, name: string, price_per_seat: Record<Interval, number> }} Plan
  * @typedef {{ polar_organization: string, currency: string, plans: Plan[] }} Plans
  * @typedef {{ amount_type: "seat_based", price_currency: string, seat_tiers: { seat_tier_type: "volume", tiers: { min_seats: number, price_per_seat: number }[] } }} SeatPriceCreate
- * @typedef {{ plan: string, interval: Interval, name: string, metadata: Record<string, string>, price: SeatPriceCreate }} Desired
+ * @typedef {{ amount_type: "fixed", price_currency: string, price_amount: number }} FixedPriceCreate
+ * @typedef {SeatPriceCreate | FixedPriceCreate} PriceCreate
+ * @typedef {{ plan: string, interval: Interval, name: string, metadata: Record<string, string>, price: PriceCreate }} Desired
  * @typedef {{ id: string, created_at: string, name: string, recurring_interval: string | null, recurring_interval_count: number | null, is_archived: boolean, metadata: Record<string, unknown>, prices: any[], benefits: { id: string }[] }} Product
  * @typedef {{ kind: "create", desired: Desired, description: string }
  *   | { kind: "update", product: Product, desired: Desired, patch: Record<string, unknown>, description: string }
  *   | { kind: "clear-benefits", product: Product, description: string }
  *   | { kind: "archive", product: Product, description: string }
  *   | { kind: "portal-seats", settings: any, description: string }} Action
- * @typedef {{ plan: string, interval: Interval, name: string, price_per_seat: number, product_id: string | null, price_id: string | null }} Result
+ * @typedef {{ plan: string, interval: Interval, name: string, price: string, product_id: string | null, price_id: string | null }} Result
  */
 
 /** @param {string} [file] @returns {Plans} */
@@ -45,13 +48,15 @@ export function desiredProducts(plans) {
       interval,
       name: `${plan.name} (${INTERVAL_WORD[interval]})`,
       metadata: { claudinite_plan: plan.id, claudinite_interval: interval, managed_by: MANAGED_BY },
-      price: {
-        amount_type: /** @type {const} */ ("seat_based"),
-        price_currency: plans.currency,
-        seat_tiers: { seat_tier_type: /** @type {const} */ ("volume"), tiers: [{ min_seats: 1, price_per_seat: plan.price_per_seat[interval] }] },
-      },
+      price: priceFor(plan, interval, plans.currency),
     })),
   );
+}
+
+/** @param {Plan} plan @param {Interval} interval @param {string} currency @returns {PriceCreate} */
+function priceFor(plan, interval, currency) {
+  if ("price" in plan) return { amount_type: "fixed", price_currency: currency, price_amount: plan.price[interval] };
+  return { amount_type: "seat_based", price_currency: currency, seat_tiers: { seat_tier_type: "volume", tiers: [{ min_seats: 1, price_per_seat: plan.price_per_seat[interval] }] } };
 }
 
 /** @param {number} cents */
@@ -60,9 +65,10 @@ const dollars = (cents) => `$${(cents / 100).toFixed(2)}`;
 /** @param {Product} p */
 const activePrices = (p) => (p.prices ?? []).filter((x) => !x.is_archived);
 
-/** @param {any} price @param {SeatPriceCreate} want */
+/** @param {any} price @param {PriceCreate} want */
 function samePrice(price, want) {
-  if (price.amount_type !== "seat_based" || price.price_currency !== want.price_currency) return false;
+  if (price.amount_type !== want.amount_type || price.price_currency !== want.price_currency) return false;
+  if (want.amount_type === "fixed") return price.price_amount === want.price_amount;
   const tiers = price.seat_tiers?.tiers ?? [];
   const [w] = want.seat_tiers.tiers;
   return (price.seat_tiers?.seat_tier_type ?? "volume") === "volume" && tiers.length === 1 && tiers[0].min_seats === w?.min_seats && (tiers[0].max_seats ?? null) === null && tiers[0].price_per_seat === w?.price_per_seat;
@@ -77,8 +83,16 @@ function sameMetadata(a, b) {
 /** @param {any} price */
 function describePrice(price) {
   const t = price?.seat_tiers?.tiers;
-  return price?.amount_type === "seat_based" && t?.length === 1 ? `${dollars(t[0].price_per_seat)} per seat` : `a ${price?.amount_type ?? "missing"} price`;
+  if (price?.amount_type === "seat_based" && t?.length === 1) return `${dollars(t[0].price_per_seat)} per seat`;
+  if (price?.amount_type === "fixed" && typeof price.price_amount === "number") return `${dollars(price.price_amount)} flat`;
+  return `a ${price?.amount_type ?? "missing"} price`;
 }
+
+/** A managed product keeps its price kind: one whose active prices are all of another kind is replaced, not repriced. @param {Product} p @param {PriceCreate} want */
+const otherPriceKind = (p, want) => {
+  const prices = activePrices(p);
+  return prices.length > 0 && prices.every((x) => x.amount_type !== want.amount_type);
+};
 
 /**
  * Plans the changes that make Polar match `plans`, and with `apply` makes them.
@@ -103,13 +117,20 @@ export async function syncProducts({ base, token, plans, apply }) {
 
   for (const d of desiredProducts(plans)) {
     const current = products.find(
-      (p) => !kept.has(p.id) && p.metadata?.managed_by === MANAGED_BY && p.metadata?.claudinite_plan === d.plan && p.metadata?.claudinite_interval === d.interval && p.recurring_interval === d.interval && p.recurring_interval_count === 1,
+      (p) =>
+        !kept.has(p.id) &&
+        p.metadata?.managed_by === MANAGED_BY &&
+        p.metadata?.claudinite_plan === d.plan &&
+        p.metadata?.claudinite_interval === d.interval &&
+        p.recurring_interval === d.interval &&
+        p.recurring_interval_count === 1 &&
+        !otherPriceKind(p, d.price),
     );
-    const pricePerSeat = d.price.seat_tiers.tiers[0]?.price_per_seat ?? 0;
-    const result = { plan: d.plan, interval: d.interval, name: d.name, price_per_seat: pricePerSeat, product_id: current?.id ?? null, price_id: null };
+    const price = describePrice(d.price);
+    const result = { plan: d.plan, interval: d.interval, name: d.name, price, product_id: current?.id ?? null, price_id: null };
     results.push(result);
     if (!current) {
-      actions.push({ kind: "create", desired: d, description: `create "${d.name}": seat-based, ${dollars(pricePerSeat)} per seat per ${d.interval}` });
+      actions.push({ kind: "create", desired: d, description: `create "${d.name}": ${price} per ${d.interval}` });
       continue;
     }
     kept.add(current.id);
@@ -128,7 +149,7 @@ export async function syncProducts({ base, token, plans, apply }) {
     if (prices.length === 1 && samePrice(prices[0], d.price)) result.price_id = prices[0].id;
     else {
       patch.prices = [d.price];
-      changes.push(`replace ${prices.map(describePrice).join(" and ") || "no price"} with ${dollars(pricePerSeat)} per seat (Polar archives the old price; existing subscribers keep it)`);
+      changes.push(`replace ${prices.map(describePrice).join(" and ") || "no price"} with ${price} (Polar archives the old price; existing subscribers keep it)`);
     }
     if (changes.length) actions.push({ kind: "update", product: current, desired: d, patch, description: `update ${current.id} "${d.name}": ${changes.join("; ")}` });
     if (current.benefits?.length) actions.push({ kind: "clear-benefits", product: current, description: `remove ${current.benefits.length} benefit(s) from ${current.id} "${d.name}"` });
@@ -166,9 +187,9 @@ export function summaryMarkdown(result, run) {
   const lines = [`## Polar products, ${run.env}`, "", `${verb} for organization ${result.organization.name} (${result.organization.id}), Polar-Version ${result.versionServed ?? "unknown"}.`, ""];
   if (result.actions.length) lines.push(...result.actions.map((a) => `- ${a.description}`), "");
   lines.push(...result.notes.map((n) => `> ${n}`), ...(result.notes.length ? [""] : []));
-  lines.push("| Plan | Interval | Product | Per seat | Product id | Price id |", "| --- | --- | --- | --- | --- | --- |");
+  lines.push("| Plan | Interval | Product | Price | Product id | Price id |", "| --- | --- | --- | --- | --- | --- |");
   const pending = run.apply ? "missing" : "on apply";
-  for (const p of result.products) lines.push(`| ${p.plan} | ${p.interval} | ${p.name} | ${dollars(p.price_per_seat)} | ${p.product_id ?? `(${pending})`} | ${p.price_id ?? `(${pending})`} |`);
+  for (const p of result.products) lines.push(`| ${p.plan} | ${p.interval} | ${p.name} | ${p.price} | ${p.product_id ?? `(${pending})`} | ${p.price_id ?? `(${pending})`} |`);
   return `${lines.join("\n")}\n`;
 }
 

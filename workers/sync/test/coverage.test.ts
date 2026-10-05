@@ -15,10 +15,10 @@ async function seedRepo(repoId: number, ownerId: number) {
     .run();
 }
 
-async function seedSubscription(id: string, over: Partial<{ owner_id: number; plan: string; repo_ids: string | null; status: string; ended_at: number | null }> = {}) {
-  const r = { owner_id: 2002, plan: "personal", repo_ids: null, status: "active", ended_at: null, ...over };
-  await env.DB.prepare("INSERT INTO subscriptions (polar_subscription_id, owner_id, owner_type, plan, seats, repo_ids, source, modified_at, raw, status, ended_at) VALUES (?, ?, 'User', ?, 3, ?, 'polar', 1, '{}', ?, ?)")
-    .bind(id, r.owner_id, r.plan, r.repo_ids, r.status, r.ended_at)
+async function seedSubscription(id: string, over: Partial<{ owner_id: number; plan: string; status: string; ended_at: number | null }> = {}) {
+  const r = { owner_id: 2002, plan: "personal", status: "active", ended_at: null, ...over };
+  await env.DB.prepare("INSERT INTO subscriptions (polar_subscription_id, owner_id, owner_type, plan, seats, source, modified_at, raw, status, ended_at) VALUES (?, ?, 'User', ?, 3, 'polar', 1, '{}', ?, ?)")
+    .bind(id, r.owner_id, r.plan, r.status, r.ended_at)
     .run();
 }
 
@@ -35,19 +35,19 @@ beforeEach(async () => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("auditCoverage", () => {
-  it("counts a Private repo row naming a repo with no row and a Personal row whose owner has none, and ignores a revoked and a covered row", async () => {
+  it("counts a fleet row whose owner has no repo on the App, once per owner and plan, and ignores a revoked, an incomplete and a covered row", async () => {
     await seedRepo(1001, 2002);
-    await seedSubscription("sub_covered_repo", { plan: "private-repo", repo_ids: "[1001]" });
-    await seedSubscription("sub_uncovered_repo", { plan: "private-repo", repo_ids: "[1001, 4040]" });
     await seedSubscription("sub_covered_owner", { plan: "personal" });
     await seedSubscription("sub_uncovered_owner", { owner_id: 7007, plan: "organization" });
+    await seedSubscription("sub_uncovered_owner_again", { owner_id: 7007, plan: "organization" });
+    await seedSubscription("sub_uncovered_personal", { owner_id: 7008, plan: "personal" });
     await seedSubscription("sub_revoked", { owner_id: 8008, plan: "personal", status: "canceled", ended_at: T - 1 });
     await seedSubscription("sub_incomplete", { owner_id: 8009, plan: "personal", status: "incomplete" });
     expect(await auditCoverage(env.DB, T)).toBe(2);
     expect(await stamp()).toEqual({ at: T, detail: "2" });
     expect(uncoveredLines()).toEqual([
-      { marker: "paying-uncovered", owner_id: 2002, plan: "private-repo", repo_ids: [4040] },
-      { marker: "paying-uncovered", owner_id: 7007, plan: "organization", repo_ids: [] },
+      { marker: "paying-uncovered", owner_id: 7007, plan: "organization" },
+      { marker: "paying-uncovered", owner_id: 7008, plan: "personal" },
     ]);
   });
 
@@ -59,7 +59,7 @@ describe("auditCoverage", () => {
 
   it("stamps zero when every paying account is covered, and nothing logged", async () => {
     await seedRepo(1001, 2002);
-    await seedSubscription("sub_a", { plan: "private-repo", repo_ids: "[1001]" });
+    await seedSubscription("sub_a", { plan: "personal" });
     expect(await auditCoverage(env.DB, T)).toBe(0);
     expect(await stamp()).toEqual({ at: T, detail: "0" });
     expect(uncoveredLines()).toEqual([]);
@@ -86,7 +86,7 @@ describe("where the audit runs", () => {
   });
 
   it("re-judges at the end of a requested GitHub reconcile, so a repo leaving the App shows at once and its return clears it", async () => {
-    await seedSubscription("sub_repo", { plan: "private-repo", repo_ids: "[1]" });
+    await seedSubscription("sub_owner", { plan: "personal" });
     gh.installations = [{ id: 5005, account: { id: 2002, login: "acme-user", type: "User" }, repos: [repo(1)] }];
     await requestReconcile("reconcile-now");
     expect((await health()).paying_uncovered).toBe(0);

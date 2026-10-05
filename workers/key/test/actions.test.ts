@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FEATURES } from "../../../packages/signing/src/index.ts";
 import { resetJwksCache } from "../src/oidc.ts";
-import { actionsClaims, call, certUse, env, freshDatabase, githubCalls, oidcIssuer, resetWorld, seedRepo, seedSubscription, verified, world } from "./helpers.ts";
+import { actionsClaims, call, certUse, CHECKOUT_URL, env, freshDatabase, lastCheckout, oidcIssuer, polarCalls, PORTAL_URL, resetWorld, seedRepo, seedSubscription, verified, world } from "./helpers.ts";
 
 let issuer: Awaited<ReturnType<typeof oidcIssuer>>;
 const jwksCalls = () => world.calls.filter((c) => c.url === "https://oidc.test/.well-known/jwks").length;
@@ -25,14 +25,14 @@ beforeEach(async () => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("POST /v1/actions-key", () => {
-  it("exchanges a good token from the scheduler on the default branch for a 6-hour Actions key", async () => {
+  it("exchanges a good token from the scheduler on the default branch for a 6-hour Actions key, Public with the Personal fleet's checkout for a User with no fleet", async () => {
     await seedRepo();
     const res = await ask(await issuer.sign(actionsClaims()));
     expect(res.status).toBe(200);
     const out = (await res.json()) as { key: string; plan: string; state: string };
-    expect(out).toEqual({ key: out.key, plan: "public", state: "ok", notice: null, checkout_url: null, portal_url: null });
+    expect(out).toEqual({ key: out.key, plan: "public", state: "ok", notice: null, checkout_url: CHECKOUT_URL, portal_url: null });
     const p = await verified(out.key);
-    expect(p).toMatchObject({ typ: "actions", plan: "public", repo_id: 1001, owner_id: 2002, owner_type: "User", owner_login: "acme-user" });
+    expect(p).toMatchObject({ typ: "actions", plan: "public", repo_id: 1001, owner_id: 2002, owner_type: "User", owner_login: "acme-user", seats: null, checkout_url: CHECKOUT_URL, portal_url: null });
     expect(p).not.toHaveProperty("user_id");
     expect(p).not.toHaveProperty("nonce");
     expect(p.exp - p.iat).toBe(6 * 3600);
@@ -41,7 +41,37 @@ describe("POST /v1/actions-key", () => {
     expect(certUse(out.key)).toBe("license");
     expect(world.points).toEqual([{ indexes: ["1001"], blobs: ["public", "issued-ok", "User", "1.1.0", "actions"], doubles: [1] }]);
     expect(world.sent).toEqual([]);
-    expect(githubCalls()).toHaveLength(0);
+    expect(lastCheckout()).toEqual({
+      products: ["prod_personal_month", "prod_personal_year"],
+      external_customer_id: "2002",
+      metadata: { claudinite_plan: "personal", github_owner_id: "2002", github_owner_login: "acme-user", github_owner_type: "User" },
+    });
+    expect(polarCalls().map((c) => `${c.method} ${new URL(c.url).pathname}`)).toEqual(["GET /v1/products/", "POST /v1/checkouts/"]);
+  });
+
+  it("answers a private repo of an owner with no fleet Public too: one repo is free whatever its visibility", async () => {
+    await seedRepo({ visibility: "private" });
+    const out = (await (await ask(await issuer.sign(actionsClaims({ repository_visibility: "private" })))).json()) as Record<string, unknown>;
+    expect(out).toMatchObject({ plan: "public", state: "ok", checkout_url: CHECKOUT_URL });
+  });
+
+  it("offers an Organization with no fleet the Organization fleet's checkout, and its portal once it has any subscription", async () => {
+    await seedRepo({ owner_id: 8008, owner_type: "Organization", owner_login: "acme-org", full_name: "acme-org/acme-repo" });
+    await seedSubscription({ owner_id: 8008, owner_type: "Organization", plan: "personal" });
+    const claims = actionsClaims({ repository_owner_id: "8008", repository: "acme-org/acme-repo", repository_owner: "acme-org", job_workflow_ref: "acme-org/acme-repo/.github/workflows/claudinite-scheduler.yml@refs/heads/main" });
+    const out = (await (await ask(await issuer.sign(claims))).json()) as Record<string, unknown>;
+    expect(out).toMatchObject({ plan: "public", state: "ok", checkout_url: CHECKOUT_URL, portal_url: PORTAL_URL });
+    expect(lastCheckout()).toMatchObject({ products: ["prod_organization_month", "prod_organization_year"], external_customer_id: "8008", metadata: { claudinite_plan: "organization", github_owner_type: "Organization" } });
+  });
+
+  it("gives a User paying for the Personal fleet a Personal key with every feature, asking Polar nothing", async () => {
+    await seedRepo({ visibility: "private" });
+    await seedSubscription({ plan: "personal" });
+    const out = (await (await ask(await issuer.sign(actionsClaims()))).json()) as Record<string, unknown>;
+    expect(out).toEqual({ key: out.key, plan: "personal", state: "ok", notice: null, checkout_url: null, portal_url: null });
+    expect(await verified(out.key as string)).toMatchObject({ plan: "personal", seats: null, features: [...FEATURES] });
+    expect(polarCalls()).toEqual([]);
+    expect(world.points.at(-1)!.blobs).toEqual(["personal", "issued-ok", "User", "1.1.0", "actions"]);
   });
 
   it("accepts the executor and the update workflows, and any trigger but a pull request's", async () => {
@@ -92,13 +122,14 @@ describe("POST /v1/actions-key", () => {
     await refusedWith(await issuer.sign(actionsClaims()), 403, "app-not-installed");
   });
 
-  it("gives a public repo of a paying organization an ok Organization key", async () => {
+  it("gives a repo of an Organization paying for the Organization fleet an ok Organization key, whatever its seat count, and a Personal row on an Organization no fleet", async () => {
     await seedRepo({ owner_id: 8008, owner_type: "Organization", owner_login: "acme-org", full_name: "acme-org/acme-repo" });
-    await seedSubscription({ owner_id: 8008, owner_type: "Organization", plan: "organization", seats: 10 });
+    await seedSubscription({ owner_id: 8008, owner_type: "Organization", plan: "organization", seats: 1 });
     const claims = actionsClaims({ repository_owner_id: "8008", repository: "acme-org/acme-repo", repository_owner: "acme-org", job_workflow_ref: "acme-org/acme-repo/.github/workflows/claudinite-scheduler.yml@refs/heads/main" });
     const out = (await (await ask(await issuer.sign(claims))).json()) as Record<string, unknown>;
-    expect(out).toMatchObject({ plan: "organization", state: "ok" });
+    expect(out).toMatchObject({ plan: "organization", state: "ok", checkout_url: null, portal_url: null });
     expect((await verified(out.key as string)).features).toEqual([...FEATURES]);
+    expect(polarCalls()).toEqual([]);
   });
 
   it("refuses a token whose audience, issuer, lifetime or signature is wrong, naming each", async () => {

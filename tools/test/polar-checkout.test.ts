@@ -23,20 +23,25 @@ function run(args: string[]) {
 }
 
 describe("tools/polar-checkout.mjs", () => {
-  it("creates a Private repo checkout for the owner and repo and prints only its url", async () => {
-    const res = await run(["--plan", "private-repo", "--owner-id", "73882448", "--owner-login", "missingbulb", "--owner-type", "User", "--repo-id", "1001", "--repo", "missingbulb/ClaudiniteLicenses"]);
+  it("creates a fleet checkout for the owner and prints only its url", async () => {
+    const res = await run(["--plan", "personal", "--owner-id", "73882448", "--owner-login", "missingbulb", "--owner-type", "User"]);
     expect(res.code, res.err).toBe(0);
     expect(res.out.trim()).toMatch(/^https:\/\//);
     const body = stub.state.checkouts.at(-1)!.body;
     expect(body.external_customer_id).toBe("73882448");
     expect(body.products).toHaveLength(2);
-    expect(body.metadata).toEqual({ claudinite_plan: "private-repo", github_owner_id: "73882448", github_owner_login: "missingbulb", github_owner_type: "User", github_repo_id: "1001", github_repo_full_name: "missingbulb/ClaudiniteLicenses" });
+    expect(body.metadata).toEqual({ claudinite_plan: "personal", github_owner_id: "73882448", github_owner_login: "missingbulb", github_owner_type: "User" });
   });
 
-  it("refuses a missing argument with usage and no Polar call", async () => {
-    const res = await run(["--plan", "private-repo", "--owner-id", "73882448", "--owner-login", "missingbulb"]);
-    expect(res.code).toBe(2);
-    expect(res.err).toMatch(/usage/);
+  it("refuses a missing argument, and the retired repo arguments, with usage and no Polar call", async () => {
+    for (const args of [
+      ["--plan", "personal", "--owner-id", "73882448", "--owner-login", "missingbulb"],
+      ["--plan", "personal", "--owner-id", "73882448", "--owner-login", "missingbulb", "--owner-type", "User", "--repo-id", "1001", "--repo", "missingbulb/ClaudiniteLicenses"],
+    ]) {
+      const res = await run(args);
+      expect(res.code, args.join(" ")).toBe(2);
+      expect(res.err).toMatch(/usage|Unknown option/);
+    }
     expect(stub.state.checkouts).toHaveLength(0);
   });
 });

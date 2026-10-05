@@ -1,10 +1,9 @@
 {
-  "//": "The paid plans Polar sells, in US cents per seat; a yearly price is ten monthly ones.",
+  "//": "The fleets Polar sells, in US cents: Personal at a flat price per account, Organization per seat; a yearly price is ten monthly ones.",
   "polar_organization": "MissingBulb",
   "currency": "usd",
   "plans": [
-    { "id": "private-repo", "name": "Claudinite Private repo", "price_per_seat": { "month": 200, "year": 2000 } },
-    { "id": "personal", "name": "Claudinite Personal", "price_per_seat": { "month": 1900, "year": 19000 } },
-    { "id": "organization", "name": "Claudinite Organization", "price_per_seat": { "month": 9900, "year": 99000 } }
+    { "id": "personal", "name": "Claudinite Personal fleet", "price": { "month": 900, "year": 9000 } },
+    { "id": "organization", "name": "Claudinite Organization fleet", "price_per_seat": { "month": 9900, "year": 99000 } }
   ]
 }

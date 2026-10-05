@@ -74,15 +74,13 @@ export async function actionsKey(req: Request, env: Env, ctx?: ExecutionContext)
     point("none", "refused-workflow-not-pinned", row.owner_type);
     return refusal(403, "workflow-not-pinned");
   }
-  const plan = await resolveForRow(env, db, { repoId: c.repositoryId, visibility: c.repositoryVisibility, ownerId: c.repositoryOwnerId }, row, { ctx, path: "actions" });
+  const ownerType = row.owner_type;
+  const plan = await resolveForRow(env, db, { repoId: c.repositoryId, ownerId: c.repositoryOwnerId, ownerType }, row, { ctx, path: "actions" });
   if ("refused" in plan) {
-    point("none", `refused-${plan.refused}`, row.owner_type);
+    point("none", `refused-${plan.refused}`, ownerType);
     return refusal(503, plan.refused);
   }
-  const ownerType = row.owner_type;
-  const links = wantsLinks(plan)
-    ? await linksFor(env, { plan: plan.plan, ownerId: c.repositoryOwnerId, ownerLogin: c.repositoryOwner, ownerType, repo: { id: c.repositoryId, fullName: c.repository }, subscribed: plan.subscribed }, ctx)
-    : NO_LINKS;
+  const links = wantsLinks(plan) ? await linksFor(env, { ownerId: c.repositoryOwnerId, ownerLogin: c.repositoryOwner, ownerType, subscribed: plan.subscribed }, ctx) : NO_LINKS;
   const { seed, cert } = issuingKey(env);
   const key = await mintKey(seed, cert, { typ: "actions", repoId: c.repositoryId, ownerId: c.repositoryOwnerId, ownerType, ownerLogin: c.repositoryOwner, ...licenceFields(plan, links) }, nowS);
   point(plan.plan, `issued-${plan.state}`, ownerType);

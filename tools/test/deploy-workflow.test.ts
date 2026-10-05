@@ -313,7 +313,14 @@ describe("deploy.yml", () => {
     expect(run).toContain('b.queue==="bound"');
     expect(run).toContain('b.polar==="configured"');
     expect(run).toContain("b.polar_webhook_secret===true");
-    expect(run).toMatch(/node tools\/polar-checkout\.mjs --plan private-repo --owner-id "\$GITHUB_REPOSITORY_OWNER_ID" --owner-login "\$GITHUB_REPOSITORY_OWNER" --owner-type "\$OWNER_TYPE" --repo-id "\$GITHUB_REPOSITORY_ID" --repo "\$GITHUB_REPOSITORY"/);
+    expect(run).toMatch(/node tools\/polar-checkout\.mjs --plan "\$checkout_plan" --owner-id "\$GITHUB_REPOSITORY_OWNER_ID" --owner-login "\$GITHUB_REPOSITORY_OWNER" --owner-type "\$OWNER_TYPE"\)/);
+    expect(run).not.toContain("private-repo");
+    // The fleet the repo's owner can buy: Personal for a User, Organization for an Organization.
+    const choose = run.split("\n").filter((l) => /checkout_plan=/.test(l) && !l.includes("polar-checkout.mjs")).join("\n");
+    for (const [ownerType, plan] of [["User", "personal"], ["Organization", "organization"]]) {
+      const res = spawnSync("bash", ["-e", "-c", `${choose}\necho "$checkout_plan"`], { env: { PATH: process.env.PATH!, OWNER_TYPE: ownerType }, encoding: "utf8" });
+      expect(res.stdout.trim(), ownerType).toBe(plan);
+    }
     expect(run).toContain("b.last_polar_webhook_at>=$started");
     expect(run.indexOf("polar-checkout.mjs")).toBeLessThan(run.indexOf("b.last_polar_webhook_at>=$started"));
     expect(step.env).toMatchObject({ POLAR_ACCESS_TOKEN: "${{ secrets.POLAR_SANDBOX_TOKEN }}", OWNER_TYPE: "${{ github.event.repository.owner.type }}" });

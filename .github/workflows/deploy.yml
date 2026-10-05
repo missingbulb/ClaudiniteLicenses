@@ -478,8 +478,10 @@ jobs:
           # The live Polar path: a sandbox checkout made with the code the key Worker bundles, whose
           # checkout.created delivery, signed with the endpoint's secret, the sync Worker must verify.
           # Polar sends it when the checkout is created, so the hosted page is never fetched. Nothing
-          # is bought; the checkout expires on its own.
-          checkout=$(node tools/polar-checkout.mjs --plan private-repo --owner-id "$GITHUB_REPOSITORY_OWNER_ID" --owner-login "$GITHUB_REPOSITORY_OWNER" --owner-type "$OWNER_TYPE" --repo-id "$GITHUB_REPOSITORY_ID" --repo "$GITHUB_REPOSITORY")
+          # is bought; the checkout expires on its own. It is for the fleet this repo's owner can buy.
+          checkout_plan=organization
+          if [ "$OWNER_TYPE" = User ]; then checkout_plan=personal; fi
+          checkout=$(node tools/polar-checkout.mjs --plan "$checkout_plan" --owner-id "$GITHUB_REPOSITORY_OWNER_ID" --owner-login "$GITHUB_REPOSITORY_OWNER" --owner-type "$OWNER_TYPE")
           echo "sandbox checkout: $checkout"
           probe 200 "b.last_polar_webhook_at>=$started" -- https://license.claudinite.com/v1/sync/health
           # A real OIDC token from this run: deploy.yml is not a pinned workflow, so the verifier must

@@ -149,14 +149,12 @@ export interface CheckoutFor {
   ownerId: number;
   ownerLogin: string;
   ownerType: "User" | "Organization";
-  /** The repo a Private repo checkout pays for; ignored for every other plan. */
-  repo?: { id: number; fullName: string };
 }
 
 /**
  * Creates a checkout offering both of the plan's products, monthly first, so the buyer picks the
- * interval on Polar's page. The owner's numeric GitHub id is the external customer id; the
- * metadata names the owner and, for a Private repo plan, the repo.
+ * interval on Polar's page. The owner's numeric GitHub id is the external customer id, and the
+ * metadata names the owner: a fleet covers every repo the owner has, so no repo is named.
  */
 export async function createCheckout(client: PolarClient, f: CheckoutFor, products?: ManagedProducts): Promise<{ id: string; url: string; expires_at: string }> {
   const byInterval = (products ?? (await listManagedProducts(client)))[f.plan];
@@ -168,10 +166,6 @@ export async function createCheckout(client: PolarClient, f: CheckoutFor, produc
     github_owner_login: f.ownerLogin,
     github_owner_type: f.ownerType,
   };
-  if (f.plan === "private-repo" && f.repo) {
-    metadata.github_repo_id = String(f.repo.id);
-    metadata.github_repo_full_name = f.repo.fullName;
-  }
   const made = await client.call("POST", "/v1/checkouts/", { products: ids, external_customer_id: String(f.ownerId), metadata });
   return { id: made.id, url: made.url, expires_at: made.expires_at };
 }
