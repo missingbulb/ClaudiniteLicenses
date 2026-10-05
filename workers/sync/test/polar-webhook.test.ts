@@ -30,7 +30,6 @@ describe("POST /v1/sync/polar-webhook", () => {
         owner_type: "User",
         plan: "personal",
         seats: 5,
-        repo_ids: null,
         source: "polar",
         period_end: unix("2026-10-01T00:00:00Z"),
         cancel_at_period_end: 0,
@@ -70,7 +69,7 @@ describe("POST /v1/sync/polar-webhook", () => {
   it("files an Organization fleet subscription under its owner with Polar's seats, naming no repo", async () => {
     const sub = polarSub({ plan: "organization", seats: 12, metadata: { claudinite_plan: "organization", github_owner_id: "2002", github_owner_type: "Organization", github_repo_id: "1001" } });
     await send(await polarDelivery("subscription.active", sub));
-    expect((await subscriptionRows())[0]).toMatchObject({ plan: "organization", seats: 12, owner_type: "Organization", repo_ids: null });
+    expect((await subscriptionRows())[0]).toMatchObject({ plan: "organization", seats: 12, owner_type: "Organization" });
   });
 
   it("writes nothing for a subscription on the retired Private repo plan, logging polar-not-managed", async () => {

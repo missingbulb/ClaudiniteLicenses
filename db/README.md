@@ -9,13 +9,21 @@ window must read the live schema, and `test/migrations-additive.test.ts` refuses
 removed in a later chunk, once a deploy whose code no longer reads it has been promoted and the
 convergence window that chunk states has passed.
 
+The one exception is `0005_fleets_only.sql`, which that test names with its reason. It retires
+Private repo, seat counting and the session keys at once, with no customer on any plan: it rebuilds
+`subscriptions` without `repo_ids` and with `plan` limited to `personal`, `organization` and
+`internal`, copying every row but a `private-repo` one, drops `repos.private_repo_licensed`, and
+drops the `seats`, `overuse` and `usage` tables. The deploy applies it before it uploads the new
+Worker versions, so until they are promoted the versions still live read a schema they no longer
+match, and rolling back to them across it is not supported.
+
 ## Restoring
 
 Each deploy records D1 Time Travel's bookmark before its migrations and prints, in its summary, the
 dispatch that returns the database there. A restore is in place and destructive: queries in flight
-are cancelled, and every row written after the bookmark is gone, usage, seats and subscriptions
-included. The nightly reconciles, or a `reconcile-now` and a `polar-reconcile-now` pushed onto the writes
-queue with `tools/push-queue-message.mjs`, re-derive repos and subscriptions, and seats accumulate again from the next keys. Running one is a
+are cancelled, and every row written after the bookmark is gone, subscriptions and incidents
+included. The nightly reconciles, or a `reconcile-now` and a `polar-reconcile-now` pushed onto the
+writes queue with `tools/push-queue-message.mjs`, re-derive repos and subscriptions. Running one is a
 person's call, never automatic:
 
 ```
@@ -33,9 +41,8 @@ The key Worker reads through one D1 session per request, opened `first-unconstra
 (`workers/key/src/db.ts`). So once replication is on, a request's first read may be served by the
 nearest replica, and every later read in that request comes from an instance at least as fresh.
 The sync Worker opens no session, so every read it makes goes to the primary and sees its own
-writes. A replica a little behind the primary can lead the key Worker to queue a `usage` or
-`grace-start` message the primary already holds. Every seat statement is idempotent, so that costs
-one extra message, never a wrong row.
+writes. The key Worker writes nothing to D1, so a replica a little behind the primary can only answer
+with the subscriptions as they stood a moment before.
 
 While replication is off, the session behaves exactly as a plain binding does, because D1 routes
 every query to the primary. The deploy reads the mode on every run and changes it only when the
