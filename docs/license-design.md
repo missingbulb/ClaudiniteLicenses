@@ -38,7 +38,7 @@ A row pays while its status is active, trialing or past due and Polar has not en
 
 **Every key is `ok`.** A fleet plan carries every feature, `fleet` included; the no-fleet answer carries every feature but `fleet`. There is no grace, no degraded state and no seat count on a key. The no-fleet answer also carries `checkout_url`, a Polar checkout of the fleet the owner's type can buy, and, when the owner has any subscription, `portal_url`, its customer portal. A fleet key carries neither, and asks Polar nothing. The server computes the features from the plan, so a pricing or policy change needs no engine release.
 
-**When the key cannot be obtained**, the run skips its fleet work for that run and reports why; the engine owns that report. The server refuses a repo the Claudinite App is not installed on (`app-not-installed`) and one whose default branch or owner type it has not read yet (`repo-not-synced`), and answers 503 rather than guessing when its database cannot be read.
+**When the key cannot be obtained** because the server or GitHub does not answer, the engine fails open: the run goes on unverified and says so. A refusal is an answer, and a refused run skips its fleet work and reports why; the engine owns that report. The server refuses a repo the Claudinite App is not installed on (`app-not-installed`) and one whose default branch or owner type it has not read yet (`repo-not-synced`), and answers 503 rather than guessing when its database cannot be read.
 
 ## Billing through Polar
 
@@ -101,7 +101,7 @@ There is no machine of ours: the Workers run in every Cloudflare data center tha
 2. **Issuing a key never waits on a write.** The key Worker decides from reads alone, through one D1 session per request that the nearest replica may serve; its incidents go onto the queue, which the sync Worker writes.
 3. **Deploys cannot take it down at once.** The two Workers deploy separately. A new key Worker version serves one tenth of requests until the outside probe has passed against it by version, then all of them, and is rolled back when it fails; the sync Worker deploys at once and is judged by its own health and alerts and by the queue consumer writing a message the deploy pushes. An outside probe checks the live Workers every quarter hour and keeps a standing issue while it fails.
 
-What remains is an outage of Cloudflare's Workers platform or of GitHub. During either, fleet keys already issued keep working until they expire, and a fleet run that cannot get one skips its fleet work for that run.
+What remains is an outage of Cloudflare's Workers platform or of GitHub. During either, fleet keys already issued keep working until they expire, and a fleet run that cannot get one goes on unverified, since the engine fails open on an unanswered check.
 
 **Capacity.** Only fleet managers' Actions runs ask for keys, a handful per run, so the load is a small fraction of the per-session design this replaces and well inside the Workers Paid allowances. The per-address cap of 300 requests a minute and the per-owner limit of 600 a minute stand in front of D1.
 
