@@ -49,10 +49,14 @@ signed by the issuing key the certificate certifies. The payload:
 | `checkout_url` | optional: `null` or an `https` URL, the checkout of the fleet plan the owner can buy |
 | `portal_url` | optional: `null` or an `https` URL, the owner's Polar customer portal |
 | `issue` | optional, grant keys only: a positive integer, the work item's issue number |
-| `notice` | optional: `null` or a non-empty string, what the licensee's seat state asks the binary to say; `over-within-headroom`, `overused` and `seat-refused` have a meaning (the key Worker README's table), and any other name is carried and ignored, as an unknown feature is, so the server may add a notice without an engine release |
+| `notice` | optional: `null` or a non-empty string, what the licensee's seat state asks the binary to say; `over-within-headroom`, `overused` and `seat-refused` have a meaning, and any other name is carried and ignored, as an unknown feature is, so the server may add a notice without an engine release |
 
 The five optional fields are absent or `null` on a key that has nothing to say; a verifier treats
 absence as `null`, so a key issued before they existed still verifies.
+
+The key Worker now issues only `actions` keys, each `state` `ok` with `seats` and `notice` `null`
+(the license record's decision 60). The other key types, states, the seat counts and the notices
+stay in the format, so the vectors and every verifier built before it still read them.
 
 ## Verifying a key
 

@@ -1,5 +1,10 @@
 # Web key spike results
 
+> Historical. The web key path this spike measured, the `spike/` folder it ran from and the session
+> keys it served were retired on 2026-10-05 with fleets-only billing (decision 60 of the
+> [record](../license-record.md)), so the links to `spike/` below no longer resolve and no row will
+> be filled again. The results stand as measured.
+
 One row per work note this spike checks (see [spike/README.md](../../spike/README.md) for the
 procedure). Fill a row only from a real run, never with expected values, and tick the matching
 work note in [license-design.md](../license-design.md) in the same commit. The round-trip script's

@@ -2,12 +2,11 @@
 
 The only writer of D1. It holds no signing key, so it can never issue one. It writes `repos` from
 the Claudinite App's webhooks and the GitHub reconcile, `subscriptions` from Polar's webhooks and
-the Polar reconcile, and `seats`, `usage`, `overuse` and `incidents` from the writes queue the key
-Worker fills. It audits whether the App still covers every paying account and judges every alert at
+the Polar reconcile, and `incidents` from the writes queue the key Worker fills. It audits whether the App still covers every paying account and judges every alert at
 `GET /v1/sync/alerts`.
 
-It deploys at 100% with `wrangler deploy --secrets-file`, never through the split the
-request-path Workers take: which version a split hands a cron or a queue consumer is not
+It deploys at 100% with `wrangler deploy --secrets-file`, never through the split the key Worker
+takes: which version a split hands a cron or a queue consumer is not
 documented, and its deploy never touches key issuance. Its secrets travel with the version that
 deploy makes, so the version a rollback returns to holds the secrets it ran with. Its judge right
 after reads its health, pushes one `deploy-read-back` message onto the writes queue through the
@@ -33,8 +32,14 @@ whether or not read replication is on, and its reconciles, alerts and stamps see
 
 ## Repos
 
-The router forwards the Claudinite App's `installation`, `installation_repositories` and
-`repository` webhooks to `POST /webhook`, which keeps `repos` current:
+The Claudinite App's one webhook address is this Worker's `POST /github-webhook`
+(`license.claudinite.com/github-webhook`). Each delivery is read up to 1 MiB, a larger one answered
+413 `payload-too-large`, then checked against GitHub's `X-Hub-Signature-256`, an HMAC over the body
+with `GITHUB_APP_WEBHOOK_SECRET`; a wrong or missing signature answers 401 `bad-signature`, and an
+unset secret 401 `secret-unset`, writing nothing. `ping` answers 200. The `installation`,
+`installation_repositories` and `repository` events keep `repos` current, and every other event,
+a `repository_dispatch` included, answers 204 with no write. The address meets no per-address cap:
+the HMAC check is its gate, and GitHub's delivery addresses are few.
 
 | Event · action | Write |
 | --- | --- |
@@ -87,9 +92,8 @@ stamps `last_polar_webhook_at`; then `subscription.created`, `.updated`, `.activ
 | `polar_subscription_id` | `id` |
 | `owner_id` | `customer.external_id`, a numeric GitHub id; without one the subscription is skipped and logged `polar-no-external-id` |
 | `owner_type` | `metadata.github_owner_type`; without `User` or `Organization`, skipped (`polar-no-owner-type`) |
-| `plan` | the product's `claudinite_plan`; a product whose `managed_by` is not ours is skipped (`polar-not-managed`) |
-| `seats` | `seats` |
-| `repo_ids` | `[metadata.github_repo_id]` under `private-repo`, else null |
+| `plan` | the product's `claudinite_plan`, one of `personal`, `organization` and `internal`; a product whose `managed_by` is not ours, or another plan, the retired `private-repo` among them, is skipped (`polar-not-managed`) |
+| `seats` | `seats`, Polar's count on an Organization fleet, kept for the record; no rule reads it |
 | `source` | `polar` |
 | `period_end` | `current_period_end` |
 | `cancel_at_period_end` | `cancel_at_period_end`, 1 or 0 |
@@ -115,18 +119,15 @@ The Worker consumes `claudinite-licenses-writes` (batches of up to 100, 5 second
 its dead-letter queue `claudinite-licenses-writes-dlq`. Each batch is one D1 batch of statements in
 message order, acked on success and retried whole when D1 throws:
 
-| `kind` | Write |
-| --- | --- |
-| `usage` | the `usage` row for `(repo_id, user_id, day)` if missing; the seat of `(licenseeOf(plan, owner_id, repo_id), user_id)`: inserted at `at`, else `last_key_at` raised to `at`, and `first_key_at` reset to `at` when the old `last_key_at` is more than 30 days before it |
-| `grace-start` | the owner's `overuse` row: `grace_started_at` kept if set, else `at`; `grace_spent_until` raised to `at` + 30 days |
-| `grace-reset` | `grace_started_at` cleared when it is no later than the message's `at`, `grace_spent_until` kept: delivery order is best-effort, so a reset delivered after a later `grace-start` leaves that start alone |
-| `incident` | an `incidents` row of `marker`, `at` and `detail`; `deploy-read-back` is the one the deploy's judge pushes, and `reconcile-now` and `polar-reconcile-now` the ones its read-back pushes, written and pruned like the rest and counted by no alert |
-
-Every seat statement is idempotent; a redelivered incident is one more row, which only errs toward
-an alert. A message this version cannot read is acked and logged `{ "marker": "write-malformed" }`.
+Every message is an `incident`, written as an `incidents` row of `marker`, `at` and `detail`.
+`deploy-read-back` is the one the deploy's judge pushes, and `reconcile-now` and
+`polar-reconcile-now` the ones its read-back pushes, written and pruned like the rest and counted by
+no alert. A redelivered incident is one more row, which only errs toward an alert. A message this
+version cannot read, any other `kind` among them, is acked and logged
+`{ "marker": "write-malformed" }`.
 Each batch stamps `last_queue_at`, `last_queue_version`, the version that consumed it, and
 `queue_lag_s`, the age of its oldest message, in the same D1 batch as its writes, so the stamps move
-only when the writes land. A dead-letter batch writes no seat: each message is logged
+only when the writes land. A dead-letter batch writes none of its messages: each is logged
 `{ "marker": "write-dead-lettered", kind, at }` and written as a `write-dead-lettered` incident
 naming its kind, and `last_dead_letter_at` and `last_queue_version` are stamped, in one D1 batch.
 
@@ -149,12 +150,11 @@ and the record's job is the alert, not history.
 ## Coverage
 
 The coverage audit lists the paying subscription rows (`status` `active`, `trialing` or
-`past_due`, `ended_at` null) and checks what the App must cover: under `private-repo` every repo in
-`repo_ids` needs a `repos` row; under `personal`, `organization` and `internal` the owner needs at
-least one. It stamps `sync_state.paying_uncovered` with the number of uncovered accounts (an owner
-under a plan) and logs one line per account, `{ "marker": "paying-uncovered", owner_id, plan,
-repo_ids }`, the missing repos under `private-repo`. The ids stay in the log, never in a public
-body. It runs at the end of the nightly cron after both reconciles, and at the end of each
+`past_due`, `ended_at` null) and checks that the App covers at least one `repos` row of each
+paying owner, since a fleet covers every repo the owner has. It stamps
+`sync_state.paying_uncovered` with the number of uncovered accounts (an owner under a plan) and logs
+one line per account, `{ "marker": "paying-uncovered", owner_id, plan }`. The ids stay in the log,
+never in a public body. It runs at the end of the nightly cron after both reconciles, and at the end of each
 reconcile a queued request runs, so a deploy's read-back re-judges it.
 
 ## Alerts
@@ -176,7 +176,6 @@ alert `sync-d1-unreadable`.
 | `d1-unreadable` | 1 or more in the last hour |
 | `polar-unreachable` | 3 or more in the last hour |
 | `app-not-installed` | 5 or more in the last hour |
-| `secondary-rate-limit` | 1 or more in the last hour |
 | `paying-uncovered` | `paying_uncovered > 0` |
 
 Every alert clears on its own as its window passes or its stamp moves; none needs an
@@ -186,22 +185,21 @@ batch rather than read as the queue's live depth, which only Cloudflare's dashbo
 
 ## Health
 
-`/v1/sync/health` and `/v1/sync/alerts` first
-spend one request of `IP_LIMIT`, 300 per 60 seconds per `CF-Connecting-IP` (an IPv6 caller by its /64), answering 429
+`GET` and `HEAD` on `/v1/sync/health` and `/v1/sync/alerts` first spend one request of
+`IP_LIMIT`, 300 per 60 seconds per `CF-Connecting-IP` (an IPv6 caller by its /64), answering 429
 `rate-limited` over it and letting the request through when the binding cannot answer
-(`packages/http`). The service-binding `POST /webhook` answers a body past 1 MiB 413
-`payload-too-large`.
+(`packages/http`). `HEAD` answers its `GET`'s status and headers with no body.
 
-`GET /v1/sync/health` answers `{ ok, repos, subscriptions, seats, last_webhook_at,
+`GET /v1/sync/health` answers `{ ok, repos, subscriptions, last_webhook_at,
 last_reconcile_at, last_reconcile_corrections, last_polar_webhook_at, last_polar_reconcile_at,
 last_polar_reconcile_corrections, last_polar_reconcile_error, last_queue_at, last_queue_version,
 queue_lag_s, last_dead_letter_at, last_cron_at, last_cron, last_cron_version, paying_uncovered,
-polar_webhook_secret, ip_limit, version }`. `last_cron` is the expression of the cron that last
+polar_webhook_secret, github_webhook_secret, ip_limit, version }`. `last_cron` is the expression of the cron that last
 stamped `last_cron_at`; `last_queue_version` and `last_cron_version` are the versions that last
-consumed a batch and ran a cron. `seats` counts rows whose last key
-is within 30 days; each stamp is null where it was never written, `paying_uncovered` until the first
-audit; `polar_webhook_secret` says whether the secret
-is set, never its value, and is what `deploy.yml` reads to decide whether to make a new endpoint.
+consumed a batch and ran a cron. Each stamp is null where it was never written, `paying_uncovered`
+until the first audit. `polar_webhook_secret` and `github_webhook_secret` say whether each secret is
+set, never its value; the first is what `deploy.yml` reads to decide whether to make a new Polar
+endpoint, and the read-back requires the second.
 `ip_limit` is what the per-address cap made of that very read: `counted`, `unavailable` when the limiter threw, `unbound` when the binding is missing; the deploy's judge of this Worker requires `counted`.
 
 ## Secrets
