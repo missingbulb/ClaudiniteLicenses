@@ -118,6 +118,11 @@ describe("POST /v1/actions-key", () => {
     await refusedWith(await issuer.sign(actionsClaims()), 403, "repo-not-synced");
   });
 
+  it("refuses a token whose owner the synced row does not name, as a transfer the sync Worker has not read yet", async () => {
+    await seedRepo({ owner_id: 9009 });
+    await refusedWith(await issuer.sign(actionsClaims()), 403, "repo-not-synced");
+  });
+
   it("refuses a repo the App is not installed on", async () => {
     await refusedWith(await issuer.sign(actionsClaims()), 403, "app-not-installed");
   });

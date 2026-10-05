@@ -66,7 +66,7 @@ export async function actionsKey(req: Request, env: Env, ctx?: ExecutionContext)
     point("none", "refused-app-not-installed");
     return refusal(403, "app-not-installed");
   }
-  if (row.default_branch === null || row.owner_type === null) {
+  if (row.default_branch === null || row.owner_type === null || row.owner_id !== c.repositoryOwnerId) {
     point("none", "refused-repo-not-synced", row.owner_type ?? "unknown");
     return refusal(403, "repo-not-synced");
   }
