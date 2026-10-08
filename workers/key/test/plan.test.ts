@@ -83,6 +83,11 @@ describe("resolveForRow", () => {
     expect(issued(await resolve(env(), orgRequest))).toMatchObject({ plan: "internal" });
   });
 
+  it("gives missingbulb Internal with no subscription row, by its GitHub id", async () => {
+    await seedRepo({ owner_id: 73882448, owner_login: "missingbulb", full_name: "missingbulb/Shepherd" });
+    expect(issued(await resolve(env(), request({ ownerId: 73882448 })))).toMatchObject({ plan: "internal", features: [...FEATURES], subscribed: false });
+  });
+
   it("reads a revoked subscription as no fleet, while it still counts as subscribed", async () => {
     await seedRepo();
     await seedSubscription({ plan: "personal", status: "canceled", ended_at: nowS() - DAY });

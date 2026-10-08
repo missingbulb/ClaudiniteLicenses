@@ -16,7 +16,7 @@ the deploy's `D1_READ_REPLICATION` (`db/README.md`).
 
 One repo, public or private, is free, and the engine asks for no key for it. The paid plans are
 fleets, and `resolveForRow` (`src/plan.ts`) gives a key the fleet its owner pays for, by
-`packages/licensing`'s `fleetPlan`: `internal` first, then `personal` for a `User` owner and
+`packages/licensing`'s `fleetPlan`: `internal` first (an owner in `INTERNAL_OWNERS` or with an internal row), then `personal` for a `User` owner and
 `organization` for an `Organization` owner, from an owner's `subscriptions` row whose `status` is
 `active`, `trialing` or `past_due` and that has not ended. The owner's type is the `repos` row's.
 Neither the repo's visibility nor any seat count is read. An owner with no fleet gets `public`, the

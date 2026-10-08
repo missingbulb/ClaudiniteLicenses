@@ -15,7 +15,7 @@ One repo, public or private, is free, and the engine asks the license server for
 | Organization fleet | A GitHub organization | Fleet management for every repo the organization owns | $99 per user a month or $990 a year, the user count being the seats bought in Polar | `organization`, monthly and yearly |
 | Enterprise | Through sales only | Agreed per customer | Agreed per customer | None |
 
-The license server counts no users. An Organization fleet's seats are what the organization buys and changes in Polar's portal; the server reads them for the record and enforces nothing by them. Claudinite's own canary repos hold an `internal` plan, so they get keys like any fleet.
+The license server counts no users. An Organization fleet's seats are what the organization buys and changes in Polar's portal; the server reads them for the record and enforces nothing by them. Claudinite's own accounts hold an `internal` plan, so they get keys like any fleet: `missingbulb`, which runs Claudinite's own fleet manager, is granted it in the license server's code by its GitHub id, with no Polar row.
 
 ## Who asks for a key
 
@@ -29,7 +29,7 @@ A key is a small signed statement from the license server, verified offline by t
 
 **The plan is the owner's fleet.** The server reads the owner's subscriptions and takes, in order:
 
-1. `internal`, for an owner with a paying internal row, of either type;
+1. `internal`, for an owner the server's code lists by GitHub id or with a paying internal row, of either type;
 2. `personal`, when the repo's owner is a GitHub user with a paying Personal fleet row;
 3. `organization`, when the repo's owner is an organization with a paying Organization fleet row;
 4. otherwise the no-fleet answer, plan `public`.
