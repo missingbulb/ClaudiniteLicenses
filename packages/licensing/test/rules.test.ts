@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { FEATURES } from "../../signing/src/index.ts";
-import { checkoutPlanFor, fleetPlan, INCIDENT_MARKERS, isWriteMessage, planFeatures, type SubscriptionRow } from "../src/index.ts";
+import { checkoutPlanFor, fleetPlan, INTERNAL_OWNERS, INCIDENT_MARKERS, isWriteMessage, planFeatures, type SubscriptionRow } from "../src/index.ts";
 
 const DAY = 86400;
 const NOW = 1_790_000_000;
@@ -8,6 +8,9 @@ const NOW = 1_790_000_000;
 const sub = (over: Partial<SubscriptionRow> = {}): SubscriptionRow => ({ plan: "personal", status: "active", ended_at: null, ...over });
 
 const allButFleet = FEATURES.filter((f) => f !== "fleet");
+
+const USER = 2002;
+const ORG = 8008;
 
 describe("planFeatures", () => {
   it("gives Public every feature but fleet, and the fleet plans every feature", () => {
@@ -18,33 +21,42 @@ describe("planFeatures", () => {
 
 describe("fleetPlan", () => {
   it("gives a User owner Personal and an Organization owner Organization, never the other way round", () => {
-    expect(fleetPlan("User", [sub({ plan: "personal" })])).toBe("personal");
-    expect(fleetPlan("Organization", [sub({ plan: "organization" })])).toBe("organization");
-    expect(fleetPlan("Organization", [sub({ plan: "personal" })])).toBeNull();
-    expect(fleetPlan("User", [sub({ plan: "organization" })])).toBeNull();
+    expect(fleetPlan(USER, "User", [sub({ plan: "personal" })])).toBe("personal");
+    expect(fleetPlan(ORG, "Organization", [sub({ plan: "organization" })])).toBe("organization");
+    expect(fleetPlan(ORG, "Organization", [sub({ plan: "personal" })])).toBeNull();
+    expect(fleetPlan(USER, "User", [sub({ plan: "organization" })])).toBeNull();
   });
 
   it("checks Internal first, for either owner type", () => {
     for (const type of ["User", "Organization"] as const) {
-      expect(fleetPlan(type, [sub({ plan: "personal" }), sub({ plan: "organization" }), sub({ plan: "internal" })]), type).toBe("internal");
+      expect(fleetPlan(ORG, type, [sub({ plan: "personal" }), sub({ plan: "organization" }), sub({ plan: "internal" })]), type).toBe("internal");
     }
   });
 
   it("counts an active, trialing or past_due row that has not ended, and ignores a revoked, an incomplete or an ended one", () => {
-    for (const status of ["active", "trialing", "past_due"]) expect(fleetPlan("User", [sub({ status })]), status).toBe("personal");
+    for (const status of ["active", "trialing", "past_due"]) expect(fleetPlan(USER, "User", [sub({ status })]), status).toBe("personal");
     for (const row of [sub({ status: "canceled", ended_at: NOW - DAY }), sub({ status: "incomplete" }), sub({ status: "active", ended_at: NOW - DAY }), sub({ status: null }), sub({ status: "canceled" })]) {
-      expect(fleetPlan("User", [row]), JSON.stringify(row)).toBeNull();
+      expect(fleetPlan(USER, "User", [row]), JSON.stringify(row)).toBeNull();
     }
   });
 
   it("does not read seats: an Organization row with no seat count, or none left, still pays for the fleet", () => {
-    expect(fleetPlan("Organization", [{ ...sub({ plan: "organization" }), seats: 0 } as SubscriptionRow])).toBe("organization");
-    expect(fleetPlan("Organization", [{ ...sub({ plan: "organization" }), seats: null } as SubscriptionRow])).toBe("organization");
+    expect(fleetPlan(ORG, "Organization", [{ ...sub({ plan: "organization" }), seats: 0 } as SubscriptionRow])).toBe("organization");
+    expect(fleetPlan(ORG, "Organization", [{ ...sub({ plan: "organization" }), seats: null } as SubscriptionRow])).toBe("organization");
+  });
+
+  it("gives an owner Claudinite grants by id Internal with no row at all, of either type, and no other owner", () => {
+    expect(INTERNAL_OWNERS.get(73882448)).toBe("missingbulb");
+    for (const [id] of INTERNAL_OWNERS) {
+      expect(fleetPlan(id, "User", [])).toBe("internal");
+      expect(fleetPlan(id, "Organization", [sub({ status: "canceled", ended_at: NOW - DAY })])).toBe("internal");
+    }
+    expect(fleetPlan(USER, "User", [])).toBeNull();
   });
 
   it("answers null with no rows, and for a row naming a retired or unknown plan", () => {
-    expect(fleetPlan("User", [])).toBeNull();
-    expect(fleetPlan("User", [sub({ plan: "private-repo" })])).toBeNull();
+    expect(fleetPlan(USER, "User", [])).toBeNull();
+    expect(fleetPlan(USER, "User", [sub({ plan: "private-repo" })])).toBeNull();
   });
 });
 

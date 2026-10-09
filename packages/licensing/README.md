@@ -7,8 +7,9 @@ pass the rows.
 
 ## The fleet an owner pays for
 
-`fleetPlan(ownerType, subscriptions)` is the plan the owner's `subscriptions` rows pay for, or null:
-`internal` first, then `personal` for a `User` owner and `organization` for an `Organization` owner.
+`fleetPlan(ownerId, ownerType, subscriptions)` is the plan the owner pays for, or null: `internal`
+first, for an owner in `INTERNAL_OWNERS` (Claudinite's own accounts by GitHub id, `missingbulb` today,
+granted with no Polar row) or with an internal row, then `personal` for a `User` owner and `organization` for an `Organization` owner.
 A row pays while its `status` is `active`, `trialing` or `past_due` and its `ended_at` is null; a
 cancelled row keeps paying until Polar ends it, and a revoked one has `ended_at` set. Its seat count
 is never read: a fleet covers every repo the owner has, and Polar's seats on the Organization fleet

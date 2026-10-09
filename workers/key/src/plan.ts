@@ -56,7 +56,7 @@ export async function readRepo(db: D1Reads, repoId: number): Promise<RepoRow | n
 export async function resolveForRow(env: IncidentEnv, db: D1Reads, req: PlanRequest, row: RepoRow, from: PlanContext = {}): Promise<Resolution> {
   try {
     const { results } = await db.prepare(SUBSCRIPTIONS_SQL).bind(req.ownerId).all<SubscriptionRow>();
-    const plan: Plan = fleetPlan(req.ownerType, results) ?? "public";
+    const plan: Plan = fleetPlan(req.ownerId, req.ownerType, results) ?? "public";
     return { plan, state: "ok", grace_until: null, features: planFeatures(plan), seats: null, notice: null, row, subscribed: results.length > 0 };
   } catch (err) {
     incident(env, from.ctx, "d1-unreadable", from.path, { repo_id: req.repoId, path: "actions", error: String(err) });

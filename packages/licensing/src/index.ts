@@ -20,11 +20,19 @@ const PAYING = ["active", "trialing", "past_due"];
 const pays = (s: SubscriptionRow, plan: PaidPlan) => s.plan === plan && s.ended_at === null && PAYING.includes(s.status ?? "");
 
 /**
- * The fleet the owner's rows pay for, or null: `internal` first, then `personal` for a User owner
- * and `organization` for an Organization owner. A row pays while its status is active, trialing or
- * past_due and it has not ended; its seat count is never read.
+ * The owners Claudinite grants `internal` itself, with no Polar row: its own accounts, keyed by the
+ * GitHub id, which a rename never changes. The login is for the reader.
  */
-export function fleetPlan(ownerType: OwnerType, subscriptions: SubscriptionRow[]): PaidPlan | null {
+export const INTERNAL_OWNERS: ReadonlyMap<number, string> = new Map([[73882448, "missingbulb"]]);
+
+/**
+ * The fleet the owner pays for, or null: `internal` for an owner in `INTERNAL_OWNERS` or with an
+ * internal row, then `personal` for a User owner and `organization` for an Organization owner. A
+ * row pays while its status is active, trialing or past_due and it has not ended; its seat count is
+ * never read.
+ */
+export function fleetPlan(ownerId: number, ownerType: OwnerType, subscriptions: SubscriptionRow[]): PaidPlan | null {
+  if (INTERNAL_OWNERS.has(ownerId)) return "internal";
   const wanted: PaidPlan[] = ["internal", ownerType === "User" ? "personal" : "organization"];
   return wanted.find((plan) => subscriptions.some((s) => pays(s, plan))) ?? null;
 }
